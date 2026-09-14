@@ -25,6 +25,8 @@
 *.a
 *.lib
 
+*.md
+
 # Executables
 *.exe
 *.out
@@ -76,8 +78,6 @@ DerivedDataCache/*
 
 # rider
 .idea/*
-
-*.md
 
 # OS specific
 .DS_Store
