@@ -78,4 +78,6 @@ DerivedDataCache/*
 .idea/*
 
 #
-*.md
+
+# OS specific
+.DS_Store

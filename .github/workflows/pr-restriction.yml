@@ -1,0 +1,31 @@
+name: PR Restriction Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Source Branch
+        run: |
+          BASE="${{ github.base_ref }}"
+          HEAD="${{ github.head_ref }}"
+
+          # dev -> main
+          if [[ "$HEAD" == "dev" && "$BASE" == "main" ]]; then
+            echo "Branch check passed! PR is from 'dev' to 'main'."
+            exit 0
+          fi
+
+          # hotfix/* -> main
+          if [[ "$HEAD" == hotfix/* && "$BASE" == "main" ]]; then
+            echo "Branch check passed! PR is a hotfix to 'main'."
+            exit 0
+          fi
+
+          echo "Error: Pull requests to 'main' must come from 'dev' or 'hotfix/*' branches."
+          echo "Current source branch is '$HEAD' and base is '$BASE'."
+          exit 1
