@@ -77,7 +77,7 @@ DerivedDataCache/*
 # rider
 .idea/*
 
-#
+*.md
 
 # OS specific
 .DS_Store
