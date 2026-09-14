@@ -77,7 +77,10 @@ DerivedDataCache/*
 # rider
 .idea/*
 
-#
 *.md
+
+# OS specific
+.DS_Store
+
 FallenEra.slnx
 Automation_FallenEra.slnx
