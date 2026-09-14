@@ -52,6 +52,9 @@ protected:
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;
 
+	/** Lets the tag-driven ASC consume Enhanced Input state once per player-input frame. */
+	virtual void PostProcessInput(const float DeltaTime, const bool bGamePaused) override;
+
 	/** Returns true if the player should use UMG touch controls */
 	bool ShouldUseTouchControls() const;
 };
