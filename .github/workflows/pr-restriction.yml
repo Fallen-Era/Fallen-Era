@@ -15,7 +15,7 @@ jobs:
           HEAD="${{ github.head_ref }}"
 
           # dev -> main
-          if [[ "$HEAD" == "dev" && "$BASE" == "main" ]]; then
+          if [[ "$HEAD" == "Dev" && "$BASE" == "main" ]]; then
             echo "Branch check passed! PR is from 'dev' to 'main'."
             exit 0
           fi
