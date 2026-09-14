@@ -14,6 +14,9 @@ public class FallenEra : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",
+			"GameplayAbilities",
+			"GameplayTags",
+			"GameplayTasks",
 			"AIModule",
 			"StateTreeModule",
 			"GameplayStateTreeModule",
@@ -25,12 +28,9 @@ public class FallenEra : ModuleRules
 
 		PublicIncludePaths.AddRange(new string[] {
 			"FallenEra",
-			"FallenEra/Variant_Horror",
-			"FallenEra/Variant_Horror/UI",
-			"FallenEra/Variant_Shooter",
-			"FallenEra/Variant_Shooter/AI",
-			"FallenEra/Variant_Shooter/UI",
-			"FallenEra/Variant_Shooter/Weapons"
+			"FallenEra/AbilitySystem",
+			"FallenEra/AbilitySystem/Abilities",
+			"FallenEra/AbilitySystem/Attributes",
 		});
 
 		// Uncomment if you are using Slate UI

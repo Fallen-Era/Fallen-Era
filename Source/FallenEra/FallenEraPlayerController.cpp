@@ -1,6 +1,3 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
-
-
 #include "FallenEraPlayerController.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
@@ -9,27 +6,23 @@
 #include "Blueprint/UserWidget.h"
 #include "FallenEra.h"
 #include "Widgets/Input/SVirtualJoystick.h"
+#include "FallenEraPlayerState.h"
+#include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 
 AFallenEraPlayerController::AFallenEraPlayerController()
 {
-	// set the player camera manager class
 	PlayerCameraManagerClass = AFallenEraCameraManager::StaticClass();
 }
 
 void AFallenEraPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
-
-	
-	// only spawn touch controls on local player controllers
 	if (IsLocalPlayerController() && ShouldUseTouchControls())
 	{
-		// spawn the mobile controls widget
 		MobileControlsWidget = CreateWidget<UUserWidget>(this, MobileControlsWidgetClass);
 
 		if (MobileControlsWidget)
 		{
-			// add the controls to the player screen
 			MobileControlsWidget->AddToPlayerScreen(0);
 
 		} else {
@@ -45,10 +38,8 @@ void AFallenEraPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 
-	// only add IMCs for local player controllers
 	if (IsLocalPlayerController())
 	{
-		// Add Input Mapping Context
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 		{
 			for (UInputMappingContext* CurrentContext : DefaultMappingContexts)
@@ -56,7 +47,6 @@ void AFallenEraPlayerController::SetupInputComponent()
 				Subsystem->AddMappingContext(CurrentContext, 0);
 			}
 
-			// only add these IMCs if we're not using mobile touch input
 			if (!ShouldUseTouchControls())
 			{
 				for (UInputMappingContext* CurrentContext : MobileExcludedMappingContexts)
@@ -67,6 +57,19 @@ void AFallenEraPlayerController::SetupInputComponent()
 		}
 	}
 	
+}
+
+void AFallenEraPlayerController::PostProcessInput(const float DeltaTime, const bool bGamePaused)
+{
+	if (AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>())
+	{
+		if (UFallenEraAbilitySystemComponent* AbilitySystem = FallenEraPlayerState->GetFallenEraAbilitySystemComponent())
+		{
+			AbilitySystem->ProcessAbilityInput(DeltaTime, bGamePaused);
+		}
+	}
+
+	Super::PostProcessInput(DeltaTime, bGamePaused);
 }
 
 bool AFallenEraPlayerController::ShouldUseTouchControls() const

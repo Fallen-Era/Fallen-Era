@@ -1,0 +1,409 @@
+FallenEra Gameplay Ability System (GAS) 설정 가이드
+====================================================
+
+문서 목적
+---------
+이 문서는 FallenEra 프로젝트의 Gameplay Ability System(GAS) 구조를 처음 사용하는
+팀원이 Ability, GameplayEffect, GameplayCue를 추가하고 연결하는 방법을 설명한다.
+
+이 문서는 현재 C++ 구현을 기준으로 작성되었다. 주요 코드 위치는 다음과 같다.
+
+  Source/FallenEra/FallenEraPlayerState.h
+  Source/FallenEra/AbilitySystem/FallenEraAbilitySystemComponent.h
+  Source/FallenEra/AbilitySystem/FallenEraAbilitySet.h
+  Source/FallenEra/AbilitySystem/Abilities/FallenEraGameplayAbility.h
+  Source/FallenEra/AbilitySystem/Attributes/FallenEraAttributeSet.h
+  Source/FallenEra/AbilitySystem/FallenEraGameplayTags.h
+
+
+1. 전체 구조
+------------
+
+FallenEra는 PlayerState가 ASC(AbilitySystemComponent)를 소유하는 구조를 사용한다.
+이 구조는 Character가 사망하거나 리스폰되어도 플레이어의 Ability와 Attribute 상태를
+유지하기에 적합하다.
+
+  AFallenEraPlayerState
+    ├─ UFallenEraAbilitySystemComponent (ASC)
+    └─ UFallenEraAttributeSet
+
+  AFallenEraCharacter
+    └─ 현재 Pawn(Avatar)으로 ASC에 연결됨
+
+초기화 순서:
+
+  PlayerState 생성
+    -> Character가 PlayerState를 받음
+    -> ASC::InitAbilityActorInfo(PlayerState, Character)
+    -> DefaultAbilitySets의 Ability/Effect 지급
+    -> OnSpawn Ability 활성화
+
+ASC의 복제 모드는 Mixed이며, 기본 PlayerState NetUpdateFrequency는 100으로 설정되어
+있다. Ability 지급과 초기 Effect 적용은 서버에서만 수행된다.
+
+
+2. 처음 필요한 에셋 만들기
+--------------------------
+
+권장 콘텐츠 폴더:
+
+  /Game/Abilities
+  /Game/Effects
+  /Game/GameplayCues
+  /Game/AbilitySets
+
+PlayerState 설정용 Blueprint:
+
+  1) Content Browser에서 AFallenEraPlayerState를 부모로 Blueprint를 만든다.
+     예: BP_FallenEraPlayerState
+  2) BP_FirstPersonGameMode의 Player State Class를 BP_FallenEraPlayerState로 지정한다.
+  3) BP_FallenEraPlayerState의 Default Ability Sets에 AbilitySet Data Asset을 추가한다.
+
+주의: Default Ability Sets는 Blueprint '클래스'가 아니라
+      UFallenEraAbilitySet 기반 Data Asset 인스턴스를 받는다.
+
+AbilitySet Data Asset:
+
+  1) Content Browser 우클릭
+  2) Miscellaneous -> Data Asset
+  3) 클래스에서 FallenEraAbilitySet 선택
+  4) 예: AS_Player_Default 생성
+
+
+3. Gameplay Tag 규칙
+---------------------
+
+코드에 등록된 기본 태그:
+
+  Ability.Input
+  Ability.Input.Jump
+  Ability.Input.Primary
+  Ability.Input.Secondary
+
+  State.AbilitySystem.Initialized
+  State.Dead
+  State.Stunned
+  State.InputBlocked
+  State.MovementBlocked
+
+  GameplayCue.Damage
+  GameplayCue.Heal
+
+  SetByCaller.Damage
+  SetByCaller.Heal
+
+태그는 bool 상태값을 대체하는 용도로 사용한다.
+
+예:
+
+  if (ASC->HasMatchingGameplayTag(State.Stunned))
+  {
+      // 이동과 Ability 활성화 차단
+  }
+
+상태를 새로 만들 때는 다음과 같이 계층을 유지한다.
+
+  State.Player.Crouching
+  State.Player.Sprinting
+  State.Combat.Reloading
+  Ability.Input.Reload
+  GameplayCue.Combat.Reload
+
+태그 이름은 기존 태그를 재사용하고, 같은 의미의 새 태그를 중복해서 만들지 않는다.
+
+
+4. Gameplay Ability 추가
+-------------------------
+
+4-1. Ability Blueprint 생성
+
+  1) Content Browser에서 Gameplay Ability Blueprint를 생성한다.
+  2) 부모 클래스는 UFallenEraGameplayAbility를 선택한다.
+  3) 예: GA_PrimaryAttack
+
+UFallenEraGameplayAbility의 기본 Activation Policy:
+
+  On Input Triggered
+    입력을 누를 때 한 번 활성화한다. 공격, 상호작용, 대시 등에 사용한다.
+
+  While Input Active
+    입력을 누르고 있는 동안 Ability가 활성화되도록 처리한다.
+    자동 사격, 차징, 지속 동작 등에 사용한다.
+
+  On Spawn
+    AbilitySet이 지급된 직후 자동으로 활성화한다.
+    패시브나 상시 감시 Ability에 사용한다.
+
+기본 Gameplay Ability에는 다음 태그가 있으면 활성화가 차단된다.
+
+  State.Dead
+  State.Stunned
+  State.InputBlocked
+
+필요하면 Ability Blueprint의 Activation Required Tags, Activation Blocked Tags,
+Cooldown, Cost, Cancel/Block Abilities With Tag를 추가로 설정한다.
+
+4-2. AbilitySet에 등록
+
+AS_Player_Default를 열고 Granted Abilities에 항목을 추가한다.
+
+  Ability:
+    GA_PrimaryAttack
+
+  Ability Level:
+    1
+
+  Input Tag:
+    Ability.Input.Primary
+
+Input Tag는 Character의 Ability Input Bindings에 등록한 태그와 정확히 같아야 한다.
+
+4-3. Character 입력에 연결
+
+플레이어 Character Blueprint를 열고 Input -> Abilities -> Ability Input Bindings에
+다음 항목을 추가한다.
+
+  Input Action:
+    IA_PrimaryAttack
+
+  Input Tag:
+    Ability.Input.Primary
+
+Enhanced Input Mapping Context에서 IA_PrimaryAttack에 키를 매핑한다.
+
+입력 처리 흐름:
+
+  Enhanced Input Started
+    -> Character::AbilityInputPressed
+    -> ASC::AbilityInputTagPressed
+    -> 같은 InputTag를 가진 Ability Spec 검색
+    -> PlayerController::PostProcessInput
+    -> ASC::ProcessAbilityInput
+    -> TryActivateAbility
+
+입력 해제는 Completed 또는 Canceled 이벤트를 통해 전달된다.
+
+
+5. Attribute와 GameplayEffect 추가
+-----------------------------------
+
+현재 기본 Attribute:
+
+  Health / MaxHealth
+  Mana / MaxMana
+  Stamina / MaxStamina
+
+메타 Attribute:
+
+  Damage
+  Healing
+
+Damage와 Healing은 최종 결과를 직접 저장하는 값이 아니라 GameplayEffect가 전달한
+값을 받아 Health에 반영한 뒤 0으로 소비하는 용도다.
+
+5-1. GE_InitializeAttributes 만들기
+
+  1) Content Browser 우클릭
+  2) Miscellaneous -> Gameplay Effect
+  3) GE_InitializeAttributes 생성
+  4) Duration Policy를 Instant로 설정
+  5) Modifiers에 아래 항목을 추가한다.
+
+     Attribute       Modifier Op   Magnitude
+     MaxHealth       Override      200
+     Health          Override      200
+     MaxStamina      Override      150
+     Stamina         Override      150
+
+초기화 값은 Add보다 Override를 권장한다. Add를 사용하면 AttributeSet의 기본값 100에
+더해질 수 있다.
+
+  6) AS_Player_Default의 Granted Effects에 GE_InitializeAttributes를 등록한다.
+  7) Effect Level은 일반적으로 1로 둔다.
+
+GE는 PlayerState의 ASC가 최초 초기화될 때 서버에서 플레이어 자신에게 한 번 적용된다.
+
+5-2. 지속 Effect 만들기
+
+재생 효과 예:
+
+  GE_StaminaRegeneration
+    Duration Policy: Infinite 또는 Has Duration
+    Period: 1.0
+    Modifier: Stamina, Additive, +5
+
+이 Effect를 AbilitySet의 Granted Effects에 넣으면 플레이어가 생성될 때 자동으로
+적용된다.
+
+5-3. 데미지/회복 Effect 만들기
+
+데미지 Effect는 일반적으로 Ability 내부에서 대상에게 적용한다.
+PlayerState의 Granted Effects에 넣으면 시작 시 자기 자신에게 적용되므로 주의한다.
+
+권장 방식:
+
+  1) GameplayEffect를 Instant로 만든다.
+  2) Modifier Attribute를 Damage로 설정한다.
+  3) Magnitude Calculation을 Set by Caller로 설정한다.
+  4) Data Tag를 SetByCaller.Damage로 설정한다.
+  5) Ability에서 Effect Spec을 생성한다.
+  6) SetByCaller.Damage에 실제 데미지 값을 넣는다.
+  7) 대상 ASC에 적용한다.
+
+개념적인 처리 흐름:
+
+  Ability
+    -> GE_Damage Spec 생성
+    -> SetByCaller.Damage = 25
+    -> 대상 ASC에 ApplyGameplayEffectSpecToTarget
+    -> AttributeSet이 Damage를 소비
+    -> Health -= 25
+    -> Health가 0이면 State.Dead 적용
+
+Healing도 같은 방식으로 SetByCaller.Heal과 Healing Attribute를 사용한다.
+
+
+6. GameplayCue 추가
+--------------------
+
+GameplayCue 검색 경로는 다음으로 설정되어 있다.
+
+  /Game/GameplayCues
+
+GameplayCue 생성:
+
+  1) /Game/GameplayCues 폴더에서 GameplayCue Notify 또는 GameplayCue Notify Static을
+     생성한다.
+  2) Cue Tag를 다음 중 하나로 지정한다.
+
+     GameplayCue.Damage
+     GameplayCue.Heal
+
+  3) OnActive, WhileActive, OnExecute, OnRemove 이벤트에서 시각/사운드 효과를 구현한다.
+
+Damage와 Healing이 AttributeSet을 통해 처리되면 기본 C++ 코드가 해당 Cue를 실행한다.
+다른 Effect는 GameplayEffect 에셋의 Gameplay Cues 배열에 Cue를 등록하는 방식을
+권장한다.
+
+GameplayCue는 데미지 수치, 대상 Actor, Effect Context 등을 Parameters로 받을 수 있다.
+
+
+7. 상태 태그 사용법
+--------------------
+
+GameplayEffect로 태그를 부여하는 것이 가장 권장되는 방식이다.
+
+예: GE_Stunned
+
+  Duration Policy: Has Duration
+  Granted Tags: State.Stunned
+
+Effect가 끝나면 태그도 자동으로 제거된다.
+
+일시적인 서버 상태를 직접 처리해야 할 때는 PlayerState의 Blueprint 함수인
+AddStateTag / RemoveStateTag를 사용할 수 있다.
+
+  AddStateTag(State.MovementBlocked)
+  RemoveStateTag(State.MovementBlocked)
+
+현재 Character는 아래 태그로 이동과 점프를 제한한다.
+
+  State.InputBlocked
+  State.MovementBlocked
+  State.Stunned
+  State.Dead
+
+상태 확인은 bool 변수 대신 ASC의 HasMatchingGameplayTag를 사용한다.
+
+
+8. AbilitySet 권장 구성 예시
+----------------------------
+
+AS_Player_Default
+
+  Granted Abilities
+    GA_PrimaryAttack
+      Ability Level: 1
+      Input Tag: Ability.Input.Primary
+
+    GA_SecondaryAttack
+      Ability Level: 1
+      Input Tag: Ability.Input.Secondary
+
+    GA_PlayerPassive
+      Ability Level: 1
+      Input Tag: 비워 둠
+      Activation Policy: On Spawn
+
+  Granted Effects
+    GE_InitializeAttributes
+    GE_StaminaRegeneration
+
+AS_Player_Default는 BP_FallenEraPlayerState의 Default Ability Sets에 등록한다.
+
+
+9. 자주 발생하는 문제
+----------------------
+
+Ability가 목록에 보이지 않음
+  - Granted Abilities 항목에 Ability Blueprint를 추가했는지 확인한다.
+  - Ability Blueprint가 UFallenEraGameplayAbility 기반인지 확인한다.
+  - AbilitySet Data Asset 인스턴스를 PlayerState의 Default Ability Sets에 넣었는지 확인한다.
+
+Ability 입력이 동작하지 않음
+  - AbilitySet의 Input Tag와 Character의 Input Binding Tag가 같은지 확인한다.
+  - Input Action이 Enhanced Input Mapping Context에 실제로 매핑되어 있는지 확인한다.
+  - BP_FirstPersonGameMode가 올바른 PlayerState Blueprint를 사용하는지 확인한다.
+  - 키 입력이 State.InputBlocked에 의해 막혀 있지 않은지 확인한다.
+
+GameplayEffect가 적용되지 않음
+  - Effect Class가 비어 있지 않은지 확인한다.
+  - Granted Effects에 GameplayEffect 인스턴스가 등록되어 있는지 확인한다.
+  - 초기화 Effect는 Instant인지 확인한다.
+  - Attribute 이름이 FallenEraAttributeSet의 Attribute와 일치하는지 확인한다.
+  - 서버에서 실행되고 있는지 확인한다. AbilitySet 지급과 초기 Effect 적용은 서버 전용이다.
+
+Health 또는 Stamina 값이 기대와 다름
+  - 초기화 목적이면 Modifier Op를 Override로 사용한다.
+  - Current 값과 Max 값을 모두 설정했는지 확인한다.
+  - GE가 여러 번 등록되어 중복 적용되지 않았는지 확인한다.
+
+GameplayCue가 보이지 않음
+  - Cue Tag가 GameplayCue로 시작하는지 확인한다.
+  - 에셋이 /Game/GameplayCues 아래에 있는지 확인한다.
+  - GameplayCue Notify의 이벤트가 구현되어 있는지 확인한다.
+  - 에디터 재시작 또는 Gameplay Ability 관련 에셋 리스캔이 필요한지 확인한다.
+
+
+10. 새 기능 추가 체크리스트
+-----------------------------
+
+  [ ] 새 Ability는 UFallenEraGameplayAbility를 부모로 만들었는가?
+  [ ] Activation Policy를 목적에 맞게 선택했는가?
+  [ ] Ability의 Blocked/Required Tags를 설정했는가?
+  [ ] AbilitySet의 Granted Abilities에 등록했는가?
+  [ ] 입력 Ability라면 Input Tag를 등록했는가?
+  [ ] Character의 Ability Input Bindings에 같은 태그를 연결했는가?
+  [ ] 초기/지속 Effect는 Granted Effects에 등록했는가?
+  [ ] 대상에게 적용하는 전투 Effect는 Ability에서 적용하는가?
+  [ ] 상태값을 bool 대신 GameplayTag로 처리했는가?
+  [ ] GameplayCue Tag와 에셋 경로가 올바른가?
+  [ ] 멀티플레이에서 서버 권한과 복제를 고려했는가?
+
+
+11. 빌드 및 변경 후 확인
+--------------------------
+
+C++ AbilitySystem 코드를 수정한 경우 에디터를 닫고 프로젝트를 빌드한다.
+UHT 오류가 발생하면 가장 최근에 변경한 UPROPERTY, UFUNCTION, USTRUCT 선언부터 확인한다.
+
+코드와 Blueprint를 함께 변경한 뒤에는 다음을 확인한다.
+
+  - PlayerState Class
+  - Default Ability Sets
+  - Granted Abilities / Granted Effects
+  - Character Ability Input Bindings
+  - Gameplay Tag 철자와 계층
+  - GameplayCue 경로와 Cue Tag
+
+끝.

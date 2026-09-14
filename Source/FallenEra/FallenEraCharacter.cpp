@@ -9,6 +9,9 @@
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "FallenEra.h"
+#include "FallenEraPlayerState.h"
+#include "AbilitySystem/FallenEraAbilitySystemComponent.h"
+#include "AbilitySystem/FallenEraGameplayTags.h"
 
 AFallenEraCharacter::AFallenEraCharacter()
 {
@@ -44,6 +47,37 @@ AFallenEraCharacter::AFallenEraCharacter()
 	GetCharacterMovement()->AirControl = 0.5f;
 }
 
+UAbilitySystemComponent* AFallenEraCharacter::GetAbilitySystemComponent() const
+{
+	return GetFallenEraAbilitySystemComponent();
+}
+
+UFallenEraAbilitySystemComponent* AFallenEraCharacter::GetFallenEraAbilitySystemComponent() const
+{
+	const AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>();
+	return FallenEraPlayerState ? FallenEraPlayerState->GetFallenEraAbilitySystemComponent() : nullptr;
+}
+
+void AFallenEraCharacter::PossessedBy(AController* NewController)
+{
+	Super::PossessedBy(NewController);
+
+	if (AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>())
+	{
+		FallenEraPlayerState->InitializeAbilitySystem(this);
+	}
+}
+
+void AFallenEraCharacter::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+
+	if (AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>())
+	{
+		FallenEraPlayerState->InitializeAbilitySystem(this);
+	}
+}
+
 void AFallenEraCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {	
 	// Set up action bindings
@@ -59,10 +93,38 @@ void AFallenEraCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 		// Looking/Aiming
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AFallenEraCharacter::LookInput);
 		EnhancedInputComponent->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &AFallenEraCharacter::LookInput);
+
+		for (const FFallenEraAbilityInputBinding& Binding : AbilityInputBindings)
+		{
+			if (Binding.InputAction && Binding.InputTag.IsValid())
+			{
+				EnhancedInputComponent->BindAction(Binding.InputAction, ETriggerEvent::Started, this, &AFallenEraCharacter::AbilityInputPressed, Binding.InputTag);
+				EnhancedInputComponent->BindAction(Binding.InputAction, ETriggerEvent::Completed, this, &AFallenEraCharacter::AbilityInputReleased, Binding.InputTag);
+				EnhancedInputComponent->BindAction(Binding.InputAction, ETriggerEvent::Canceled, this, &AFallenEraCharacter::AbilityInputReleased, Binding.InputTag);
+			}
+		}
 	}
 	else
 	{
 		UE_LOG(LogFallenEra, Error, TEXT("'%s' Failed to find an Enhanced Input Component! This template is built to use the Enhanced Input system. If you intend to use the legacy system, then you will need to update this C++ file."), *GetNameSafe(this));
+	}
+}
+
+void AFallenEraCharacter::AbilityInputPressed(const FInputActionValue& Value, FGameplayTag InputTag)
+{
+	(void)Value;
+	if (UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent())
+	{
+		AbilitySystem->AbilityInputTagPressed(InputTag);
+	}
+}
+
+void AFallenEraCharacter::AbilityInputReleased(const FInputActionValue& Value, FGameplayTag InputTag)
+{
+	(void)Value;
+	if (UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent())
+	{
+		AbilitySystem->AbilityInputTagReleased(InputTag);
 	}
 }
 
@@ -89,22 +151,41 @@ void AFallenEraCharacter::LookInput(const FInputActionValue& Value)
 
 void AFallenEraCharacter::DoAim(float Yaw, float Pitch)
 {
-	if (GetController())
-	{
+	const UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent();
 		// pass the rotation inputs
 		AddControllerYawInput(Yaw);
 		AddControllerPitchInput(Pitch);
-	}
 }
 
 void AFallenEraCharacter::DoMove(float Right, float Forward)
 {
-	if (GetController())
+	const UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent();
+	const bool bMovementBlocked = AbilitySystem && (
+		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_InputBlocked) ||
+		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_MovementBlocked) ||
+		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Stunned) ||
+		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead));
+	if (GetController() && !bMovementBlocked)
 	{
 		// pass the move inputs
 		AddMovementInput(GetActorRightVector(), Right);
 		AddMovementInput(GetActorForwardVector(), Forward);
 	}
+}
+
+bool AFallenEraCharacter::CanJumpInternal_Implementation() const
+{
+	const UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent();
+	if (AbilitySystem && (
+		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_InputBlocked) ||
+		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_MovementBlocked) ||
+		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Stunned) ||
+		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead)))
+	{
+		return false;
+	}
+
+	return Super::CanJumpInternal_Implementation();
 }
 
 void AFallenEraCharacter::DoJumpStart()
