@@ -1,4 +1,4 @@
-// Fallen Era 건설 시스템 (KJH)
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Building/FEBuildingSettings.h"
 

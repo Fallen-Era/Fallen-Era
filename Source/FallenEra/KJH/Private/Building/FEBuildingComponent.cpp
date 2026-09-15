@@ -1,6 +1,7 @@
-// Fallen Era 건설 시스템 (KJH)
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Building/FEBuildingComponent.h"
+#include "Building/FEBuildInventoryProvider.h"
 #include "Building/FEBuildPiece.h"
 #include "Building/FEBuildPieceDefinition.h"
 #include "Building/FEBuildingSettings.h"
@@ -13,9 +14,9 @@
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
-// ponytail: S2 인벤토리 전까지는 배치 즉시 완성. 재료 투입이 생기면 기본값을 false 로 바꿀 것.
+// 테스트용: 1 이면 배치 즉시 완성(재료 투입 생략). 기본은 청사진 경로.
 static TAutoConsoleVariable<bool> CVarFEInstantBuild(
-    TEXT("fe.Build.InstantBuild"), true,
+    TEXT("fe.Build.InstantBuild"), false,
     TEXT("Place pieces as Built instead of Blueprint (skips material fill)."));
 
 namespace
@@ -137,6 +138,24 @@ void UFEBuildingComponent::CancelBuild()
     PreviewLoadHandle.Reset();
 }
 
+void UFEBuildingComponent::SupplyMaterials()
+{
+    AFEBuildPiece* Piece = FindPieceUnderCrosshair();
+    const bool bIsBlueprint = Piece != nullptr && Piece->GetState() == EFEBuildPieceState::Blueprint;
+    if (bIsBlueprint)
+    {
+        ServerSupplyMaterials(Piece);
+    }
+}
+
+void UFEBuildingComponent::DemolishPiece()
+{
+    if (AFEBuildPiece* Piece = FindPieceUnderCrosshair())
+    {
+        ServerDemolishPiece(Piece);
+    }
+}
+
 bool UFEBuildingComponent::IsInBuildMode() const
 {
     return bIsInBuildMode;
@@ -213,7 +232,7 @@ void UFEBuildingComponent::DestroyPreview()
     bIsPreviewValid = false;
 }
 
-bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawStep) const
+bool UFEBuildingComponent::GetViewPoint(FVector& OutLocation, FRotator& OutRotation) const
 {
     const APawn* Pawn = Cast<APawn>(GetOwner());
     if (Pawn == nullptr)
@@ -221,16 +240,26 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
         return false;
     }
 
-    FVector ViewLocation;
-    FRotator ViewRotation;
     if (const APlayerController* PlayerController = Pawn->GetController<APlayerController>())
     {
-        PlayerController->GetPlayerViewPoint(ViewLocation, ViewRotation);
+        PlayerController->GetPlayerViewPoint(OutLocation, OutRotation);
     }
     else
     {
-        Pawn->GetActorEyesViewPoint(ViewLocation, ViewRotation);
+        Pawn->GetActorEyesViewPoint(OutLocation, OutRotation);
     }
+    return true;
+}
+
+bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawStep) const
+{
+    FVector ViewLocation;
+    FRotator ViewRotation;
+    if (!GetViewPoint(ViewLocation, ViewRotation))
+    {
+        return false;
+    }
+    const APawn* Pawn = Cast<APawn>(GetOwner());
 
     const UFEBuildingSettings* Settings = UFEBuildingSettings::Get();
     const FVector TraceEnd = ViewLocation + ViewRotation.Vector() * Settings->MaxBuildDistance;
@@ -269,6 +298,46 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
         OutLocation.Z = HighestOriginZ;
     }
     return true;
+}
+
+AFEBuildPiece* UFEBuildingComponent::FindPieceUnderCrosshair() const
+{
+    FVector ViewLocation;
+    FRotator ViewRotation;
+    if (!GetViewPoint(ViewLocation, ViewRotation))
+    {
+        return nullptr;
+    }
+
+    // 청사진은 Visibility 채널을 무시하므로 오브젝트 타입(BuildPiece)으로 찾는다. 프리뷰 고스트는 NoCollision 이라 걸리지 않는다.
+    const FVector TraceEnd = ViewLocation + ViewRotation.Vector() * UFEBuildingSettings::Get()->MaxBuildDistance;
+    FCollisionQueryParams Params(SCENE_QUERY_STAT(FEBuildAim), false, GetOwner());
+    FHitResult Hit;
+    const bool bHit = GetWorld()->LineTraceSingleByObjectType(Hit, ViewLocation, TraceEnd, FCollisionObjectQueryParams(ECC_FEBuildPiece), Params);
+    return bHit ? Cast<AFEBuildPiece>(Hit.GetActor()) : nullptr;
+}
+
+IFEBuildInventoryProvider* UFEBuildingComponent::FindInventory() const
+{
+    const AActor* Owner = GetOwner();
+    if (Owner == nullptr)
+    {
+        return nullptr;
+    }
+    const TArray<UActorComponent*> Providers = Owner->GetComponentsByInterface(UFEBuildInventoryProvider::StaticClass());
+    return Providers.Num() > 0 ? Cast<IFEBuildInventoryProvider>(Providers[0]) : nullptr;
+}
+
+bool UFEBuildingComponent::IsPieceInReach(const AFEBuildPiece* Piece) const
+{
+    const AActor* Owner = GetOwner();
+    const bool bIsValidRequest = Owner != nullptr && Owner->HasAuthority() && Piece != nullptr && !Piece->IsActorBeingDestroyed();
+    if (!bIsValidRequest)
+    {
+        return false;
+    }
+    const float MaxDistanceWithSlack = UFEBuildingSettings::Get()->MaxBuildDistance + 300.f;
+    return FVector::Dist(Owner->GetActorLocation(), Piece->GetActorLocation()) <= MaxDistanceWithSlack;
 }
 
 FTransform UFEBuildingComponent::MakePlacementTransform(const FVector& Location, uint8 YawStep)
@@ -421,6 +490,48 @@ void UFEBuildingComponent::HandleServerAssetsLoaded(FPrimaryAssetId LoadedPieceI
         ResolvePieceClass(Piece), PlacementTransform, nullptr, Cast<APawn>(Owner), ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
     Spawned->InitializePiece(Piece, InitialState);
     Spawned->FinishSpawning(PlacementTransform);
+    
+    // 청사진을 놓는 즉시 배치한 플레이어의 인벤토리에서 있는 만큼 자동 투입 ("미리 설계해 두고 재료를 바로 사용")
+    if (IFEBuildInventoryProvider* Inventory = FindInventory())
+    {
+        Spawned->TrySupply(*Inventory);
+    }
+}
+
+bool UFEBuildingComponent::ServerSupplyMaterials_Validate(AFEBuildPiece* Piece)
+{
+    return Piece != nullptr;
+}
+
+void UFEBuildingComponent::ServerSupplyMaterials_Implementation(AFEBuildPiece* Piece)
+{
+    if (!IsPieceInReach(Piece))
+    {
+        return;
+    }
+
+    IFEBuildInventoryProvider* Inventory = FindInventory();
+    if (Inventory == nullptr)
+    {
+        UE_LOG(LogFEBuilding, Warning, TEXT("%s has no IFEBuildInventoryProvider component; cannot supply materials"), *GetNameSafe(GetOwner()));
+        return;
+    }
+    Piece->TrySupply(*Inventory);
+}
+
+bool UFEBuildingComponent::ServerDemolishPiece_Validate(AFEBuildPiece* Piece)
+{
+    return Piece != nullptr;
+}
+
+void UFEBuildingComponent::ServerDemolishPiece_Implementation(AFEBuildPiece* Piece)
+{
+    if (!IsPieceInReach(Piece))
+    {
+        return;
+    }
+    // ponytail: 철거 권한(지은 사람/팀) 검사 없음. 소유권 규칙이 회의에서 정해지면 여기에 추가.
+    Piece->Demolish(FindInventory());
 }
 
 #undef LOCTEXT_NAMESPACE

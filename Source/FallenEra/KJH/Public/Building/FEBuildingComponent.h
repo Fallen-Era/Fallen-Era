@@ -1,4 +1,4 @@
-// Fallen Era 건설 시스템 (KJH)
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
@@ -10,12 +10,13 @@
 #include "FEBuildingComponent.generated.h"
 
 class AFEBuildPiece;
+class IFEBuildInventoryProvider;
 class UFEBuildPieceDefinition;
 struct FStreamableHandle;
 
 /**
  * 플레이어 캐릭터에 부착. 빌드 모드: 로컬 고스트 프리뷰, 회전, 검증, 그 다음 Server RPC 로 배치 요청.
- * 서버는 스폰 전에 같은 규칙으로 재검증한다.
+ * 청사진 재료 투입(F)과 철거(X)도 여기서 서버에 요청한다. 서버는 모든 요청을 재검증한다.
  * 입력은 GA_Build_* 어빌리티(Ability.Input.Build.*)가 아래 BlueprintCallable 함수를 호출하는 방식으로 들어오며,
  * 이 컴포넌트는 입력을 직접 바인딩하지 않는다.
  */
@@ -46,6 +47,14 @@ public:
     /** [Client Only] 빌드 모드를 나가고 고스트를 제거. */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void CancelBuild();
+    
+    /** [Client Only] 조준한 청사진에 인벤토리 재료를 투입 요청 (F). 빌드 모드와 무관하게 동작. */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void SupplyMaterials();
+
+    /** [Client Only] 조준한 피스 철거 요청 (X). 청사진 100% / 완성품 RefundRate 환불. */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void DemolishPiece();
 
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     bool IsInBuildMode() const;
@@ -71,15 +80,35 @@ protected:
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerPlacePiece(FPrimaryAssetId InPieceId, FVector_NetQuantize Location, uint8 YawStep);
 
+    /** [Server RPC] 요청자의 인벤토리에서 Piece 에 재료 투입 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerSupplyMaterials(AFEBuildPiece* Piece);
+
+    /** [Server RPC] Piece 철거, 환불은 요청자의 인벤토리로 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerDemolishPiece(AFEBuildPiece* Piece);
+
 private:
     void HandlePreviewAssetsLoaded(FPrimaryAssetId LoadedPieceId);
     void HandleServerAssetsLoaded(FPrimaryAssetId LoadedPieceId, FVector Location, uint8 YawStep);
 
     void UpdatePreview();
     void DestroyPreview();
+    
+    /** 오너의 시점(카메라). 오너가 Pawn 이 아니면 false */
+    bool GetViewPoint(FVector& OutLocation, FRotator& OutRotation) const;
 
     /** 카메라 트레이스 -> 패킹된 배치 정보. 오너가 Pawn 이 아니면 false. */
     bool ComputePlacement(FVector& OutLocation, uint8& OutYawStep) const;
+    
+    /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 없으면 nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. */
+    AFEBuildPiece* FindPieceUnderCrosshair() const;
+
+    /** 오너의 컴포넌트 중 IFEBuildInventoryProvider 구현체. 없으면 nullptr. */
+    IFEBuildInventoryProvider* FindInventory() const;
+
+    /** [Server Only] 이 피스에 대한 요청을 처리해도 되는지 (유효성 + 거리) */
+    bool IsPieceInReach(const AFEBuildPiece* Piece) const;
 
     bool bIsInBuildMode = false;
     bool bIsPreviewValid = false;

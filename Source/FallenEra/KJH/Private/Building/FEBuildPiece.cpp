@@ -1,6 +1,7 @@
-// Fallen Era 건설 시스템 (KJH)
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Building/FEBuildPiece.h"
+#include "Building/FEBuildInventoryProvider.h"
 #include "Building/FEBuildPieceDefinition.h"
 #include "Building/FEBuildingSettings.h"
 #include "Components/StaticMeshComponent.h"
@@ -41,6 +42,7 @@ void AFEBuildPiece::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(AFEBuildPiece, PieceId);
     DOREPLIFETIME(AFEBuildPiece, State);
+    DOREPLIFETIME(AFEBuildPiece, SuppliedCount);
 }
 
 void AFEBuildPiece::InitializePiece(const UFEBuildPieceDefinition* InDefinition, EFEBuildPieceState InState)
@@ -48,6 +50,14 @@ void AFEBuildPiece::InitializePiece(const UFEBuildPieceDefinition* InDefinition,
     Definition = InDefinition;
     PieceId = InDefinition ? InDefinition->GetPrimaryAssetId() : FPrimaryAssetId();
     State = InState;
+    
+    // 재료가 필요 없는 피스(또는 InstantBuild)는 바로 완성. 진행도도 1 이 되도록 맞춘다.
+    const bool bNothingToSupply = GetTotalRequired() == 0;
+    if (State == EFEBuildPieceState::Built || bNothingToSupply)
+    {
+        State = EFEBuildPieceState::Built;
+        SuppliedCount = GetTotalRequired();
+    }
 
     if (State == EFEBuildPieceState::Preview)
     {
@@ -66,6 +76,77 @@ void AFEBuildPiece::SetState(EFEBuildPieceState NewState)
     }
     State = NewState;
     ApplyState();
+}
+
+bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory)
+{
+    const bool bCanSupply = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Blueprint;
+    if (!bCanSupply)
+    {
+        return false;
+    }
+
+    int32 SuppliedNow = 0;
+    FGameplayTag ItemTag;
+    int32 Remaining = 0;
+    while (GetNextRequiredItem(ItemTag, Remaining))
+    {
+        const int32 Available = FMath::Min(Remaining, Inventory.CountItems(ItemTag));
+        if (Available <= 0)
+        {
+            break; // 순서상 다음 재료가 없으면 여기서 멈춘다 (뒤 재료를 먼저 넣지 않음)
+        }
+        const int32 Removed = Inventory.RemoveItems(ItemTag, Available);
+        if (Removed <= 0)
+        {
+            break;
+        }
+        SuppliedCount += Removed;
+        SuppliedNow += Removed;
+    }
+
+    if (SuppliedNow > 0)
+    {
+        OnRep_SuppliedCount(); // 서버 로컬에서도 BP 이벤트를 받도록
+    }
+
+    const bool bIsComplete = SuppliedCount >= GetTotalRequired();
+    if (bIsComplete)
+    {
+        SetState(EFEBuildPieceState::Built);
+    }
+    return SuppliedNow > 0 || bIsComplete;
+}
+
+void AFEBuildPiece::Demolish(IFEBuildInventoryProvider* Inventory)
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    if (Inventory && Definition)
+    {
+        // 청사진은 투입한 만큼 전부, 완성품은 RefundRate 만큼 돌려준다. 투입 순서(RequiredItems)대로 되짚어 환불.
+        const float Rate = State == EFEBuildPieceState::Built ? Definition->RefundRate : 1.f;
+        int32 Cursor = SuppliedCount;
+        for (const FFEBuildItemCost& Cost : Definition->RequiredItems)
+        {
+            const int32 SuppliedOfThis = FMath::Clamp(Cursor, 0, Cost.Count);
+            const int32 Refund = FMath::FloorToInt(SuppliedOfThis * Rate);
+            if (Refund > 0)
+            {
+                Inventory->AddItems(Cost.ItemTag, Refund);
+            }
+            Cursor -= SuppliedOfThis;
+            if (Cursor <= 0)
+            {
+                break;
+            }
+        }
+    }
+
+    Destroy();
 }
 
 void AFEBuildPiece::SetPreviewValid(bool bIsValid)
@@ -89,6 +170,50 @@ UStaticMeshComponent* AFEBuildPiece::GetMesh() const
     return Mesh;
 }
 
+int32 AFEBuildPiece::GetTotalRequired() const
+{
+    int32 Total = 0;
+    if (Definition)
+    {
+        for (const FFEBuildItemCost& Cost : Definition->RequiredItems)
+        {
+            Total += Cost.Count;
+        }
+    }
+    return Total;
+}
+
+float AFEBuildPiece::GetSupplyProgress() const
+{
+    const int32 Total = GetTotalRequired();
+    if (Total <= 0)
+    {
+        return 1.f;
+    }
+    return FMath::Clamp(static_cast<float>(SuppliedCount) / Total, 0.f, 1.f);
+}
+
+bool AFEBuildPiece::GetNextRequiredItem(FGameplayTag& OutItemTag, int32& OutRemaining) const
+{
+    if (Definition == nullptr)
+    {
+        return false;
+    }
+
+    int32 Cursor = SuppliedCount;
+    for (const FFEBuildItemCost& Cost : Definition->RequiredItems)
+    {
+        if (Cursor < Cost.Count)
+        {
+            OutItemTag = Cost.ItemTag;
+            OutRemaining = Cost.Count - Cursor;
+            return true;
+        }
+        Cursor -= Cost.Count;
+    }
+    return false;
+}
+
 void AFEBuildPiece::OnRep_PieceId()
 {
     RequestDefinition();
@@ -98,6 +223,11 @@ void AFEBuildPiece::OnRep_State()
 {
     // PieceId 와 State 는 어느 순서로 도착할지 보장이 없다. ApplyState 는 정의가 아직 없으면 그냥 넘어간다.
     ApplyState();
+}
+
+void AFEBuildPiece::OnRep_SuppliedCount()
+{
+    OnSupplyChanged(SuppliedCount, GetTotalRequired());
 }
 
 void AFEBuildPiece::RequestDefinition()
@@ -124,6 +254,7 @@ void AFEBuildPiece::HandleDefinitionLoaded()
 {
     Definition = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(PieceId));
     ApplyState();
+    OnSupplyChanged(SuppliedCount, GetTotalRequired()); // 정의가 늦게 와도 진행도 표시가 맞도록
 }
 
 void AFEBuildPiece::ApplyState()

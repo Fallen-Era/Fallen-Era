@@ -1,13 +1,15 @@
-// Fallen Era 건설 시스템 (KJH)
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "GameplayTagContainer.h"
 #include "UObject/PrimaryAssetId.h"
 #include "Building/FEBuildingTypes.h"
 #include "FEBuildPiece.generated.h"
 
+class IFEBuildInventoryProvider;
 class UFEBuildPieceDefinition;
 class UStaticMeshComponent;
 struct FStreamableHandle;
@@ -30,6 +32,12 @@ public:
 
     /** [Server Only] 클라이언트는 OnRep_State 로 따라온다. */
     void SetState(EFEBuildPieceState NewState);
+    
+    /** [Server Only] 인벤토리에서 재료를 RequiredItems 순서대로 있는 만큼 투입. 다 차면 Built 로 전환. 무언가 바뀌었으면 true. */
+    bool TrySupply(IFEBuildInventoryProvider& Inventory);
+
+    /** [Server Only] 환불 후 제거. 청사진은 투입분 100%, Built 는 RefundRate. Inventory 가 없으면 환불 없이 제거. */
+    void Demolish(IFEBuildInventoryProvider* Inventory);
 
     /** [Client Only] 프리뷰 고스트 색상(유효/무효) 교체 */
     void SetPreviewValid(bool bIsValid);
@@ -42,6 +50,18 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     UStaticMeshComponent* GetMesh() const;
+    
+    /** RequiredItems 의 총 개수 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    int32 GetTotalRequired() const;
+
+    /** 0~1. 완성품은 1. UI(S5) 용 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    float GetSupplyProgress() const;
+
+    /** 다음에 투입해야 할 아이템과 남은 수량. 다 찼으면 false */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    bool GetNextRequiredItem(FGameplayTag& OutItemTag, int32& OutRemaining) const;
 
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -51,6 +71,10 @@ protected:
 
     UPROPERTY(ReplicatedUsing = OnRep_State)
     EFEBuildPieceState State = EFEBuildPieceState::Blueprint;
+    
+    /** RequiredItems 순서대로 투입된 재료의 누적 개수. int 하나로 "다음 재료"가 결정된다. */
+    UPROPERTY(ReplicatedUsing = OnRep_SuppliedCount)
+    int32 SuppliedCount = 0;
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building")
     TObjectPtr<UStaticMeshComponent> Mesh;
@@ -61,9 +85,16 @@ protected:
     UFUNCTION()
     void OnRep_State();
 
+    UFUNCTION()
+    void OnRep_SuppliedCount();
+
     /** BP 훅 (VFX/SFX 용). ApplyState 가 실행될 때마다 호출되며 최초 1회도 포함. */
     UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
     void OnStateChanged(EFEBuildPieceState NewState);
+
+    /** BP 훅 (진행도 표시 용). 서버와 클라이언트 모두에서 호출. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
+    void OnSupplyChanged(int32 NewSuppliedCount, int32 TotalRequired);
 
 private:
     /** [Client Only] PieceId 를 로드된 정의로 해석한 뒤 ApplyState. */
