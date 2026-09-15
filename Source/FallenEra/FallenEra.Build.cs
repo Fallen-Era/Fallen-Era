@@ -21,7 +21,9 @@ public class FallenEra : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"Voxel"
+			
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
