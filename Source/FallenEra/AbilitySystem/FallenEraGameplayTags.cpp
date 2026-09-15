@@ -6,6 +6,9 @@ namespace FallenEraGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Jump, "Ability.Input.Jump");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Primary, "Ability.Input.Primary");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Secondary, "Ability.Input.Secondary");
+	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_LeftClick, "Ability.Input.Combat.LeftClick");
+	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_RightClick, "Ability.Input.Combat.RightClick");
+	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_Swap, "Ability.Input.Combat.Swap");
 
 	UE_DEFINE_GAMEPLAY_TAG(State_AbilitySystem_Initialized, "State.AbilitySystem.Initialized");
 	UE_DEFINE_GAMEPLAY_TAG(State_Dead, "State.Dead");

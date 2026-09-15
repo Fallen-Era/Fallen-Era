@@ -12,6 +12,7 @@
 #include "FallenEraPlayerState.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
+#include "HT/Component/CombatComponent.h"
 
 AFallenEraCharacter::AFallenEraCharacter()
 {
@@ -45,6 +46,8 @@ AFallenEraCharacter::AFallenEraCharacter()
 	// Configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+
+	CombatComponent = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("CombatComponent"));
 }
 
 UAbilitySystemComponent* AFallenEraCharacter::GetAbilitySystemComponent() const
@@ -152,9 +155,12 @@ void AFallenEraCharacter::LookInput(const FInputActionValue& Value)
 void AFallenEraCharacter::DoAim(float Yaw, float Pitch)
 {
 	const UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent();
+	if (GetController() && (!AbilitySystem || !AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_InputBlocked)))
+	{
 		// pass the rotation inputs
 		AddControllerYawInput(Yaw);
 		AddControllerPitchInput(Pitch);
+	}
 }
 
 void AFallenEraCharacter::DoMove(float Right, float Forward)

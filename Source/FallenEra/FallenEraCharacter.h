@@ -15,6 +15,7 @@ class UCameraComponent;
 class UInputAction;
 class UAbilitySystemComponent;
 class UFallenEraAbilitySystemComponent;
+class UFE_CombatComponent;
 struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
@@ -74,8 +75,14 @@ public:
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UFallenEraAbilitySystemComponent* GetFallenEraAbilitySystemComponent() const;
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat")
+	UFE_CombatComponent* GetCombatComponent() const { return CombatComponent; }
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_PlayerState() override;
+
+	/** Shared damage/effect entry point used by player abilities and weapons. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UFE_CombatComponent> CombatComponent;
 
 protected:
 

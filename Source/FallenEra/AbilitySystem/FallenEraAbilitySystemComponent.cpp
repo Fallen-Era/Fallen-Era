@@ -73,7 +73,11 @@ void UFallenEraAbilitySystemComponent::ProcessAbilityInput(float DeltaTime, bool
 				AbilitySpecInputPressed(*AbilitySpec);
 
 				const UFallenEraGameplayAbility* AbilityCDO = Cast<UFallenEraGameplayAbility>(AbilitySpec->Ability);
-				if (AbilityCDO && AbilityCDO->GetActivationPolicy() == EFallenEraAbilityActivationPolicy::OnInputTriggered && !AbilitySpec->IsActive())
+				// Weapon data accepts regular UGameplayAbility classes as well. They use
+				// the one-shot input policy unless they opt into a FallenEra policy.
+				const bool bOnInputTriggered = !AbilityCDO ||
+					AbilityCDO->GetActivationPolicy() == EFallenEraAbilityActivationPolicy::OnInputTriggered;
+				if (bOnInputTriggered && !AbilitySpec->IsActive())
 				{
 					AbilitiesToActivate.AddUnique(AbilitySpec->Handle);
 				}
