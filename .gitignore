@@ -84,3 +84,7 @@ DerivedDataCache/*
 
 FallenEra.slnx
 Automation_FallenEra.slnx
+
+
+# World Generator ignore
+Content/VoxelExamples/*

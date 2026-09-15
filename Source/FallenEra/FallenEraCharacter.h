@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "AbilitySystemInterface.h"
-#include "GameFramework/Character.h"
+#include "VoxelCharacter.h"
 #include "GameplayTagContainer.h"
 #include "Logging/LogMacros.h"
 #include "FallenEraCharacter.generated.h"
@@ -16,6 +16,7 @@ class UInputAction;
 class UAbilitySystemComponent;
 class UFallenEraAbilitySystemComponent;
 struct FInputActionValue;
+
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
 
@@ -35,7 +36,7 @@ struct FALLENERA_API FFallenEraAbilityInputBinding
  *  A basic first person character
  */
 UCLASS(abstract)
-class AFallenEraCharacter : public ACharacter, public IAbilitySystemInterface
+class AFallenEraCharacter : public AVoxelCharacter, public IAbilitySystemInterface
 {
 	GENERATED_BODY()
 
@@ -70,7 +71,7 @@ protected:
 	TArray<FFallenEraAbilityInputBinding> AbilityInputBindings;
 	
 public:
-	AFallenEraCharacter();
+AFallenEraCharacter();
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UFallenEraAbilitySystemComponent* GetFallenEraAbilitySystemComponent() const;
