@@ -24,7 +24,10 @@ public class FallenEra : ModuleRules
 			"Slate"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] 
+		{
+			"GameplayMessageRuntime",
+		});
 
 		PublicIncludePaths.AddRange(new string[] {
 			"FallenEra",
