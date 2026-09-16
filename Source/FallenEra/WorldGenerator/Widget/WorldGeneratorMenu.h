@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "Data/Payload.h"
+#include "../Data/Payload.h"
 #include "WorldGeneratorMenu.generated.h"
 
 class UButton;
@@ -30,10 +30,13 @@ protected:
 	TObjectPtr<UButton> Btn_WorldGen;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UEditableText> Size_X;
+	TObjectPtr<UEditableText> EDIT_TXT_WorldName;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (BindWidget))
-	TObjectPtr<UEditableText> Size_Y;
+	TObjectPtr<UEditableText> EDIT_TXT_Size_X;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UEditableText> EDIT_TXT_Size_Y;
 	
 private:
 	
