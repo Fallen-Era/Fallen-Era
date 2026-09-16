@@ -26,9 +26,10 @@ public class FallenEra : ModuleRules
 			
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[]
+		PrivateDependencyModuleNames.AddRange(new string[] 
 		{
-		
+			"GameplayMessageRuntime",
+
 		});
 
 		PublicIncludePaths.AddRange(new string[] {
