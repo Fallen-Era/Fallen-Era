@@ -10,6 +10,7 @@ class UAnimMontage;
 class UGameplayAbility;
 class UGameplayEffect;
 class UStaticMesh;
+class UTexture2D;
 class AActor;
 
 UENUM(BlueprintType)
@@ -74,9 +75,24 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="1"))
 	int32 MaxHitCount = 1;
 
-	/** Fallback interval when ExecutionEventTag is not configured. */
+	/** Fallback interval when AttackResetEventTag is not configured. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing", meta=(ClampMin="0.01"))
 	float AttackInterval = 0.4f;
+
+	/** AnimNotify gameplay event that starts the active socket trace window. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing", meta=(Categories="GameplayEvent"))
+	FGameplayTag AttackStartEventTag;
+
+	/** AnimNotify gameplay event that ends the active socket trace window. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing", meta=(Categories="GameplayEvent"))
+	FGameplayTag AttackEndEventTag;
+
+	/**
+	 * AnimNotify gameplay event that marks the attack reset/next-attack window.
+	 * If unset, the montage length/AttackInterval fallback is used.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing", meta=(Categories="GameplayEvent"))
+	FGameplayTag AttackResetEventTag;
 
 	/** Repeats this attack sequence while the input is held. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing")
@@ -161,6 +177,10 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
 	TSoftClassPtr<UAnimInstance> WeaponAnimLayerClass;
+
+	/** Crosshair texture shown while this weapon is equipped. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
+	TSoftObjectPtr<UTexture2D> CrosshairTexture;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
 	FName AttachSocketName = TEXT("hand_r");

@@ -21,7 +21,9 @@ public class FallenEra : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"SlateCore"
+			
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
@@ -31,12 +33,6 @@ public class FallenEra : ModuleRules
 			"FallenEra/AbilitySystem",
 			"FallenEra/AbilitySystem/Abilities",
 			"FallenEra/AbilitySystem/Attributes",
-			"FallenEra/HT",
-			"FallenEra/HT/Ability",
-			"FallenEra/HT/Character",
-			"FallenEra/HT/Component",
-			"FallenEra/HT/Effect",
-			"FallenEra/HT/Weapon",
 		});
 
 		// Uncomment if you are using Slate UI

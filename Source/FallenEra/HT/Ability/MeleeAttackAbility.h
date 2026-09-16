@@ -8,8 +8,10 @@ class UFE_MeleeAttackData;
 class UAbilityTask_WaitDelay;
 class UAbilityTask_WaitGameplayEvent;
 class UAbilityTask_WaitInputRelease;
+class UFE_MeleeTraceTask;
+class AActor;
 
-/** Melee attack implementation using a server-authoritative sphere sweep. */
+/** Melee attack implementation using a server-authoritative socket sweep. */
 UCLASS(Blueprintable)
 class FALLENERA_API UFE_MeleeAttackAbility : public UFE_PlayerAttackAbility
 {
@@ -22,21 +24,39 @@ public:
 		const FGameplayAbilityActivationInfo ActivationInfo,
 		const FGameplayEventData* TriggerEventData) override;
 
+	virtual void EndAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		bool bReplicateEndAbility,
+		bool bWasCancelled) override;
+
 protected:
 	virtual void ExecuteAttack(const AFE_CombatCharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const override;
 
 private:
 	void PerformCurrentAttack();
-	void WaitForNextAttack();
+	void StartMeleeTrace();
+	void StopMeleeTrace();
+	void WaitForAttackEvents();
+	FGameplayTag GetAttackStartEventTag(const UFE_MeleeAttackData* AttackData) const;
+	FGameplayTag GetAttackEndEventTag(const UFE_MeleeAttackData* AttackData) const;
 
 	UFUNCTION()
 	void OnInputReleased(float TimeHeld);
 
 	UFUNCTION()
-	void OnAttackWindowEvent(FGameplayEventData Payload);
+	void OnAttackStartEvent(FGameplayEventData Payload);
+
+	UFUNCTION()
+	void OnAttackEndEvent(FGameplayEventData Payload);
+
+	UFUNCTION()
+	void ExecuteCurrentTrace();
 
 	UFUNCTION()
 	void OnFallbackIntervalElapsed();
+	float GetAttackResetDelay(const UFE_MeleeAttackData* AttackData) const;
 
 	UPROPERTY()
 	TObjectPtr<UAbilityTask_WaitInputRelease> InputReleaseTask;
@@ -45,13 +65,23 @@ private:
 	TObjectPtr<UAbilityTask_WaitGameplayEvent> AttackWindowTask;
 
 	UPROPERTY()
+	TObjectPtr<UAbilityTask_WaitGameplayEvent> AttackStartTask;
+
+	UPROPERTY()
+	TObjectPtr<UFE_MeleeTraceTask> MeleeTraceTask;
+
+	UPROPERTY()
 	TObjectPtr<UAbilityTask_WaitDelay> FallbackIntervalTask;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UFE_MeleeAttackData>> CachedComboAttacks;
 
 	int32 CurrentComboIndex = 0;
-	int32 SequenceStep = 0;
-	int32 SequenceSeed = 0;
+	bool bAttackAutomatic = false;
+	bool bAttackInProgress = false;
+	bool bMeleeTraceActive = false;
 	bool bInputReleased = false;
+
+	/** Prevents applying the same melee attack to the same actor every trace frame. */
+	mutable TSet<AActor*> DamagedActorsThisAttack;
 };

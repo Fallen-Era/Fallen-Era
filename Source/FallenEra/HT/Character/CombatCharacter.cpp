@@ -217,6 +217,7 @@ void AFE_CombatCharacter::EquipCurrentWeapon()
 	{
 		ClearWeaponVisuals();
 		SetCombatInputEnabled(false);
+		WeaponChangedDelegate.Broadcast(nullptr);
 		return;
 	}
 
@@ -224,6 +225,7 @@ void AFE_CombatCharacter::EquipCurrentWeapon()
 
 	CacheWeaponAbilities();
 	SetCombatInputEnabled(true);
+	WeaponChangedDelegate.Broadcast(CurrentWeaponData);
 }
 
 void AFE_CombatCharacter::ClearWeaponVisuals()

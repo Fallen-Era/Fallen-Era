@@ -15,6 +15,19 @@ void UFallenEraAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag
 	{
 		if (AbilitySpec.Ability && AbilitySpec.GetDynamicSpecSourceTags().HasTagExact(InputTag))
 		{
+			// Do not discard a pending release while an ability is active. Otherwise
+			// a quick re-press can keep an attack ability active indefinitely.
+			if (!AbilitySpec.IsActive())
+			{
+				InputReleasedSpecHandles.Remove(AbilitySpec.Handle);
+				PendingReactivationSpecHandles.Remove(AbilitySpec.Handle);
+			}
+			else
+			{
+				// Preserve a press that happened during the previous attack. It is
+				// consumed once the active ability finishes.
+				PendingReactivationSpecHandles.AddUnique(AbilitySpec.Handle);
+			}
 			InputPressedSpecHandles.AddUnique(AbilitySpec.Handle);
 			InputHeldSpecHandles.AddUnique(AbilitySpec.Handle);
 		}
@@ -35,6 +48,7 @@ void UFallenEraAbilitySystemComponent::AbilityInputTagReleased(const FGameplayTa
 		{
 			InputReleasedSpecHandles.AddUnique(AbilitySpec.Handle);
 			InputHeldSpecHandles.Remove(AbilitySpec.Handle);
+			PendingReactivationSpecHandles.Remove(AbilitySpec.Handle);
 		}
 	}
 }
@@ -101,6 +115,31 @@ void UFallenEraAbilitySystemComponent::ProcessAbilityInput(float DeltaTime, bool
 		}
 	}
 
+	// If the player pressed again while the previous attack was active, start
+	// exactly one new activation after that ability has ended.
+	for (int32 PendingIndex = PendingReactivationSpecHandles.Num() - 1; PendingIndex >= 0; --PendingIndex)
+	{
+		const FGameplayAbilitySpecHandle SpecHandle = PendingReactivationSpecHandles[PendingIndex];
+		FGameplayAbilitySpec* AbilitySpec = FindAbilitySpecFromHandle(SpecHandle);
+		if (!AbilitySpec || !AbilitySpec->Ability)
+		{
+			PendingReactivationSpecHandles.RemoveAtSwap(PendingIndex);
+			continue;
+		}
+
+		if (!InputHeldSpecHandles.Contains(SpecHandle))
+		{
+			PendingReactivationSpecHandles.RemoveAtSwap(PendingIndex);
+			continue;
+		}
+
+		if (!AbilitySpec->IsActive())
+		{
+			TryActivateAbility(SpecHandle);
+			PendingReactivationSpecHandles.RemoveAtSwap(PendingIndex);
+		}
+	}
+
 	InputPressedSpecHandles.Reset();
 	InputReleasedSpecHandles.Reset();
 }
@@ -118,6 +157,7 @@ void UFallenEraAbilitySystemComponent::ClearAbilityInput()
 	InputPressedSpecHandles.Reset();
 	InputReleasedSpecHandles.Reset();
 	InputHeldSpecHandles.Reset();
+	PendingReactivationSpecHandles.Reset();
 }
 
 void UFallenEraAbilitySystemComponent::TryActivateAbilitiesOnSpawn()

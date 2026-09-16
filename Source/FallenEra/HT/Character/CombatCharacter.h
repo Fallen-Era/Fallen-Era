@@ -12,6 +12,8 @@ class UAnimInstance;
 class UFE_WeaponItemData;
 class UFE_WeaponAttackData;
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEWeaponChanged, const UFE_WeaponItemData*);
+
 /**
  * Personal combat-character sandbox. Keep this class isolated until the weapon flow is ready to merge
  * into AFallenEraCharacter.
@@ -42,6 +44,8 @@ public:
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Weapon")
 	FGameplayTag GetCurrentItemTag() const;
+
+	FOnFEWeaponChanged& OnWeaponChanged() { return WeaponChangedDelegate; }
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Weapon")
 	int32 GetCurrentItemTagIndex() const { return CurrentItemTagIndex; }
@@ -113,4 +117,5 @@ protected:
 	void ReleaseCombatAbility(const FGameplayTag& InputTag);
 
 	TArray<FGameplayAbilitySpecHandle> GrantedWeaponAbilityHandles;
+	FOnFEWeaponChanged WeaponChangedDelegate;
 };

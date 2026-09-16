@@ -8,6 +8,7 @@
 #include "Widgets/Input/SVirtualJoystick.h"
 #include "FallenEraPlayerState.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
+#include "HT/UI/PlayerMainWidget.h"
 
 AFallenEraPlayerController::AFallenEraPlayerController()
 {
@@ -17,6 +18,15 @@ AFallenEraPlayerController::AFallenEraPlayerController()
 void AFallenEraPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	if (IsLocalPlayerController() && PlayerMainWidgetClass)
+	{
+		PlayerMainWidget = CreateWidget<UFE_PlayerMainWidget>(this, PlayerMainWidgetClass);
+		if (PlayerMainWidget)
+		{
+			PlayerMainWidget->AddToViewport(0);
+		}
+	}
+
 	if (IsLocalPlayerController() && ShouldUseTouchControls())
 	{
 		MobileControlsWidget = CreateWidget<UUserWidget>(this, MobileControlsWidgetClass);
