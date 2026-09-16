@@ -8,7 +8,8 @@
 #include "FallenEraItemBase.generated.h"
 
 /**
- * 
+ * FallenEraItemBase
+ * - 기본적인 아이템 DA의 데이터들을 관리
  */
 
 

@@ -3,6 +3,11 @@
 #include "FallenEraEquipmentItem.h"
 #include "FallenEraWeaponItem.generated.h"
 
+/**
+ * FallenEraWeaponItem
+ * - 무기를 위한 Data를 정의합니다. 
+ */
+
 UCLASS(BlueprintType)
 class FALLENERA_API UFallenEraWeaponItem : public UFallenEraEquipmentItem
 {
@@ -20,9 +25,9 @@ public:
 	
 	// 무기 휘두르는 소리 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Item|Visual|SFX")
-	TSoftObjectPtr<class USoundBase> SwingSound;
+	TSoftObjectPtr<USoundBase> SwingSound;
 	
 	// 적을 타격했을 때 나는 소리 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Item|Visual|SFX")
-	TSoftObjectPtr<class USoundBase> HitSound;
+	TSoftObjectPtr<USoundBase> HitSound;
 };
