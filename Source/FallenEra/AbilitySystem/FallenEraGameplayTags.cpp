@@ -17,4 +17,6 @@ namespace FallenEraGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Heal, "GameplayCue.Heal");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Damage, "SetByCaller.Damage");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Heal, "SetByCaller.Heal");
+	
+	UE_DEFINE_GAMEPLAY_TAG(Event_World_Generate, "Event.World.Generate");
 }
