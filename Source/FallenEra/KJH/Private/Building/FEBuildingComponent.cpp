@@ -6,11 +6,13 @@
 #include "Building/FEBuildPieceDefinition.h"
 #include "Building/FEBuildingSettings.h"
 #include "Engine/AssetManager.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "DrawDebugHelpers.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -18,6 +20,10 @@
 static TAutoConsoleVariable<bool> CVarFEInstantBuild(
     TEXT("fe.Build.InstantBuild"), false,
     TEXT("Place pieces as Built instead of Blueprint (skips material fill)."));
+
+static TAutoConsoleVariable<bool> CVarFEDebugSockets(
+    TEXT("fe.Build.DebugSockets"), false,
+    TEXT("Draw build sockets around the preview."));
 
 namespace
 {
@@ -56,6 +62,68 @@ namespace
         OutCorners[1] = FVector(LocalBounds.Max.X, LocalBounds.Min.Y, LocalBounds.Min.Z);
         OutCorners[2] = FVector(LocalBounds.Min.X, LocalBounds.Max.Y, LocalBounds.Min.Z);
         OutCorners[3] = FVector(LocalBounds.Max.X, LocalBounds.Max.Y, LocalBounds.Min.Z);
+    }
+    
+    /** 서버가 스냅을 인정하는 소켓 간 거리 */
+    constexpr float SnapTolerance = 5.f;
+
+    /** 두 소켓이 서로 마주 보는가 (X축이 반대 방향) */
+    constexpr float FacingDotThreshold = -0.9f;
+
+    const FTransform& GetFlip180()
+    {
+        static const FTransform Flip(FRotator(0.f, 180.f, 0.f));
+        return Flip;
+    }
+    
+    /** Point 반경 Radius 안의 배치된 피스들 (프리뷰는 NoCollision 이라 제외됨) */
+    void GatherNearbyPieces(const UWorld* World, const FVector& Point, float Radius, const AActor* IgnoreActor, TArray<AFEBuildPiece*>& OutPieces)
+    {
+        TArray<FOverlapResult> Overlaps;
+        FCollisionQueryParams Params(SCENE_QUERY_STAT(FEBuildSnapGather), false, IgnoreActor);
+        World->OverlapMultiByObjectType(Overlaps, Point, FQuat::Identity, FCollisionObjectQueryParams(ECC_FEBuildPiece), FCollisionShape::MakeSphere(Radius), Params);
+
+        for (const FOverlapResult& Overlap : Overlaps)
+        {
+            AFEBuildPiece* Piece = Cast<AFEBuildPiece>(Overlap.GetActor());
+            const bool bIsPlaced = Piece != nullptr && Piece->GetDefinition() != nullptr && Piece->GetState() != EFEBuildPieceState::Preview;
+            if (bIsPlaced)
+            {
+                OutPieces.AddUnique(Piece);
+            }
+        }
+    }
+    
+    /** 소켓 하나를 그린다. 구체 = 위치, 선 = X축(바깥 방향) */
+    void DrawSocket(const UWorld* World, const FFEBuildSocket& Socket, const FTransform& OwnerXf, const FColor& Color)
+    {
+        const FTransform SocketWorld = Socket.LocalTransform * OwnerXf;
+        const FVector Location = SocketWorld.GetLocation();
+        DrawDebugSphere(World, Location, 8.f, 8, Color, false, -1.f, 0, 1.f);
+        DrawDebugLine(World, Location, Location + SocketWorld.GetUnitAxis(EAxis::X) * 40.f, Color, false, -1.f, 0, 2.f);
+    }
+    
+    void DrawSocketsAround(const UWorld* World, const FVector& Point, float Radius, const AActor* IgnoreActor, const AFEBuildPiece* Preview)
+    {
+        TArray<AFEBuildPiece*> Nearby;
+        GatherNearbyPieces(World, Point, Radius, IgnoreActor, Nearby);
+        for (const AFEBuildPiece* Piece : Nearby)
+        {
+            for (const FFEBuildSocket& Socket : Piece->GetDefinition()->Sockets)
+            {
+                const FColor Color = Socket.AcceptTypes.IsEmpty() ? FColor::Cyan : FColor::Yellow;
+                DrawSocket(World, Socket, Piece->GetActorTransform(), Color);
+            }
+        }
+
+        const bool bCanDrawPreview = Preview != nullptr && Preview->GetDefinition() != nullptr;
+        if (bCanDrawPreview)
+        {
+            for (const FFEBuildSocket& Socket : Preview->GetDefinition()->Sockets)
+            {
+                DrawSocket(World, Socket, Preview->GetActorTransform(), FColor::Green);
+            }
+        }
     }
 }
 
@@ -156,6 +224,32 @@ void UFEBuildingComponent::DemolishPiece()
     }
 }
 
+void UFEBuildingComponent::CycleNextPiece()
+{
+    TArray<FPrimaryAssetId> PieceIds;
+    UAssetManager::Get().GetPrimaryAssetIdList(UFEBuildPieceDefinition::AssetType, PieceIds);
+    if (PieceIds.Num() == 0)
+    {
+        return;
+    }
+    PieceIds.Sort([](const FPrimaryAssetId& A, const FPrimaryAssetId& B)
+    {
+        return A.PrimaryAssetName.LexicalLess(B.PrimaryAssetName);
+    });
+
+    const int32 CurrentIndex = PieceIds.IndexOfByKey(SelectedPieceId);
+    const int32 NextIndex = (CurrentIndex + 1) % PieceIds.Num(); // 못 찾으면 -1 → 0
+    UE_LOG(LogFEBuilding, Log, TEXT("Selected piece: %s"), *PieceIds[NextIndex].ToString());
+
+    if (!bIsInBuildMode)
+    {
+        bIsInBuildMode = true;
+        YawStepOffset = 0;
+        SetComponentTickEnabled(true);
+    }
+    SelectPiece(PieceIds[NextIndex]);
+}
+
 bool UFEBuildingComponent::IsInBuildMode() const
 {
     return bIsInBuildMode;
@@ -204,6 +298,11 @@ void UFEBuildingComponent::UpdatePreview()
     const FTransform PlacementTransform = MakePlacementTransform(PreviewLocation, PreviewYawStep);
     PreviewActor->SetActorHiddenInGame(false);
     PreviewActor->SetActorTransform(PlacementTransform);
+    
+    if (CVarFEDebugSockets.GetValueOnGameThread())
+    {
+        DrawSocketsAround(GetWorld(), PreviewLocation, UFEBuildingSettings::Get()->SnapRadius * 2.f, GetOwner(), PreviewActor);
+    }
 
     FText Reason;
     const bool bIsValid = ValidatePlacement(GetWorld(), SelectedPiece, PlacementTransform, GetOwner(), &Reason);
@@ -269,7 +368,15 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
 
     FHitResult Hit;
     const bool bHitSomething = GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, TraceEnd, ECC_Visibility, Params);
-    OutLocation = bHitSomething ? Hit.ImpactPoint : TraceEnd;
+    const FVector CursorPoint = bHitSomething ? Hit.ImpactPoint : TraceEnd;
+
+    // 근처 구조물의 소켓에 맞출 수 있으면 스냅이 우선. 스냅 중에는 회전과 지면 높이가 소켓에서 결정된다.
+    if (FindSnapPlacement(CursorPoint, OutLocation, OutYawStep))
+    {
+        return true;
+    }
+
+    OutLocation = CursorPoint;
 
     // 피스는 플레이어 방향을 RotationStep 단위로 따라가고, 거기에 Q/E 수동 오프셋을 더한다.
     const float PlayerYaw = Pawn->GetActorRotation().Yaw;
@@ -298,6 +405,97 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
         OutLocation.Z = HighestOriginZ;
     }
     return true;
+}
+
+bool UFEBuildingComponent::FindSnapPlacement(const FVector& CursorPoint, FVector& OutLocation, uint8& OutYawStep) const
+{
+    if (SelectedPiece == nullptr || SelectedPiece->Sockets.Num() == 0)
+    {
+        return false;
+    }
+
+    TArray<AFEBuildPiece*> Nearby;
+    GatherNearbyPieces(GetWorld(), CursorPoint, UFEBuildingSettings::Get()->SnapRadius, GetOwner(), Nearby);
+    if (Nearby.Num() == 0)
+    {
+        return false;
+    }
+
+    // 모든 (프리뷰 소켓, 대상 소켓) 쌍 중 타입이 맞는 것에 대해 배치를 계산하고, 대상 소켓이 커서에 가장 가까운 것을 고른다.
+    float BestDistSq = TNumericLimits<float>::Max();
+    FTransform BestTransform;
+    bool bFound = false;
+
+    for (const AFEBuildPiece* Target : Nearby)
+    {
+        const FTransform TargetXf = Target->GetActorTransform();
+        for (const FFEBuildSocket& TargetSocket : Target->GetDefinition()->Sockets)
+        {
+            const FTransform TargetSocketWorld = TargetSocket.LocalTransform * TargetXf;
+            const float DistSq = FVector::DistSquared(TargetSocketWorld.GetLocation(), CursorPoint);
+            if (DistSq >= BestDistSq)
+            {
+                continue;
+            }
+            for (const FFEBuildSocket& PieceSocket : SelectedPiece->Sockets)
+            {
+                if (!PieceSocket.AcceptTypes.HasTag(TargetSocket.Type))
+                {
+                    continue;
+                }
+                BestDistSq = DistSq;
+                BestTransform = PieceSocket.LocalTransform.Inverse() * GetFlip180() * TargetSocketWorld;
+                bFound = true;
+                break; // 같은 대상 소켓에 붙을 수 있는 프리뷰 소켓이 여럿이면 첫 번째
+            }
+        }
+    }
+
+    if (!bFound)
+    {
+        return false;
+    }
+    OutLocation = BestTransform.GetLocation();
+    OutYawStep = YawToStep(BestTransform.Rotator().Yaw);
+    return true;
+}
+
+bool UFEBuildingComponent::IsSnappedToStructure(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* Instigator)
+{
+    const float SearchRadius = UFEBuildingSettings::Get()->SnapRadius;
+
+    for (const FFEBuildSocket& PieceSocket : Piece->Sockets)
+    {
+        if (PieceSocket.AcceptTypes.IsEmpty())
+        {
+            continue; // 상대 전용 소켓은 붙는 쪽이 아니다
+        }
+        const FTransform PieceSocketWorld = PieceSocket.LocalTransform * Transform;
+        const FVector PieceSocketForward = PieceSocketWorld.GetUnitAxis(EAxis::X);
+
+        TArray<AFEBuildPiece*> Nearby;
+        GatherNearbyPieces(World, PieceSocketWorld.GetLocation(), SearchRadius, Instigator, Nearby);
+
+        for (const AFEBuildPiece* Target : Nearby)
+        {
+            const FTransform TargetXf = Target->GetActorTransform();
+            for (const FFEBuildSocket& TargetSocket : Target->GetDefinition()->Sockets)
+            {
+                if (!PieceSocket.AcceptTypes.HasTag(TargetSocket.Type))
+                {
+                    continue;
+                }
+                const FTransform TargetSocketWorld = TargetSocket.LocalTransform * TargetXf;
+                const bool bIsClose = FVector::DistSquared(PieceSocketWorld.GetLocation(), TargetSocketWorld.GetLocation()) <= SnapTolerance * SnapTolerance;
+                const bool bIsFacing = FVector::DotProduct(PieceSocketForward, TargetSocketWorld.GetUnitAxis(EAxis::X)) < FacingDotThreshold;
+                if (bIsClose && bIsFacing)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 AFEBuildPiece* UFEBuildingComponent::FindPieceUnderCrosshair() const
@@ -373,15 +571,17 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
         return Fail(LOCTEXT("TooFar", "Too far away"));
     }
 
-    if (Piece->bRequiresSnap)
+    const bool bIsSnapped = IsSnappedToStructure(World, Piece, Transform, Instigator);
+    if (Piece->bRequiresSnap && !bIsSnapped)
     {
-        // S3 에서 소켓 스냅이 추가된다. 그 전까지 스냅 전용 피스는 배치할 수 없다.
         return Fail(LOCTEXT("NeedsSnap", "Must be placed on a structure"));
     }
 
     const FBox LocalBounds = StaticMesh->GetBoundingBox();
 
-    if (Piece->bCanPlaceOnGround)
+    // 지형 규칙은 스냅되지 않은 지형 배치에만 적용. 스냅된 토대는 이웃 높이를 따르며, 겹침은 아래 오버랩 검사가 막는다.
+    const bool bUseGroundRules = Piece->bCanPlaceOnGround && !bIsSnapped;
+    if (bUseGroundRules)
     {
         const float Slack = Piece->MaxGroundHeightDelta;
         const FVector SlackOffset(0.f, 0.f, Slack);

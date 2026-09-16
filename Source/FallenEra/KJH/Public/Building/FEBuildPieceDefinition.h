@@ -74,4 +74,8 @@ public:
     /** 지형 배치 시 바닥 4코너와 지면 사이 허용 높이차 (cm). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (EditCondition = "bCanPlaceOnGround", ClampMin = 0))
     float MaxGroundHeightDelta = 50.f;
+    
+    /** 스냅 지점. 토대: Edge×4(붙는 쪽+상대) + Top×4(상대 전용). 벽: Bottom×1(붙는 쪽). */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Snap")
+    TArray<FFEBuildSocket> Sockets;
 };

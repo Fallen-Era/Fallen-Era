@@ -43,3 +43,23 @@ struct FALLENERA_API FFEBuildItemCost
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (ClampMin = 1))
 	int32 Count = 1;
 };
+
+/**
+ * 피스에 붙은 스냅 지점. 로컬 X축이 바깥(상대 피스) 방향을 가리킨다.
+ * 프리뷰 소켓 A 를 대상 소켓 B 에 붙일 때: PieceWorld = A.Local⁻¹ × Flip180 × B.World
+ */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FFEBuildSocket
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (Categories = "Build.Socket"))
+	FGameplayTag Type;
+
+	/** 이 소켓이 "붙는 쪽"일 때 허용하는 상대 소켓 종류. 비어 있으면 상대 전용 소켓(남이 붙는 자리). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (Categories = "Build.Socket"))
+	FGameplayTagContainer AcceptTypes;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
+	FTransform LocalTransform;
+};

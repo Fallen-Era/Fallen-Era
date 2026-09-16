@@ -55,6 +55,10 @@ public:
     /** [Client Only] 조준한 피스 철거 요청 (X). 청사진 100% / 완성품 RefundRate 환불. */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void DemolishPiece();
+    
+    /** [Client Only] Asset Manager 에 등록된 다음 피스로 전환 (Tab). 빌드 메뉴(S5) 전까지의 테스트 수단. */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void CycleNextPiece();
 
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     bool IsInBuildMode() const;
@@ -67,6 +71,9 @@ public:
 
     /** 패킹된 배치 정보에서 월드 트랜스폼을 만든다. 클라와 서버가 같은 함수를 써서 결과가 정확히 일치한다. */
     static FTransform MakePlacementTransform(const FVector& Location, uint8 YawStep);
+    
+    /** Transform 에 놓인 Piece 의 소켓 중 하나라도 근처 구조물의 소켓과 마주 보며 맞물려 있는가. 클라/서버 공용. */
+    static bool IsSnappedToStructure(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* Instigator);
 
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -100,6 +107,9 @@ private:
 
     /** 카메라 트레이스 -> 패킹된 배치 정보. 오너가 Pawn 이 아니면 false. */
     bool ComputePlacement(FVector& OutLocation, uint8& OutYawStep) const;
+    
+    /** 커서 근처 구조물의 소켓에 맞춘 배치. 후보가 없으면 false. */
+    bool FindSnapPlacement(const FVector& CursorPoint, FVector& OutLocation, uint8& OutYawStep) const;
     
     /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 없으면 nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. */
     AFEBuildPiece* FindPieceUnderCrosshair() const;
