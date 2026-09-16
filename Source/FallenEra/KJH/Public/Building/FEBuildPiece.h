@@ -35,9 +35,18 @@ public:
     
     /** [Server Only] 인벤토리에서 재료를 RequiredItems 순서대로 있는 만큼 투입. 다 차면 Built 로 전환. 무언가 바뀌었으면 true. */
     bool TrySupply(IFEBuildInventoryProvider& Inventory);
+    
+    /** [Server Only] 재료가 다 찬 청사진을 완성 시도. 지지 구조가 아직 청사진이면 false (대기). */
+    bool TryComplete();
 
     /** [Server Only] 환불 후 제거. 청사진은 투입분 100%, Built 는 RefundRate. Inventory 가 없으면 환불 없이 제거. */
     void Demolish(IFEBuildInventoryProvider* Inventory);
+    
+    /** [Server Only] 지지를 잃어 무너진다. 환불 없음. */
+    void Collapse();
+    
+    /** [Server Only] 서브시스템이 재계산 결과를 기록 */
+    void SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance);
 
     /** [Client Only] 프리뷰 고스트 색상(유효/무효) 교체 */
     void SetPreviewValid(bool bIsValid);
@@ -51,9 +60,29 @@ public:
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     UStaticMeshComponent* GetMesh() const;
     
+    /** 지형에 직접 놓이는 피스 = 지지의 출발점 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    bool IsAnchor() const;
+
+    /** 정의의 SupportCost. 정의가 없으면 0 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    int32 GetSupportCost() const;
+
+    /** 청사진+완성 전체 그래프 기준 지지 거리 (배치 예측용). 255 = 미도달 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    uint8 GetDesignSupportDistance() const;
+
+    /** 완성 피스만의 그래프 기준 지지 거리 (완성 게이팅·붕괴용). 255 = 미도달 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    uint8 GetSupportDistance() const;
+    
     /** RequiredItems 의 총 개수 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     int32 GetTotalRequired() const;
+    
+    /** 재료가 전부 투입되었는가 (완성 여부와 무관) */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    bool IsFullySupplied() const;
 
     /** 0~1. 완성품은 1. UI(S5) 용 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
@@ -66,6 +95,9 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
+    virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    
     UPROPERTY(ReplicatedUsing = OnRep_PieceId)
     FPrimaryAssetId PieceId;
 
@@ -75,6 +107,12 @@ protected:
     /** RequiredItems 순서대로 투입된 재료의 누적 개수. int 하나로 "다음 재료"가 결정된다. */
     UPROPERTY(ReplicatedUsing = OnRep_SuppliedCount)
     int32 SuppliedCount = 0;
+    
+    UPROPERTY(Replicated)
+    uint8 DesignSupportDistance = 255;
+
+    UPROPERTY(Replicated)
+    uint8 SupportDistance = 255;
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building")
     TObjectPtr<UStaticMeshComponent> Mesh;

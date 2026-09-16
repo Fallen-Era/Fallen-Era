@@ -5,8 +5,9 @@
 #include "Building/FEBuildPiece.h"
 #include "Building/FEBuildPieceDefinition.h"
 #include "Building/FEBuildingSettings.h"
+#include "Building/FEBuildingSubsystem.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/AssetManager.h"
-#include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/World.h"
@@ -21,9 +22,15 @@ static TAutoConsoleVariable<bool> CVarFEInstantBuild(
     TEXT("fe.Build.InstantBuild"), false,
     TEXT("Place pieces as Built instead of Blueprint (skips material fill)."));
 
+// 디버그: 프리뷰 주변 피스의 소켓(파랑=상대 전용, 노랑=붙는 쪽)과 프리뷰 소켓(초록)을 그린다.
 static TAutoConsoleVariable<bool> CVarFEDebugSockets(
     TEXT("fe.Build.DebugSockets"), false,
     TEXT("Draw build sockets around the preview."));
+
+// 디버그: 빌드 모드 중 주변 피스 위에 지지 거리를 표시한다. D = 설계(청사진 포함), B = 완성 그래프.
+static TAutoConsoleVariable<bool> CVarFEShowSupport(
+    TEXT("fe.Build.ShowSupport"), false,
+    TEXT("Show support distances above nearby pieces while in build mode."));
 
 namespace
 {
@@ -41,7 +48,7 @@ namespace
         const int32 Step = FMath::RoundToInt(NormalizedYaw / Settings->RotationStepDeg) % StepCount;
         return static_cast<uint8>(Step);
     }
-    
+
     /** 지형(WorldStatic/WorldDynamic)만 대상으로 아래로 트레이스. 구조물(BuildPiece)은 타입이 달라 지형으로 치지 않는다. */
     bool TraceGround(const UWorld* World, const FVector& Point, float Slack, const AActor* IgnoreActor, FHitResult& OutHit)
     {
@@ -63,37 +70,13 @@ namespace
         OutCorners[2] = FVector(LocalBounds.Min.X, LocalBounds.Max.Y, LocalBounds.Min.Z);
         OutCorners[3] = FVector(LocalBounds.Max.X, LocalBounds.Max.Y, LocalBounds.Min.Z);
     }
-    
-    /** 서버가 스냅을 인정하는 소켓 간 거리 */
-    constexpr float SnapTolerance = 5.f;
-
-    /** 두 소켓이 서로 마주 보는가 (X축이 반대 방향) */
-    constexpr float FacingDotThreshold = -0.9f;
 
     const FTransform& GetFlip180()
     {
         static const FTransform Flip(FRotator(0.f, 180.f, 0.f));
         return Flip;
     }
-    
-    /** Point 반경 Radius 안의 배치된 피스들 (프리뷰는 NoCollision 이라 제외됨) */
-    void GatherNearbyPieces(const UWorld* World, const FVector& Point, float Radius, const AActor* IgnoreActor, TArray<AFEBuildPiece*>& OutPieces)
-    {
-        TArray<FOverlapResult> Overlaps;
-        FCollisionQueryParams Params(SCENE_QUERY_STAT(FEBuildSnapGather), false, IgnoreActor);
-        World->OverlapMultiByObjectType(Overlaps, Point, FQuat::Identity, FCollisionObjectQueryParams(ECC_FEBuildPiece), FCollisionShape::MakeSphere(Radius), Params);
 
-        for (const FOverlapResult& Overlap : Overlaps)
-        {
-            AFEBuildPiece* Piece = Cast<AFEBuildPiece>(Overlap.GetActor());
-            const bool bIsPlaced = Piece != nullptr && Piece->GetDefinition() != nullptr && Piece->GetState() != EFEBuildPieceState::Preview;
-            if (bIsPlaced)
-            {
-                OutPieces.AddUnique(Piece);
-            }
-        }
-    }
-    
     /** 소켓 하나를 그린다. 구체 = 위치, 선 = X축(바깥 방향) */
     void DrawSocket(const UWorld* World, const FFEBuildSocket& Socket, const FTransform& OwnerXf, const FColor& Color)
     {
@@ -101,29 +84,6 @@ namespace
         const FVector Location = SocketWorld.GetLocation();
         DrawDebugSphere(World, Location, 8.f, 8, Color, false, -1.f, 0, 1.f);
         DrawDebugLine(World, Location, Location + SocketWorld.GetUnitAxis(EAxis::X) * 40.f, Color, false, -1.f, 0, 2.f);
-    }
-    
-    void DrawSocketsAround(const UWorld* World, const FVector& Point, float Radius, const AActor* IgnoreActor, const AFEBuildPiece* Preview)
-    {
-        TArray<AFEBuildPiece*> Nearby;
-        GatherNearbyPieces(World, Point, Radius, IgnoreActor, Nearby);
-        for (const AFEBuildPiece* Piece : Nearby)
-        {
-            for (const FFEBuildSocket& Socket : Piece->GetDefinition()->Sockets)
-            {
-                const FColor Color = Socket.AcceptTypes.IsEmpty() ? FColor::Cyan : FColor::Yellow;
-                DrawSocket(World, Socket, Piece->GetActorTransform(), Color);
-            }
-        }
-
-        const bool bCanDrawPreview = Preview != nullptr && Preview->GetDefinition() != nullptr;
-        if (bCanDrawPreview)
-        {
-            for (const FFEBuildSocket& Socket : Preview->GetDefinition()->Sockets)
-            {
-                DrawSocket(World, Socket, Preview->GetActorTransform(), FColor::Green);
-            }
-        }
     }
 }
 
@@ -298,11 +258,8 @@ void UFEBuildingComponent::UpdatePreview()
     const FTransform PlacementTransform = MakePlacementTransform(PreviewLocation, PreviewYawStep);
     PreviewActor->SetActorHiddenInGame(false);
     PreviewActor->SetActorTransform(PlacementTransform);
-    
-    if (CVarFEDebugSockets.GetValueOnGameThread())
-    {
-        DrawSocketsAround(GetWorld(), PreviewLocation, UFEBuildingSettings::Get()->SnapRadius * 2.f, GetOwner(), PreviewActor);
-    }
+
+    DrawDebugOverlays();
 
     FText Reason;
     const bool bIsValid = ValidatePlacement(GetWorld(), SelectedPiece, PlacementTransform, GetOwner(), &Reason);
@@ -329,6 +286,49 @@ void UFEBuildingComponent::DestroyPreview()
         PreviewActor = nullptr;
     }
     bIsPreviewValid = false;
+}
+
+void UFEBuildingComponent::DrawDebugOverlays() const
+{
+    const bool bDrawSockets = CVarFEDebugSockets.GetValueOnGameThread();
+    const bool bShowSupport = CVarFEShowSupport.GetValueOnGameThread();
+    if (!bDrawSockets && !bShowSupport)
+    {
+        return;
+    }
+
+    const UWorld* World = GetWorld();
+    const float Radius = bShowSupport ? 2000.f : UFEBuildingSettings::Get()->SnapRadius * 2.f;
+    TArray<AFEBuildPiece*> Nearby;
+    UFEBuildingSubsystem::GatherNearbyPieces(World, PreviewLocation, Radius, GetOwner(), Nearby);
+
+    for (const AFEBuildPiece* Piece : Nearby)
+    {
+        if (bDrawSockets)
+        {
+            for (const FFEBuildSocket& Socket : Piece->GetDefinition()->Sockets)
+            {
+                const FColor Color = Socket.AcceptTypes.IsEmpty() ? FColor::Cyan : FColor::Yellow;
+                DrawSocket(World, Socket, Piece->GetActorTransform(), Color);
+            }
+        }
+        if (bShowSupport)
+        {
+            // 값은 리플리케이트된 것이라 클라이언트에서도 서버와 같은 숫자가 보인다
+            const FString Text = FString::Printf(TEXT("D:%d B:%d"), Piece->GetDesignSupportDistance(), Piece->GetSupportDistance());
+            const bool bIsBuilt = Piece->GetState() == EFEBuildPieceState::Built;
+            DrawDebugString(World, Piece->GetActorLocation() + FVector(0.f, 0.f, 60.f), Text, nullptr, bIsBuilt ? FColor::White : FColor::Cyan, 0.f, true);
+        }
+    }
+
+    const bool bCanDrawPreview = bDrawSockets && PreviewActor != nullptr && PreviewActor->GetDefinition() != nullptr;
+    if (bCanDrawPreview)
+    {
+        for (const FFEBuildSocket& Socket : PreviewActor->GetDefinition()->Sockets)
+        {
+            DrawSocket(World, Socket, PreviewActor->GetActorTransform(), FColor::Green);
+        }
+    }
 }
 
 bool UFEBuildingComponent::GetViewPoint(FVector& OutLocation, FRotator& OutRotation) const
@@ -415,7 +415,7 @@ bool UFEBuildingComponent::FindSnapPlacement(const FVector& CursorPoint, FVector
     }
 
     TArray<AFEBuildPiece*> Nearby;
-    GatherNearbyPieces(GetWorld(), CursorPoint, UFEBuildingSettings::Get()->SnapRadius, GetOwner(), Nearby);
+    UFEBuildingSubsystem::GatherNearbyPieces(GetWorld(), CursorPoint, UFEBuildingSettings::Get()->SnapRadius, GetOwner(), Nearby);
     if (Nearby.Num() == 0)
     {
         return false;
@@ -458,44 +458,6 @@ bool UFEBuildingComponent::FindSnapPlacement(const FVector& CursorPoint, FVector
     OutLocation = BestTransform.GetLocation();
     OutYawStep = YawToStep(BestTransform.Rotator().Yaw);
     return true;
-}
-
-bool UFEBuildingComponent::IsSnappedToStructure(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* Instigator)
-{
-    const float SearchRadius = UFEBuildingSettings::Get()->SnapRadius;
-
-    for (const FFEBuildSocket& PieceSocket : Piece->Sockets)
-    {
-        if (PieceSocket.AcceptTypes.IsEmpty())
-        {
-            continue; // 상대 전용 소켓은 붙는 쪽이 아니다
-        }
-        const FTransform PieceSocketWorld = PieceSocket.LocalTransform * Transform;
-        const FVector PieceSocketForward = PieceSocketWorld.GetUnitAxis(EAxis::X);
-
-        TArray<AFEBuildPiece*> Nearby;
-        GatherNearbyPieces(World, PieceSocketWorld.GetLocation(), SearchRadius, Instigator, Nearby);
-
-        for (const AFEBuildPiece* Target : Nearby)
-        {
-            const FTransform TargetXf = Target->GetActorTransform();
-            for (const FFEBuildSocket& TargetSocket : Target->GetDefinition()->Sockets)
-            {
-                if (!PieceSocket.AcceptTypes.HasTag(TargetSocket.Type))
-                {
-                    continue;
-                }
-                const FTransform TargetSocketWorld = TargetSocket.LocalTransform * TargetXf;
-                const bool bIsClose = FVector::DistSquared(PieceSocketWorld.GetLocation(), TargetSocketWorld.GetLocation()) <= SnapTolerance * SnapTolerance;
-                const bool bIsFacing = FVector::DotProduct(PieceSocketForward, TargetSocketWorld.GetUnitAxis(EAxis::X)) < FacingDotThreshold;
-                if (bIsClose && bIsFacing)
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
 }
 
 AFEBuildPiece* UFEBuildingComponent::FindPieceUnderCrosshair() const
@@ -571,10 +533,21 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
         return Fail(LOCTEXT("TooFar", "Too far away"));
     }
 
-    const bool bIsSnapped = IsSnappedToStructure(World, Piece, Transform, Instigator);
+    // 스냅 판정과 지지 예측이 같은 연결 목록을 쓴다
+    TArray<AFEBuildPiece*> Connected;
+    UFEBuildingSubsystem::FindConnectedPieces(World, Piece, Transform, Instigator, Connected);
+    const bool bIsSnapped = Connected.Num() > 0;
+
     if (Piece->bRequiresSnap && !bIsSnapped)
     {
         return Fail(LOCTEXT("NeedsSnap", "Must be placed on a structure"));
+    }
+
+    // 지지 예측: 청사진 포함 설계 그래프 기준. 불가능한 설계를 프리뷰 단계에서 막는다. anchor 는 항상 0.
+    const uint8 PredictedDistance = UFEBuildingSubsystem::PredictSupportDistance(Piece, Connected, false);
+    if (!UFEBuildingSubsystem::IsSupported(Piece, PredictedDistance))
+    {
+        return Fail(LOCTEXT("NoSupport", "Not enough support"));
     }
 
     const FBox LocalBounds = StaticMesh->GetBoundingBox();
@@ -609,13 +582,18 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
         }
     }
 
-    // 옆면은 인접 피스와의 면 공유를 허용하도록 5% 줄이고,
-    // 아랫면은 지형과 정확히 맞닿아 있으므로 GroundClearance 만큼 띄워서 지면 자체가 오버랩으로 잡히지 않게 한다.
+    // 옆면은 SideClearance 만큼 줄인다. 코너에서 직각으로 만나는 벽(두께 20)이나 이웃 토대의 20cm 어긋난 소켓에 걸리지 않으려면
+    // 상대 피스의 두께보다 커야 한다. 같은 자리 중복 배치는 중심이 겹치므로 여전히 잡힌다.
+    // 위아래는 FaceClearance 만큼 띄운다. 아래: 지면과 맞닿는 바닥이 지면에 걸리지 않도록. 위: 이미 있는 천장 아래에 벽을 끼울 수 있도록.
     // 지형·스태틱 메시(WorldStatic)와 움직이는 물체(WorldDynamic)도 대상에 넣어 경사면이나 바위를 관통하는 배치를 막는다.
-    const float GroundClearance = 2.f;
+    const float SideClearance = 22.f;
+    const float FaceClearance = 2.f;
     const FVector HalfExtent = LocalBounds.GetExtent();
-    const FVector Extent(HalfExtent.X * 0.95f, HalfExtent.Y * 0.95f, FMath::Max(1.f, HalfExtent.Z - GroundClearance * 0.5f));
-    const FVector Center = Transform.TransformPosition(LocalBounds.GetCenter() + FVector(0.f, 0.f, GroundClearance * 0.5f));
+    const FVector Extent(
+        FMath::Max(1.f, HalfExtent.X - SideClearance),
+        FMath::Max(1.f, HalfExtent.Y - SideClearance),
+        FMath::Max(1.f, HalfExtent.Z - FaceClearance));
+    const FVector Center = Transform.TransformPosition(LocalBounds.GetCenter());
 
     FCollisionObjectQueryParams ObjectTypes;
     ObjectTypes.AddObjectTypesToQuery(ECC_FEBuildPiece);
@@ -690,7 +668,7 @@ void UFEBuildingComponent::HandleServerAssetsLoaded(FPrimaryAssetId LoadedPieceI
         ResolvePieceClass(Piece), PlacementTransform, nullptr, Cast<APawn>(Owner), ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
     Spawned->InitializePiece(Piece, InitialState);
     Spawned->FinishSpawning(PlacementTransform);
-    
+
     // 청사진을 놓는 즉시 배치한 플레이어의 인벤토리에서 있는 만큼 자동 투입 ("미리 설계해 두고 재료를 바로 사용")
     if (IFEBuildInventoryProvider* Inventory = FindInventory())
     {

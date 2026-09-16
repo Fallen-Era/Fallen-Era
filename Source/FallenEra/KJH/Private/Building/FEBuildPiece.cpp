@@ -4,6 +4,7 @@
 #include "Building/FEBuildInventoryProvider.h"
 #include "Building/FEBuildPieceDefinition.h"
 #include "Building/FEBuildingSettings.h"
+#include "Building/FEBuildingSubsystem.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
@@ -43,6 +44,35 @@ void AFEBuildPiece::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
     DOREPLIFETIME(AFEBuildPiece, PieceId);
     DOREPLIFETIME(AFEBuildPiece, State);
     DOREPLIFETIME(AFEBuildPiece, SuppliedCount);
+    DOREPLIFETIME(AFEBuildPiece, DesignSupportDistance);
+    DOREPLIFETIME(AFEBuildPiece, SupportDistance);
+}
+
+void AFEBuildPiece::BeginPlay()
+{
+    Super::BeginPlay();
+
+    // 배치된 피스만 지지 그래프에 참여. 프리뷰(로컬 고스트)는 제외.
+    const bool bIsPlacedOnServer = HasAuthority() && State != EFEBuildPieceState::Preview;
+    if (bIsPlacedOnServer)
+    {
+        if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(GetWorld()))
+        {
+            Subsystem->RegisterPiece(this);
+        }
+    }
+}
+
+void AFEBuildPiece::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (HasAuthority())
+    {
+        if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(GetWorld()))
+        {
+            Subsystem->UnregisterPiece(this);
+        }
+    }
+    Super::EndPlay(EndPlayReason);
 }
 
 void AFEBuildPiece::InitializePiece(const UFEBuildPieceDefinition* InDefinition, EFEBuildPieceState InState)
@@ -50,7 +80,7 @@ void AFEBuildPiece::InitializePiece(const UFEBuildPieceDefinition* InDefinition,
     Definition = InDefinition;
     PieceId = InDefinition ? InDefinition->GetPrimaryAssetId() : FPrimaryAssetId();
     State = InState;
-    
+
     // 재료가 필요 없는 피스(또는 InstantBuild)는 바로 완성. 진행도도 1 이 되도록 맞춘다.
     const bool bNothingToSupply = GetTotalRequired() == 0;
     if (State == EFEBuildPieceState::Built || bNothingToSupply)
@@ -76,6 +106,12 @@ void AFEBuildPiece::SetState(EFEBuildPieceState NewState)
     }
     State = NewState;
     ApplyState();
+
+    // 완성/청사진 전환은 지지 그래프(Built 전용)를 바꾼다
+    if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(GetWorld()))
+    {
+        Subsystem->MarkDirty();
+    }
 }
 
 bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory)
@@ -110,12 +146,25 @@ bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory)
         OnRep_SuppliedCount(); // 서버 로컬에서도 BP 이벤트를 받도록
     }
 
-    const bool bIsComplete = SuppliedCount >= GetTotalRequired();
-    if (bIsComplete)
+    const bool bCompleted = TryComplete();
+    return SuppliedNow > 0 || bCompleted;
+}
+
+bool AFEBuildPiece::TryComplete()
+{
+    const bool bCanTry = HasAuthority() && State == EFEBuildPieceState::Blueprint && IsFullySupplied();
+    if (!bCanTry)
     {
-        SetState(EFEBuildPieceState::Built);
+        return false;
     }
-    return SuppliedNow > 0 || bIsComplete;
+    if (!UFEBuildingSubsystem::CanComplete(this))
+    {
+        // 재료는 다 찼지만 지지하는 피스가 아직 청사진. 그 피스가 완성되면 서브시스템이 다시 시도한다.
+        UE_LOG(LogFEBuilding, Log, TEXT("%s: fully supplied, waiting for support"), *GetName());
+        return false;
+    }
+    SetState(EFEBuildPieceState::Built);
+    return true;
 }
 
 void AFEBuildPiece::Demolish(IFEBuildInventoryProvider* Inventory)
@@ -149,6 +198,27 @@ void AFEBuildPiece::Demolish(IFEBuildInventoryProvider* Inventory)
     Destroy();
 }
 
+void AFEBuildPiece::Collapse()
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+    // ponytail: 재료 드랍 없음. 아이템 담당의 월드 드랍 API 가 생기면 여기서 일부를 떨어뜨린다. VFX/SFX 는 OnStateChanged 훅이 아니라 별도 BP 이벤트로 (S11).
+    UE_LOG(LogFEBuilding, Log, TEXT("%s collapsed (support %d)"), *GetName(), SupportDistance);
+    Destroy();
+}
+
+void AFEBuildPiece::SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance)
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+    DesignSupportDistance = InDesignDistance;
+    SupportDistance = InBuiltDistance;
+}
+
 void AFEBuildPiece::SetPreviewValid(bool bIsValid)
 {
     const UFEBuildingSettings* Settings = UFEBuildingSettings::Get();
@@ -170,6 +240,26 @@ UStaticMeshComponent* AFEBuildPiece::GetMesh() const
     return Mesh;
 }
 
+bool AFEBuildPiece::IsAnchor() const
+{
+    return Definition != nullptr && Definition->bCanPlaceOnGround;
+}
+
+int32 AFEBuildPiece::GetSupportCost() const
+{
+    return Definition ? Definition->SupportCost : 0;
+}
+
+uint8 AFEBuildPiece::GetDesignSupportDistance() const
+{
+    return DesignSupportDistance;
+}
+
+uint8 AFEBuildPiece::GetSupportDistance() const
+{
+    return SupportDistance;
+}
+
 int32 AFEBuildPiece::GetTotalRequired() const
 {
     int32 Total = 0;
@@ -181,6 +271,11 @@ int32 AFEBuildPiece::GetTotalRequired() const
         }
     }
     return Total;
+}
+
+bool AFEBuildPiece::IsFullySupplied() const
+{
+    return Definition != nullptr && SuppliedCount >= GetTotalRequired();
 }
 
 float AFEBuildPiece::GetSupplyProgress() const
