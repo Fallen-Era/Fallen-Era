@@ -31,7 +31,8 @@ public class FallenEra : ModuleRules
 			"FallenEra/AbilitySystem",
 			"FallenEra/AbilitySystem/Abilities",
 			"FallenEra/AbilitySystem/Attributes",
-			"FallenEra/ItemDatas"
+			"FallenEra/ItemDatas",
+			"FallenEra/GameplayTag"
 		});
 
 		// Uncomment if you are using Slate UI
