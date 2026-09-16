@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
 #include "GameplayTagContainer.h"
-#include "FallenEraDAItemBase.generated.h"
+#include "FallenEraItemBase.generated.h"
 
 /**
  * 
@@ -47,8 +47,8 @@ struct FItemVisualData
 	TSoftObjectPtr<class USoundBase> EquipSound;
 };
 
-UCLASS()
-class FALLENERA_API UFallenEraDAItemBase : public UPrimaryDataAsset
+UCLASS(Abstract, BlueprintType)
+class FALLENERA_API UFallenEraItemBase : public UPrimaryDataAsset
 {
 	GENERATED_BODY()
 	
