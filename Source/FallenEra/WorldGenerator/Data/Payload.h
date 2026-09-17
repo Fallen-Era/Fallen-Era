@@ -36,27 +36,27 @@ struct FALLENERA_API FWorldRegistryEntry
 };
 
 USTRUCT(Blueprintable)
-struct FWorldHeightmapData
+struct FTerrainData
 {
 	GENERATED_BODY()
 	
 	UPROPERTY(SaveGame)
-	FIntPoint Size = FIntPoint::ZeroValue;
+	float VoxelSize = 100.f;
 	
-	// 인접 샘플 간 거리(cm)
 	UPROPERTY(SaveGame)
-	float SampleStepCm = 100.f;
+	FIntPoint WorldSize = FIntPoint::ZeroValue;
 	
-	// (0, 0) 샘플의 월드 XY 위치
 	UPROPERTY(SaveGame)
 	FVector2D Origin = FVector2D::ZeroVector;
 	
-	// uint16 -> 실제 월드 높이(cm) 복원용 
 	UPROPERTY(SaveGame)
 	float MinHeightCm = 0.f;
 	
 	UPROPERTY(SaveGame)
 	float MaxHeightCm = 0.f;
+	
+	UPROPERTY(SaveGame)
+	FFloatRange HeightRange = FFloatRange(-5000.f, 5000.f);
 	
 	// 16-bit grayscale PNG
 	UPROPERTY(SaveGame)
