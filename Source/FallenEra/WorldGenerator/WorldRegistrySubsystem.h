@@ -10,6 +10,9 @@
 #include "GameFramework/GameplayMessageSubsystem.h"
 #include "WorldRegistrySubsystem.generated.h"
 
+class UVoxelHeightLayer;
+class UVoxelHeightGraph;
+struct FVoxelHeightGraphStampRef;
 /**
  * 
  */
@@ -35,11 +38,21 @@ private:
 		FGameplayTag Channel,
 		const FWorldCreateRequest& Request);
 	
+	void SaveWorld();
+	void LoadWorld(const FWorldProfileData& WorldProfile);
+	
 	void DeleteWorld(
 	const FGuid& WorldId);
 	
 	void LoadRegistry();
 	void SaveRegistry();
+	
+	bool MakeTerrainStamp(
+		UVoxelHeightGraph* Graph,
+		UVoxelHeightLayer* Layer,
+		int32 Seed, float Amplitude,
+		FVoxelHeightGraphStampRef& OutStamp,
+		FString& OutError);
 	
 private:
 	UPROPERTY()

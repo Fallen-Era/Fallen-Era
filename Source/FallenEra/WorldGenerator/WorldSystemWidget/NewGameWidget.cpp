@@ -1,7 +1,7 @@
 ﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 
-#include "WorldGeneratorMenu.h"
+#include "NewGameWidget.h"
 
 #include "Components/Button.h"
 #include "Components/EditableText.h"
@@ -10,19 +10,22 @@
 #include "GameFramework/GameplayMessageSubsystem.h"
 
 
-void UWorldGeneratorMenu::NativeConstruct()
+void UNewGameWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 	
 	if (Btn_WorldGen)
 	{
-		Btn_WorldGen->OnClicked.AddDynamic(this, &UWorldGeneratorMenu::OnWorldGenerateClicked);
+		Btn_WorldGen->OnClicked.AddDynamic(this, &UNewGameWidget::OnWorldGenerateClicked);
 	}
 	
 	
+	EDIT_TXT_Size_X->OnTextChanged.AddDynamic(this, &UNewGameWidget::OnTXTSizeXChanged);
+	EDIT_TXT_Size_Y->OnTextChanged.AddDynamic(this, &UNewGameWidget::OnTXTSizeYChanged);
+	
 }
 
-void UWorldGeneratorMenu::OnWorldGenerateClicked()
+void UNewGameWidget::OnWorldGenerateClicked()
 {
 	if (!EDIT_TXT_WorldName || 
 		!EDIT_TXT_Size_X || 
@@ -62,11 +65,57 @@ void UWorldGeneratorMenu::OnWorldGenerateClicked()
 		Request.WorldSize= FIntPoint(X, Y);
 	}
 	
-	
-	
-	
 	UGameplayMessageSubsystem& MessageSubsystem = 
 		UGameplayMessageSubsystem::Get(this);
 	
 	MessageSubsystem.BroadcastMessage(FallenEraGameplayTags::TAG_Event_World_CreateRequested, Request);
 }
+
+void UNewGameWidget::OnTXTSizeXChanged(const FText& Text)
+{
+	const FString Input = Text.ToString();
+
+	for (const TCHAR Char : Input)
+	{
+		if (!FChar::IsDigit(Char))
+		{
+			EDIT_TXT_Size_X->SetText(ValidSizeX);
+			return;
+		}
+	}
+
+	int32 Value = 0;
+
+	if (LexTryParseString(Value, *Input) && Value > 0)
+	{
+		ValidSizeX = Text;
+		return;
+	}
+
+	EDIT_TXT_Size_X->SetText(ValidSizeX);
+}
+
+void UNewGameWidget::OnTXTSizeYChanged(const FText& Text)
+{
+	const FString Input = Text.ToString();
+
+	for (const TCHAR Char : Input)
+	{
+		if (!FChar::IsDigit(Char))
+		{
+			EDIT_TXT_Size_Y->SetText(ValidSizeY);
+			return;
+		}
+	}
+
+	int32 Value = 0;
+
+	if (LexTryParseString(Value, *Input) && Value > 0)
+	{
+		ValidSizeY = Text;
+		return;
+	}
+
+	EDIT_TXT_Size_Y->SetText(ValidSizeY);
+}
+
