@@ -21,6 +21,7 @@ public class FallenEra : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
+			"ModelViewViewModel",
 			"Slate",
 			"DeveloperSettings"
 		});
@@ -29,10 +30,11 @@ public class FallenEra : ModuleRules
 
 		PublicIncludePaths.AddRange(new string[] {
 			"FallenEra",
-			"FallenEra/KJH/Public",
 			"FallenEra/AbilitySystem",
 			"FallenEra/AbilitySystem/Abilities",
 			"FallenEra/AbilitySystem/Attributes",
+			"FallenEra/Building",
+			"FallenEra/Interaction",
 		});
 
 		// Uncomment if you are using Slate UI
