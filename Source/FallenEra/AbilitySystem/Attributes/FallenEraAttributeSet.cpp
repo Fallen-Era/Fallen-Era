@@ -2,6 +2,7 @@
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "GameplayEffectExtension.h"
+#include "HT/Component/CombatComponent.h"
 #include "Net/UnrealNetwork.h"
 
 UFallenEraAttributeSet::UFallenEraAttributeSet()
@@ -9,7 +10,9 @@ UFallenEraAttributeSet::UFallenEraAttributeSet()
 	, MaxHealth(100.0f)
 	, Stamina(100.0f)
 	, MaxStamina(100.0f)
-	, Damage(0.0f)
+	, AttackPower(0.0f)
+	, DefensePower(0.0f)
+	, KnockbackResistance(0.0f)
 	, Healing(0.0f)
 {
 }
@@ -21,6 +24,10 @@ void UFallenEraAttributeSet::PreAttributeChange(const FGameplayAttribute& Attrib
 	if (Attribute == GetMaxHealthAttribute() || Attribute == GetMaxStaminaAttribute())
 	{
 		NewValue = FMath::Max(NewValue, 1.0f);
+	}
+	else if (Attribute == GetAttackPowerAttribute() || Attribute == GetDefensePowerAttribute() || Attribute == GetKnockbackResistanceAttribute())
+	{
+		NewValue = FMath::Max(NewValue, 0.0f);
 	}
 	else if (Attribute == GetHealthAttribute())
 	{
@@ -38,20 +45,9 @@ void UFallenEraAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModC
 
 	UAbilitySystemComponent* AbilitySystemComponent = GetOwningAbilitySystemComponent();
 
-	if (Data.EvaluatedData.Attribute == GetDamageAttribute())
+	if (Data.EvaluatedData.Attribute == GetAttackPowerAttribute())
 	{
-		const float LocalDamage = FMath::Max(GetDamage(), 0.0f);
-		SetDamage(0.0f);
-		if (LocalDamage > 0.0f)
-		{
-			SetHealth(FMath::Clamp(GetHealth() - LocalDamage, 0.0f, GetMaxHealth()));
-			if (AbilitySystemComponent)
-			{
-				FGameplayCueParameters CueParameters;
-				CueParameters.RawMagnitude = LocalDamage;
-				AbilitySystemComponent->ExecuteGameplayCue(FallenEraGameplayTags::GameplayCue_Damage, CueParameters);
-			}
-		}
+		SetAttackPower(FMath::Max(GetAttackPower(), 0.0f));
 	}
 	else if (Data.EvaluatedData.Attribute == GetHealingAttribute())
 	{
@@ -71,6 +67,20 @@ void UFallenEraAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModC
 	else if (Data.EvaluatedData.Attribute == GetHealthAttribute() || Data.EvaluatedData.Attribute == GetMaxHealthAttribute())
 	{
 		SetHealth(FMath::Clamp(GetHealth(), 0.0f, GetMaxHealth()));
+		if (Data.EvaluatedData.Attribute == GetHealthAttribute() && Data.EvaluatedData.Magnitude < 0.0f && AbilitySystemComponent)
+		{
+			FGameplayCueParameters CueParameters;
+			CueParameters.RawMagnitude = FMath::Abs(Data.EvaluatedData.Magnitude);
+			AbilitySystemComponent->ExecuteGameplayCue(FallenEraGameplayTags::GameplayCue_Damage, CueParameters);
+		}
+	}
+	else if (Data.EvaluatedData.Attribute == GetKnockbackResistanceAttribute())
+	{
+		SetKnockbackResistance(FMath::Max(GetKnockbackResistance(), 0.0f));
+	}
+	else if (Data.EvaluatedData.Attribute == GetDefensePowerAttribute())
+	{
+		SetDefensePower(FMath::Max(GetDefensePower(), 0.0f));
 	}
 	
 	else if (Data.EvaluatedData.Attribute == GetStaminaAttribute() || Data.EvaluatedData.Attribute == GetMaxStaminaAttribute())
@@ -84,13 +94,31 @@ void UFallenEraAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModC
 void UFallenEraAttributeSet::UpdateDeadStateTag()
 {
 	UAbilitySystemComponent* AbilitySystemComponent = GetOwningAbilitySystemComponent();
-	const AActor* OwnerActor = AbilitySystemComponent ? AbilitySystemComponent->GetOwnerActor() : nullptr;
+	AActor* OwnerActor = AbilitySystemComponent ? AbilitySystemComponent->GetOwnerActor() : nullptr;
 	if (AbilitySystemComponent && OwnerActor && OwnerActor->HasAuthority())
 	{
+		const bool bWasDead = AbilitySystemComponent->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead);
+		const bool bIsDead = GetHealth() <= 0.0f;
 		AbilitySystemComponent->SetLooseGameplayTagCount(
 			FallenEraGameplayTags::State_Dead,
-			GetHealth() <= 0.0f ? 1 : 0,
+			bIsDead ? 1 : 0,
 			EGameplayTagReplicationState::TagAndCountToAll);
+
+		if (!bWasDead && bIsDead)
+		{
+			AActor* AvatarActor = AbilitySystemComponent->GetAvatarActor();
+			if (!AvatarActor)
+			{
+				AvatarActor = OwnerActor;
+			}
+
+			if (UFE_CombatComponent* CombatComponent = AvatarActor
+				? AvatarActor->FindComponentByClass<UFE_CombatComponent>()
+				: nullptr)
+			{
+				CombatComponent->HandleDeath();
+			}
+		}
 	}
 }
 
@@ -102,6 +130,9 @@ void UFallenEraAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, MaxHealth, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, Stamina, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, MaxStamina, COND_None, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, AttackPower, COND_None, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, DefensePower, COND_None, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, KnockbackResistance, COND_None, REPNOTIFY_Always);
 }
 
 void UFallenEraAttributeSet::OnRep_Health(const FGameplayAttributeData& OldValue)
@@ -122,4 +153,19 @@ void UFallenEraAttributeSet::OnRep_Stamina(const FGameplayAttributeData& OldValu
 void UFallenEraAttributeSet::OnRep_MaxStamina(const FGameplayAttributeData& OldValue)
 {
 	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, MaxStamina, OldValue);
+}
+
+void UFallenEraAttributeSet::OnRep_AttackPower(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, AttackPower, OldValue);
+}
+
+void UFallenEraAttributeSet::OnRep_DefensePower(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, DefensePower, OldValue);
+}
+
+void UFallenEraAttributeSet::OnRep_KnockbackResistance(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, KnockbackResistance, OldValue);
 }

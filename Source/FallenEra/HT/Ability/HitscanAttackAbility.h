@@ -38,4 +38,5 @@ private:
 	TObjectPtr<UAbilityTask_WaitDelay> FireDelayTask;
 
 	bool bInputReleased = false;
+	float NextFireTime = 0.0f;
 };

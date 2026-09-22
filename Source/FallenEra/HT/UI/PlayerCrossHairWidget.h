@@ -4,7 +4,7 @@
 #include "Blueprint/UserWidget.h"
 #include "PlayerCrossHairWidget.generated.h"
 
-class AFE_CombatCharacter;
+class UFE_EquipmentComponent;
 class UImage;
 class UTexture2D;
 class UFE_WeaponItemData;
@@ -28,11 +28,11 @@ protected:
 	TObjectPtr<UImage> Image_CrossHair;
 
 private:
-	void BindToCharacter(AFE_CombatCharacter* CombatCharacter);
-	void UnbindFromCharacter();
+	void BindToEquipment(UFE_EquipmentComponent* Equipment);
+	void UnbindFromEquipment();
 	void OnWeaponChanged(const UFE_WeaponItemData* WeaponData);
 
-	TWeakObjectPtr<AFE_CombatCharacter> BoundCharacter;
+	TWeakObjectPtr<UFE_EquipmentComponent> BoundEquipment;
 	TWeakObjectPtr<const UFE_WeaponItemData> CachedWeaponData;
 	FDelegateHandle WeaponChangedHandle;
 };

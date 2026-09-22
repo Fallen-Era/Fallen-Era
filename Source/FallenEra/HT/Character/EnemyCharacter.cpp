@@ -6,6 +6,7 @@
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
 #include "AbilitySystemComponent.h"
 #include "HT/Component/CombatComponent.h"
+#include "HT/Component/EquipmentComponent.h"
 
 AFE_EnemyCharacter::AFE_EnemyCharacter()
 {
@@ -15,6 +16,7 @@ AFE_EnemyCharacter::AFE_EnemyCharacter()
 
 	AttributeSet = CreateDefaultSubobject<UFallenEraAttributeSet>(TEXT("AttributeSet"));
 	CombatComponent = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("CombatComponent"));
+	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
 
 	bReplicates = true;
 }
@@ -24,10 +26,20 @@ UAbilitySystemComponent* AFE_EnemyCharacter::GetAbilitySystemComponent() const
 	return AbilitySystemComponent;
 }
 
+FFE_CombatDamageResult AFE_EnemyCharacter::ReceiveCombatDamage_Implementation(
+	const FFE_CombatDamageRequest& DamageRequest)
+{
+	return CombatComponent
+		? CombatComponent->ApplyGameplayEffectDamage(DamageRequest)
+		: FFE_CombatDamageResult();
+}
+
 void AFE_EnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 	InitializeEnemyAbilitySystem();
+	// Component BeginPlay may run before this character initializes its ASC.
+	EquipmentComponent->RefreshEquipment();
 }
 
 void AFE_EnemyCharacter::InitializeEnemyAbilitySystem()

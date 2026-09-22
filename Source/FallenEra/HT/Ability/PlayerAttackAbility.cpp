@@ -1,12 +1,17 @@
 #include "HT/Ability/PlayerAttackAbility.h"
 
 #include "AbilitySystemComponent.h"
-#include "Animation/AnimInstance.h"
-#include "Components/SkeletalMeshComponent.h"
 #include "GameplayEffect.h"
-#include "HT/Character/CombatCharacter.h"
+#include "GameFramework/Character.h"
 #include "HT/Component/CombatComponent.h"
+#include "HT/Component/EquipmentComponent.h"
 #include "HT/Weapon/WeaponItemData.h"
+
+const UFE_WeaponItemData* UFE_PlayerAttackAbility::GetWeaponData(const AActor* Avatar)
+{
+	const UFE_EquipmentComponent* Equipment = Avatar ? Avatar->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+	return Equipment ? Equipment->GetCurrentWeaponData() : nullptr;
+}
 
 UFE_PlayerAttackAbility::UFE_PlayerAttackAbility()
 {
@@ -22,8 +27,8 @@ void UFE_PlayerAttackAbility::ActivateAbility(
 {
 	Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 
-	const AFE_CombatCharacter* CombatCharacter = Cast<AFE_CombatCharacter>(GetAvatarActorFromActorInfo());
-	const UFE_WeaponItemData* WeaponData = CombatCharacter ? CombatCharacter->GetCurrentWeaponData() : nullptr;
+	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
+	const UFE_WeaponItemData* WeaponData = CombatCharacter ? GetWeaponData(CombatCharacter) : nullptr;
 	const UFE_WeaponAttackData* AttackData = ResolveAttackData(CombatCharacter);
 	if (!CombatCharacter || !WeaponData || !AttackData || !CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
@@ -54,25 +59,31 @@ void UFE_PlayerAttackAbility::EndAbility(
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 
-const UFE_WeaponAttackData* UFE_PlayerAttackAbility::ResolveAttackData(const AFE_CombatCharacter* CombatCharacter) const
+const UFE_WeaponAttackData* UFE_PlayerAttackAbility::ResolveAttackData(const ACharacter* CombatCharacter) const
 {
 	return ResolveAttackData(CurrentSpecHandle, CombatCharacter);
 }
 
 const UFE_WeaponAttackData* UFE_PlayerAttackAbility::ResolveAttackData(
 	const FGameplayAbilitySpecHandle& Handle,
-	const AFE_CombatCharacter* CombatCharacter) const
+	const ACharacter* CombatCharacter) const
 {
 	if (!CombatCharacter)
 	{
 		return nullptr;
 	}
 
-	const UFE_WeaponItemData* WeaponData = CombatCharacter->GetCurrentWeaponData();
 	const UAbilitySystemComponent* AbilitySystem = GetAbilitySystemComponentFromActorInfo();
 	const FGameplayAbilitySpec* AbilitySpec = AbilitySystem
 		? AbilitySystem->FindAbilitySpecFromHandle(Handle)
 		: nullptr;
+	const UFE_WeaponItemData* WeaponData = AbilitySpec
+		? Cast<UFE_WeaponItemData>(AbilitySpec->SourceObject.Get())
+		: nullptr;
+	if (!WeaponData)
+	{
+		WeaponData = GetWeaponData(CombatCharacter);
+	}
 	if (!WeaponData || !AbilitySpec)
 	{
 		return nullptr;
@@ -80,7 +91,7 @@ const UFE_WeaponAttackData* UFE_PlayerAttackAbility::ResolveAttackData(
 
 	for (const UFE_WeaponAttackData* AttackData : WeaponData->AttackActions)
 	{
-		if (!AttackData || AttackData->AbilityClass.LoadSynchronous() != GetClass())
+		if (!AttackData || AttackData->AbilityClass.Get() != GetClass())
 		{
 			continue;
 		}
@@ -109,40 +120,33 @@ void UFE_PlayerAttackAbility::CacheAttackContext(
 	const TSoftClassPtr<UGameplayEffect>& EffectReference = AttackData->DamageEffectOverride.IsNull()
 		? WeaponData->DefaultDamageEffect
 		: AttackData->DamageEffectOverride;
-	CachedDamageEffectClass = EffectReference.LoadSynchronous();
+	CachedDamageEffectClass = EffectReference.Get();
 }
 
 void UFE_PlayerAttackAbility::PlayAttackMontage(
-	const AFE_CombatCharacter* CombatCharacter,
+	const ACharacter* CombatCharacter,
 	const UFE_WeaponAttackData* AttackData) const
 {
-	if (!bPlayAttackMontage || !CombatCharacter || !AttackData || !AttackData->AttackMontage)
+	PlayAttackMontage(CombatCharacter, AttackData ? AttackData->AttackMontage.Get() : nullptr);
+}
+
+void UFE_PlayerAttackAbility::PlayAttackMontage(
+	const ACharacter* CombatCharacter,
+	UAnimMontage* Montage) const
+{
+	if (!bPlayAttackMontage || !CombatCharacter || !Montage)
 	{
 		return;
 	}
 
-	if (USkeletalMeshComponent* WorldMesh = CombatCharacter->GetMesh())
+	if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
 	{
-		if (UAnimInstance* AnimInstance = WorldMesh->GetAnimInstance())
-		{
-			AnimInstance->Montage_Play(AttackData->AttackMontage);
-		}
-	}
-
-	if (CombatCharacter->IsLocallyControlled())
-	{
-		if (USkeletalMeshComponent* FirstPersonMesh = CombatCharacter->GetFirstPersonMesh())
-		{
-			if (UAnimInstance* AnimInstance = FirstPersonMesh->GetAnimInstance())
-			{
-				AnimInstance->Montage_Play(AttackData->AttackMontage);
-			}
-		}
+		Combat->PlayAttackMontage(Montage, NetExecutionPolicy == EGameplayAbilityNetExecutionPolicy::LocalPredicted);
 	}
 }
 
 void UFE_PlayerAttackAbility::ExecuteAttack(
-	const AFE_CombatCharacter* CombatCharacter,
+	const ACharacter* CombatCharacter,
 	const UFE_WeaponItemData* WeaponData,
 	const UFE_WeaponAttackData* AttackData) const
 {
@@ -152,17 +156,19 @@ void UFE_PlayerAttackAbility::ExecuteAttack(
 }
 
 void UFE_PlayerAttackAbility::ApplyDamage(
-	const AFE_CombatCharacter* CombatCharacter,
+	const ACharacter* CombatCharacter,
 	const UFE_WeaponItemData* WeaponData,
 	const UFE_WeaponAttackData* AttackData,
-	AActor* TargetActor) const
+	AActor* TargetActor,
+	const FHitResult& HitResult) const
 {
-	if (!CombatCharacter || !WeaponData || !AttackData || !TargetActor || AttackData->DamageAmount <= 0.0f)
+	if (!CombatCharacter || !WeaponData || !AttackData ||
+		(!TargetActor && !HitResult.bBlockingHit))
 	{
 		return;
 	}
 
-	UFE_CombatComponent* CombatComponent = CombatCharacter->GetCombatComponent();
+	UFE_CombatComponent* CombatComponent = CombatCharacter->FindComponentByClass<UFE_CombatComponent>();
 	if (!CombatComponent)
 	{
 		return;
@@ -172,12 +178,19 @@ void UFE_PlayerAttackAbility::ApplyDamage(
 	const TSoftClassPtr<UGameplayEffect>& WeaponEffect = WeaponData->DefaultDamageEffect;
 	if (UClass* DamageEffectClass = CachedDamageEffectClass
 		? CachedDamageEffectClass.Get()
-		: (OverrideEffect.IsNull() ? WeaponEffect.LoadSynchronous() : OverrideEffect.LoadSynchronous()))
+		: (OverrideEffect.IsNull() ? WeaponEffect.Get() : OverrideEffect.Get()))
 	{
-		CombatComponent->ApplyDamageWithEffect(TargetActor, AttackData->DamageAmount, DamageEffectClass);
+		CombatComponent->ApplyDamageWithEffectFromHit(
+			TargetActor,
+			DamageEffectClass,
+			HitResult,
+			AttackData);
 	}
 	else
 	{
-		CombatComponent->ApplyDamage(TargetActor, AttackData->DamageAmount);
+		CombatComponent->ApplyDamageFromHit(
+			TargetActor,
+			HitResult,
+			AttackData);
 	}
 }

@@ -10,14 +10,47 @@ class UAnimMontage;
 class UGameplayAbility;
 class UGameplayEffect;
 class UStaticMesh;
+class USkeletalMesh;
 class UTexture2D;
-class AActor;
+class AFE_CombatProjectile;
+class UFE_ImpactEffectData;
+class UNiagaraSystem;
 
 UENUM(BlueprintType)
 enum class EFE_MeleeAttackSequenceMode : uint8
 {
 	Combo,
 	RandomSingle
+};
+
+UENUM(BlueprintType)
+enum class EFE_ChargedProjectileAttachmentTarget : uint8
+{
+	CharacterMesh,
+	WeaponMesh
+};
+
+/** Persistent stats granted while a weapon is equipped. */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FFE_WeaponStat
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon Stat", meta=(ClampMin="0.0"))
+	float Offense = 0.0f;
+};
+
+/** Reaction values applied after a damage execution succeeds. */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FFE_AttackReactionData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack Reaction", meta=(ClampMin="0.0"))
+	float KnockbackAmount = 0.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack Reaction", meta=(ClampMin="0.0"))
+	float StunDuration = 0.0f;
 };
 
 /** One attack entry owned by a weapon data asset. */
@@ -27,6 +60,9 @@ class FALLENERA_API UFE_WeaponAttackData : public UObject
 	GENERATED_BODY()
 
 public:
+	/** Attack entries are package-owned instanced objects referenced by replicated effect contexts. */
+	virtual bool IsSupportedForNetworking() const override { return true; }
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack")
 	FGameplayTag AttackTag;
 
@@ -37,16 +73,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack")
 	TObjectPtr<UAnimMontage> AttackMontage;
 
-	/** Damage magnitude supplied to the selected GameplayEffect for this attack. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Damage", meta=(ClampMin="0.0"))
-	float DamageAmount = 10.0f;
+	/** Hit-reaction values applied after DamageExecutionCalculation succeeds. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Reaction")
+	FFE_AttackReactionData AttackReactionData;
 
 	/** If empty, the weapon's DefaultDamageEffect is used by the attack ability. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack", meta=(AllowedClasses="/Script/GameplayAbilities.GameplayEffect"))
 	TSoftClassPtr<UGameplayEffect> DamageEffectOverride;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack", meta=(Categories="GameplayEvent"))
-	FGameplayTag ExecutionEventTag;
 
 	/** The ability granted while this weapon is equipped. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack", meta=(AllowedClasses="/Script/GameplayAbilities.GameplayAbility"))
@@ -72,8 +105,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace")
 	bool bAllowMultipleHits = false;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="1"))
+	/** Maximum unique targets affected by one attack window. Kept as MaxHitCount for existing assets. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="1", DisplayName="Max Target Count"))
 	int32 MaxHitCount = 1;
+
+	/** Minimum seconds before the same target can be damaged again when multiple hits are enabled. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="0.01", EditCondition="bAllowMultipleHits"))
+	float RepeatedHitInterval = 0.1f;
 
 	/** Fallback interval when AttackResetEventTag is not configured. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing", meta=(ClampMin="0.01"))
@@ -130,21 +168,18 @@ public:
 	bool bAutomatic = true;
 };
 
-/** Extra projectile parameters for a ranged projectile attack. */
-UCLASS(BlueprintType, EditInlineNew, DefaultToInstanced)
-class FALLENERA_API UFE_ProjectileAttackData : public UFE_WeaponAttackData
+/** Parameters shared by every projectile attack, regardless of how launch speed is resolved. */
+UCLASS(Abstract, BlueprintType, EditInlineNew, DefaultToInstanced)
+class FALLENERA_API UFE_ProjectileAttackDataBase : public UFE_WeaponAttackData
 {
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile", meta=(AllowedClasses="/Script/Engine.Actor"))
-	TSoftClassPtr<AActor> ProjectileClass;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile")
+	TSoftClassPtr<AFE_CombatProjectile> ProjectileClass;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile")
 	FName ProjectileSpawnSocketName = TEXT("ArrowSocket");
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile", meta=(ClampMin="0.0"))
-	float InitialSpeed = 3000.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile")
 	float GravityScale = 1.0f;
@@ -152,28 +187,98 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile")
 	bool bUseAimDirection = true;
 
+	/** Camera trace distance used to resolve a world-space aim point before firing from the muzzle. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile", meta=(ClampMin="0.0"))
+	float AimTraceRange = 10000.0f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Timing", meta=(ClampMin="0.01"))
 	float FireInterval = 0.1f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Timing")
-	bool bAutomatic = true;
 };
 
-/** Data-driven weapon definition. The equipped character only caches this object. */
+/** Immediate projectile parameters. Launch speed is fixed per attack. */
+UCLASS(BlueprintType, EditInlineNew, DefaultToInstanced)
+class FALLENERA_API UFE_ProjectileAttackData : public UFE_ProjectileAttackDataBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Launch", meta=(ClampMin="0.0"))
+	float InitialSpeed = 3000.0f;
+};
+
+/** Hold-to-charge projectile parameters shared by bows and throwable weapons. */
+UCLASS(BlueprintType, EditInlineNew, DefaultToInstanced)
+class FALLENERA_API UFE_ChargedProjectileAttackData : public UFE_ProjectileAttackDataBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Timing", meta=(ClampMin="0.01"))
+	float MaxChargeTime = 1.5f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Launch", meta=(ClampMin="0.0"))
+	float MinLaunchSpeed = 800.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Launch", meta=(ClampMin="0.0"))
+	float MaxLaunchSpeed = 3000.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Animation")
+	TObjectPtr<UAnimMontage> ChargeMontage;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Animation")
+	TObjectPtr<UAnimMontage> ReleaseMontage;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Presentation")
+	EFE_ChargedProjectileAttachmentTarget AttachmentTarget = EFE_ChargedProjectileAttachmentTarget::WeaponMesh;
+
+	/** Bow: a socket on the equipped bow. Throwable: a socket on the character hand. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Presentation")
+	FName ChargeAttachSocketName = TEXT("ProjectilePreview");
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Presentation")
+	FTransform ChargeAttachOffset;
+
+	/** Optional local-only trajectory Niagara. Leave empty for bows without a trajectory preview. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Trajectory")
+	TSoftObjectPtr<UNiagaraSystem> TrajectoryNiagaraSystem;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Trajectory", meta=(ClampMin="0.016"))
+	float TrajectoryUpdateInterval = 0.05f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Trajectory", meta=(ClampMin="0.1"))
+	float TrajectorySimulationTime = 2.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Trajectory", meta=(ClampMin="5.0", ClampMax="60.0"))
+	float TrajectorySimulationFrequency = 20.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Trajectory", meta=(ClampMin="0.0"))
+	float TrajectoryCollisionRadius = 5.0f;
+};
+
+/** Data-driven weapon definition cached by EquipmentComponent while equipped. */
 UCLASS(Abstract, BlueprintType)
 class FALLENERA_API UFE_WeaponItemData : public UPrimaryDataAsset
 {
 	GENERATED_BODY()
 
 public:
+	/** Persistent attack-power contribution applied while this weapon is equipped. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Stats")
+	FFE_WeaponStat WeaponStat;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Tags")
 	FGameplayTagContainer ItemTags;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Tags")
 	FGameplayTagContainer WeaponTags;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
+	/** Static weapon mesh. Used only when SkeletalMesh is empty. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation", meta=(DisplayName="Static Mesh"))
 	TSoftObjectPtr<UStaticMesh> Mesh;
+
+	/** Optional animated weapon mesh. When assigned, this takes priority over Mesh. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
+	TSoftObjectPtr<USkeletalMesh> SkeletalMesh;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
 	TSoftClassPtr<UAnimInstance> WeaponAnimLayerClass;
@@ -181,6 +286,10 @@ public:
 	/** Crosshair texture shown while this weapon is equipped. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
 	TSoftObjectPtr<UTexture2D> CrosshairTexture;
+
+	/** Surface-specific Niagara and sound presentation used by GameplayCue.Impact. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Impact")
+	TObjectPtr<UFE_ImpactEffectData> ImpactEffectData;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
 	FName AttachSocketName = TEXT("hand_r");

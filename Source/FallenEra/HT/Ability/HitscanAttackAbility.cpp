@@ -5,7 +5,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
-#include "HT/Character/CombatCharacter.h"
+#include "GameFramework/Character.h"
 #include "HT/Weapon/WeaponItemData.h"
 
 void UFE_HitscanAttackAbility::ActivateAbility(
@@ -18,11 +18,19 @@ void UFE_HitscanAttackAbility::ActivateAbility(
 	UFallenEraGameplayAbility::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 
 	bInputReleased = false;
-	const AFE_CombatCharacter* CombatCharacter = Cast<AFE_CombatCharacter>(GetAvatarActorFromActorInfo());
+	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponAttackData* AttackData = ResolveAttackData(CombatCharacter);
-	const UFE_WeaponItemData* WeaponData = CombatCharacter ? CombatCharacter->GetCurrentWeaponData() : nullptr;
+	const UFE_WeaponItemData* WeaponData = CombatCharacter ? GetWeaponData(CombatCharacter) : nullptr;
 	const UFE_HitscanAttackData* HitscanAttackData = Cast<UFE_HitscanAttackData>(AttackData);
-	if (!CombatCharacter || !WeaponData || !HitscanAttackData || !CommitAbility(Handle, ActorInfo, ActivationInfo))
+	if (!CombatCharacter || !WeaponData || !HitscanAttackData)
+	{
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
+		return;
+	}
+
+	const float CurrentTime = CombatCharacter->GetWorld() ? CombatCharacter->GetWorld()->GetTimeSeconds() : 0.0f;
+	if ((!HitscanAttackData->bAutomatic && CurrentTime < NextFireTime) ||
+		!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
@@ -44,59 +52,97 @@ void UFE_HitscanAttackAbility::ActivateAbility(
 
 void UFE_HitscanAttackAbility::FireOnce()
 {
-	const AFE_CombatCharacter* CombatCharacter = Cast<AFE_CombatCharacter>(GetAvatarActorFromActorInfo());
+	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponItemData* WeaponData = GetCachedWeaponData();
 	const UFE_HitscanAttackData* AttackData = Cast<UFE_HitscanAttackData>(GetCachedAttackData());
 	if (!CombatCharacter || !WeaponData || !AttackData || !CombatCharacter->GetWorld())
 	{
 		return;
 	}
+
+	const float CurrentTime = CombatCharacter->GetWorld()->GetTimeSeconds();
+	if (CurrentTime < NextFireTime)
+	{
+		return;
+	}
+	NextFireTime = CurrentTime + FMath::Max(0.01f, AttackData->FireInterval);
+
 	PlayAttackMontage(CombatCharacter, AttackData);
 	if (!CombatCharacter->HasAuthority())
 	{
 		return;
 	}
 
-	FVector Start = CombatCharacter->GetActorLocation();
+	FVector ViewStart = CombatCharacter->GetActorLocation();
 	FRotator ViewRotation = CombatCharacter->GetActorRotation();
 	if (const AController* Controller = CombatCharacter->GetController())
 	{
-		Controller->GetPlayerViewPoint(Start, ViewRotation);
+		Controller->GetPlayerViewPoint(ViewStart, ViewRotation);
 	}
 
+	FVector TraceStart = ViewStart;
+	bool bTraceFromMuzzle = false;
 	if (const USkeletalMeshComponent* Mesh = CombatCharacter->GetMesh(); Mesh && Mesh->DoesSocketExist(AttackData->MuzzleSocketName))
 	{
-		Start = Mesh->GetSocketLocation(AttackData->MuzzleSocketName);
+		TraceStart = Mesh->GetSocketLocation(AttackData->MuzzleSocketName);
+		bTraceFromMuzzle = true;
 	}
 
-	TSet<AActor*> DamagedActors;
 	const int32 PelletCount = FMath::Max(1, AttackData->PelletCount);
 	const int32 MaxTargetsPerPellet = FMath::Max(1, AttackData->PenetrationCount + 1);
+	const float TraceRange = FMath::Max(0.0f, AttackData->TraceRange);
+
 	for (int32 PelletIndex = 0; PelletIndex < PelletCount; ++PelletIndex)
 	{
-		FVector Direction = ViewRotation.Vector();
+		// De-duplicate one actor within a pellet's penetration path, but allow
+		// separate pellets to contribute damage to the same target.
+		TSet<AActor*> DamagedActors;
+		FVector AimDirection = ViewRotation.Vector();
 		if (AttackData->SpreadAngle > 0.0f)
 		{
 			// Use a fresh random sample for every pellet. The previous fixed-seed stream
 			// repeated the exact same spread pattern on every shot.
-			Direction = FMath::VRandCone(Direction, FMath::DegreesToRadians(AttackData->SpreadAngle));
+			AimDirection = FMath::VRandCone(AimDirection, FMath::DegreesToRadians(AttackData->SpreadAngle));
 		}
 
-		const FVector End = Start + Direction * FMath::Max(0.0f, AttackData->TraceRange);
 		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_PlayerHitscanAttack), true, CombatCharacter);
+		QueryParams.bReturnPhysicalMaterial = true;
+
+		FVector AimPoint = ViewStart + AimDirection * TraceRange;
+		if (bTraceFromMuzzle)
+		{
+			FHitResult CameraHit;
+			if (CombatCharacter->GetWorld()->LineTraceSingleByChannel(
+				CameraHit, ViewStart, AimPoint, TraceChannel, QueryParams))
+			{
+				AimPoint = CameraHit.ImpactPoint;
+			}
+		}
+
+		const FVector ShotDirection = (AimPoint - TraceStart).GetSafeNormal(SMALL_NUMBER, AimDirection);
+		const FVector End = TraceStart + ShotDirection * TraceRange;
 		TArray<FHitResult> Hits;
-		CombatCharacter->GetWorld()->LineTraceMultiByChannel(Hits, Start, End, TraceChannel, QueryParams);
+		CombatCharacter->GetWorld()->LineTraceMultiByChannel(Hits, TraceStart, End, TraceChannel, QueryParams);
 
 		int32 AppliedTargetCount = 0;
 		for (const FHitResult& Hit : Hits)
 		{
 			AActor* TargetActor = Hit.GetActor();
-			if (!TargetActor || DamagedActors.Contains(TargetActor))
+			if (!TargetActor)
+			{
+				if (Hit.bBlockingHit)
+				{
+					ApplyDamage(CombatCharacter, WeaponData, AttackData, nullptr, Hit);
+					break;
+				}
+				continue;
+			}
+			if (DamagedActors.Contains(TargetActor))
 			{
 				continue;
 			}
 
-			ApplyDamage(CombatCharacter, WeaponData, AttackData, TargetActor);
+			ApplyDamage(CombatCharacter, WeaponData, AttackData, TargetActor, Hit);
 			DamagedActors.Add(TargetActor);
 			if (++AppliedTargetCount >= MaxTargetsPerPellet)
 			{
@@ -113,13 +159,18 @@ void UFE_HitscanAttackAbility::ScheduleNextShot()
 		return;
 	}
 
+	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_HitscanAttackData* AttackData = Cast<UFE_HitscanAttackData>(GetCachedAttackData());
-	if (!AttackData)
+	if (!AttackData || !CombatCharacter)
 	{
 		return;
 	}
 
-	FireDelayTask = UAbilityTask_WaitDelay::WaitDelay(this, FMath::Max(0.01f, AttackData->FireInterval));
+	const float CurrentTime = CombatCharacter->GetWorld() ? CombatCharacter->GetWorld()->GetTimeSeconds() : 0.0f;
+	const float Delay = NextFireTime > CurrentTime
+		? NextFireTime - CurrentTime
+		: FMath::Max(0.01f, AttackData->FireInterval);
+	FireDelayTask = UAbilityTask_WaitDelay::WaitDelay(this, FMath::Max(0.01f, Delay));
 	FireDelayTask->OnFinish.AddDynamic(this, &UFE_HitscanAttackAbility::OnFireIntervalElapsed);
 	FireDelayTask->ReadyForActivation();
 }

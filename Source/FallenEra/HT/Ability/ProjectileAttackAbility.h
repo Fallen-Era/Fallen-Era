@@ -4,11 +4,17 @@
 #include "HT/Ability/PlayerAttackAbility.h"
 #include "ProjectileAttackAbility.generated.h"
 
-class UAbilityTask_WaitDelay;
-class UAbilityTask_WaitInputRelease;
+class AFE_CombatProjectile;
 class UFE_ProjectileAttackData;
+class UFE_ProjectileAttackDataBase;
 
-/** Projectile attack implementation. The projectile owns its later impact/damage response. */
+enum class EFE_ProjectileLaunchContext : uint8
+{
+	Authority,
+	LocalPreview
+};
+
+/** Immediate single-shot projectile attack. Also exposes shared spawning to charged attacks. */
 UCLASS(Blueprintable)
 class FALLENERA_API UFE_ProjectileAttackAbility : public UFE_PlayerAttackAbility
 {
@@ -21,30 +27,36 @@ public:
 		const FGameplayAbilityActivationInfo ActivationInfo,
 		const FGameplayEventData* TriggerEventData) override;
 
+	virtual void EndAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		bool bReplicateEndAbility,
+		bool bWasCancelled) override;
+
 protected:
-	virtual void ExecuteAttack(const AFE_CombatCharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const override;
+	virtual void ExecuteAttack(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponItemData* WeaponData,
+		const UFE_WeaponAttackData* AttackData) const override;
 
-private:
-	void FireOnce();
-	void ScheduleNextShot();
-
-	UFUNCTION()
-	void OnInputReleased(float TimeHeld);
-
-	UFUNCTION()
-	void OnFireIntervalElapsed();
-
-	UPROPERTY()
-	TObjectPtr<UAbilityTask_WaitInputRelease> InputReleaseTask;
-
-	UPROPERTY()
-	TObjectPtr<UAbilityTask_WaitDelay> FireDelayTask;
+	bool CacheProjectileClass(const UFE_ProjectileAttackDataBase* AttackData);
+	bool CanFireProjectile(const ACharacter* CombatCharacter, const UFE_ProjectileAttackDataBase* AttackData) const;
+	void RecordProjectileFired(const ACharacter* CombatCharacter, const UFE_ProjectileAttackDataBase* AttackData);
+	bool SpawnProjectile(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponItemData* WeaponData,
+		const UFE_ProjectileAttackDataBase* AttackData,
+		float LaunchSpeed) const;
+	bool GetProjectileLaunchTransform(
+		const ACharacter* CombatCharacter,
+		const UFE_ProjectileAttackDataBase* AttackData,
+		EFE_ProjectileLaunchContext LaunchContext,
+		FVector& OutLocation,
+		FVector& OutDirection) const;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UFE_ProjectileAttackData> CachedProjectileAttackData;
+	TSubclassOf<AFE_CombatProjectile> CachedProjectileClass;
 
-	UPROPERTY(Transient)
-	TSubclassOf<AActor> CachedProjectileClass;
-
-	bool bInputReleased = false;
+	float NextFireTime = 0.0f;
 };
