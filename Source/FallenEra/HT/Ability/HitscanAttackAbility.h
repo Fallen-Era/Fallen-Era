@@ -21,6 +21,9 @@ public:
 		const FGameplayAbilityActivationInfo ActivationInfo,
 		const FGameplayEventData* TriggerEventData) override;
 
+protected:
+	virtual ECollisionChannel GetAttackTraceChannel() const override;
+
 private:
 	void FireOnce();
 	void ScheduleNextShot();
@@ -38,4 +41,5 @@ private:
 	TObjectPtr<UAbilityTask_WaitDelay> FireDelayTask;
 
 	bool bInputReleased = false;
+	float NextFireTime = 0.0f;
 };

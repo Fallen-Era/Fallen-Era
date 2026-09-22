@@ -4,7 +4,8 @@
 #include "AbilitySystem/Abilities/FallenEraGameplayAbility.h"
 #include "PlayerAttackAbility.generated.h"
 
-class AFE_CombatCharacter;
+class ACharacter;
+class UAnimMontage;
 class UFE_WeaponAttackData;
 class UFE_WeaponItemData;
 
@@ -31,22 +32,39 @@ public:
 		bool bWasCancelled) override;
 
 protected:
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Trace")
-	TEnumAsByte<ECollisionChannel> TraceChannel = ECC_Pawn;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Animation")
 	bool bPlayAttackMontage = true;
 
+	/** Collision channel used by this attack type. Player attacks target the Enemy object channel by default. */
+	virtual ECollisionChannel GetAttackTraceChannel() const;
+
+	static const UFE_WeaponItemData* GetWeaponData(const AActor* Avatar);
+
 	/** Resolves the AttackActions entry whose granted spec owns this activation. */
-	const UFE_WeaponAttackData* ResolveAttackData(const AFE_CombatCharacter* CombatCharacter) const;
-	const UFE_WeaponAttackData* ResolveAttackData(const FGameplayAbilitySpecHandle& Handle, const AFE_CombatCharacter* CombatCharacter) const;
+	const UFE_WeaponAttackData* ResolveAttackData(const ACharacter* CombatCharacter) const;
+	const UFE_WeaponAttackData* ResolveAttackData(const FGameplayAbilitySpecHandle& Handle, const ACharacter* CombatCharacter) const;
 	void CacheAttackContext(const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData);
 	const UFE_WeaponAttackData* GetCachedAttackData() const { return CachedAttackData; }
 	const UFE_WeaponItemData* GetCachedWeaponData() const { return CachedWeaponData; }
-	void PlayAttackMontage(const AFE_CombatCharacter* CombatCharacter, const UFE_WeaponAttackData* AttackData) const;
-	void ApplyDamage(const AFE_CombatCharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData, AActor* TargetActor) const;
+	TSubclassOf<UGameplayEffect> GetCachedDamageEffectClass() const { return CachedDamageEffectClass; }
+	void PlayAttackMontage(const ACharacter* CombatCharacter, const UFE_WeaponAttackData* AttackData) const;
+	void PlayAttackMontage(const ACharacter* CombatCharacter, UAnimMontage* Montage) const;
+	void PlayAttackEffects(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponItemData* WeaponData,
+		const UFE_WeaponAttackData* AttackData) const;
+	void PlayAttackPresentation(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponItemData* WeaponData,
+		const UFE_WeaponAttackData* AttackData) const;
+	void ApplyDamage(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponItemData* WeaponData,
+		const UFE_WeaponAttackData* AttackData,
+		AActor* TargetActor,
+		const FHitResult& HitResult) const;
 
-	virtual void ExecuteAttack(const AFE_CombatCharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const;
+	virtual void ExecuteAttack(const ACharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UFE_WeaponAttackData> CachedAttackData;

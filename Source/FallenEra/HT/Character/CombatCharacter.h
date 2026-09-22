@@ -3,30 +3,35 @@
 #include "CoreMinimal.h"
 #include "AbilitySystemComponent.h"
 #include "FallenEraCharacter.h"
+#include "HT/Component/EquipmentComponent.h"
+#include "HT/Interface/Damageable.h"
+#include "HT/Interface/CombatPresentation.h"
 #include "CombatCharacter.generated.h"
 
 class UInputAction;
 class UInputMappingContext;
-class UStaticMeshComponent;
-class UAnimInstance;
+class UAnimMontage;
 class UFE_WeaponItemData;
 class UFE_WeaponAttackData;
-
-DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEWeaponChanged, const UFE_WeaponItemData*);
 
 /**
  * Personal combat-character sandbox. Keep this class isolated until the weapon flow is ready to merge
  * into AFallenEraCharacter.
  */
 UCLASS()
-class FALLENERA_API AFE_CombatCharacter : public AFallenEraCharacter
+class FALLENERA_API AFE_CombatCharacter : public AFallenEraCharacter, public IFE_CombatPresentation, public IFE_Damageable
 {
 	GENERATED_BODY()
 
 public:
 	AFE_CombatCharacter();
+	virtual USkeletalMeshComponent* GetCombatFirstPersonMesh() const override { return GetFirstPersonMesh(); }
+	virtual FFE_CombatDamageResult ReceiveCombatDamage_Implementation(
+		const FFE_CombatDamageRequest& DamageRequest) override;
 
 	virtual void BeginPlay() override;
+	virtual void PossessedBy(AController* NewController) override;
+	virtual void OnRep_PlayerState() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -37,7 +42,7 @@ public:
 	void EquipWeaponByItemTag(FGameplayTag ItemTag);
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Weapon")
-	const UFE_WeaponItemData* GetCurrentWeaponData() const { return CurrentWeaponData; }
+	const UFE_WeaponItemData* GetCurrentWeaponData() const;
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Weapon")
 	const UFE_WeaponAttackData* GetCurrentAttackForInputTag(FGameplayTag InputTag) const;
@@ -45,20 +50,21 @@ public:
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Weapon")
 	FGameplayTag GetCurrentItemTag() const;
 
-	FOnFEWeaponChanged& OnWeaponChanged() { return WeaponChangedDelegate; }
+	FOnFEWeaponChanged& OnWeaponChanged() { return EquipmentComponent->OnWeaponChanged(); }
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Weapon")
-	int32 GetCurrentItemTagIndex() const { return CurrentItemTagIndex; }
+	int32 GetCurrentItemTagIndex() const;
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Equipment")
+	UFE_EquipmentComponent* GetEquipmentComponent() const { return EquipmentComponent; }
+
+	/** Plays an attack montage on the character's world/first-person meshes. */
+	void PlayAttackMontage(UAnimMontage* Montage);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayAttackMontage(UAnimMontage* Montage);
 
 protected:
-	/** Temporary test inventory. Inventory equipment will replace this input later. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Test Inventory")
-	TArray<FGameplayTag> TestItemTags;
-
-	/** Weapon data candidates searched by TestItemTags. Use soft references to keep the character light. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Test Inventory")
-	TArray<TSoftObjectPtr<UFE_WeaponItemData>> WeaponDataAssets;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
 	TObjectPtr<UInputMappingContext> CombatMappingContext;
 
@@ -75,29 +81,8 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
 	TObjectPtr<UInputAction> CombatSwapAction;
 
-	/** World representation: other players see this on the full-body mesh, while the owner does not. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Weapon")
-	TObjectPtr<UStaticMeshComponent> EquippedWorldWeaponMesh;
-
-	/** First-person representation: only the owning player sees this on FirstPersonMesh. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Weapon")
-	TObjectPtr<UStaticMeshComponent> EquippedFirstPersonWeaponMesh;
-
-	UPROPERTY(ReplicatedUsing=OnRep_CurrentItemTagIndex, VisibleInstanceOnly, BlueprintReadOnly, Category="FallenEra|Combat|Weapon")
-	int32 CurrentItemTagIndex = INDEX_NONE;
-
-	UPROPERTY(Transient, VisibleInstanceOnly, BlueprintReadOnly, Category="FallenEra|Combat|Weapon")
-	TObjectPtr<UFE_WeaponItemData> CurrentWeaponData;
-
-	/** The currently linked weapon layer is tracked so a swap can unlink it from both meshes first. */
-	UPROPERTY(Transient)
-	TSubclassOf<UAnimInstance> CurrentWeaponAnimLayerClass;
-
-	UFUNCTION()
-	void OnRep_CurrentItemTagIndex();
-
-	UFUNCTION(Server, Reliable)
-	void ServerCycleWeapon();
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Equipment", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UFE_EquipmentComponent> EquipmentComponent;
 
 	void HandleCombatLeftClickStarted(const FInputActionValue& Value);
 	void HandleCombatLeftClickReleased(const FInputActionValue& Value);
@@ -106,16 +91,6 @@ protected:
 	void HandleCombatSwap(const FInputActionValue& Value);
 
 	void SetCombatInputEnabled(bool bEnabled);
-	void EquipCurrentWeapon();
-	void ClearWeaponVisuals();
-	void ApplyWeaponVisuals();
-	void UpdateWeaponAnimLayers(TSubclassOf<UAnimInstance> NewAnimLayerClass);
-	void CacheWeaponAbilities();
-	void ClearWeaponAbilities();
-	UFE_WeaponItemData* FindWeaponDataForTag(FGameplayTag ItemTag) const;
 	void PressCombatAbility(const FGameplayTag& InputTag);
 	void ReleaseCombatAbility(const FGameplayTag& InputTag);
-
-	TArray<FGameplayAbilitySpecHandle> GrantedWeaponAbilityHandles;
-	FOnFEWeaponChanged WeaponChangedDelegate;
 };

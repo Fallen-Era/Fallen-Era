@@ -3,7 +3,7 @@
 #include "Components/Image.h"
 #include "Engine/Texture2D.h"
 #include "GameFramework/Pawn.h"
-#include "HT/Character/CombatCharacter.h"
+#include "HT/Component/EquipmentComponent.h"
 #include "HT/Weapon/WeaponItemData.h"
 #include "Styling/SlateBrush.h"
 
@@ -15,14 +15,14 @@ void UFE_PlayerCrossHairWidget::NativeConstruct()
 
 void UFE_PlayerCrossHairWidget::NativeDestruct()
 {
-	UnbindFromCharacter();
+	UnbindFromEquipment();
 	Super::NativeDestruct();
 }
 
 void UFE_PlayerCrossHairWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
-	if (!BoundCharacter.IsValid())
+	if (!BoundEquipment.IsValid())
 	{
 		RefreshFromCharacter();
 	}
@@ -31,38 +31,39 @@ void UFE_PlayerCrossHairWidget::NativeTick(const FGeometry& MyGeometry, float In
 void UFE_PlayerCrossHairWidget::RefreshFromCharacter()
 {
 	APawn* Pawn = GetOwningPlayerPawn();
-	AFE_CombatCharacter* CombatCharacter = Cast<AFE_CombatCharacter>(Pawn);
-	if (!CombatCharacter)
+	UFE_EquipmentComponent* Equipment = Pawn ? Pawn->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+	if (!Equipment)
 	{
+		UnbindFromEquipment();
 		OnWeaponChanged(nullptr);
 		return;
 	}
 
-	BindToCharacter(CombatCharacter);
-	OnWeaponChanged(CombatCharacter->GetCurrentWeaponData());
+	BindToEquipment(Equipment);
+	OnWeaponChanged(Equipment->GetCurrentWeaponData());
 }
 
-void UFE_PlayerCrossHairWidget::BindToCharacter(AFE_CombatCharacter* CombatCharacter)
+void UFE_PlayerCrossHairWidget::BindToEquipment(UFE_EquipmentComponent* Equipment)
 {
-	if (BoundCharacter.Get() == CombatCharacter)
+	if (BoundEquipment.Get() == Equipment)
 	{
 		return;
 	}
 
-	UnbindFromCharacter();
-	BoundCharacter = CombatCharacter;
-	WeaponChangedHandle = CombatCharacter->OnWeaponChanged().AddUObject(this, &UFE_PlayerCrossHairWidget::OnWeaponChanged);
+	UnbindFromEquipment();
+	BoundEquipment = Equipment;
+	WeaponChangedHandle = Equipment->OnWeaponChanged().AddUObject(this, &UFE_PlayerCrossHairWidget::OnWeaponChanged);
 }
 
-void UFE_PlayerCrossHairWidget::UnbindFromCharacter()
+void UFE_PlayerCrossHairWidget::UnbindFromEquipment()
 {
-	if (AFE_CombatCharacter* CombatCharacter = BoundCharacter.Get(); CombatCharacter && WeaponChangedHandle.IsValid())
+	if (UFE_EquipmentComponent* Equipment = BoundEquipment.Get(); Equipment && WeaponChangedHandle.IsValid())
 	{
-		CombatCharacter->OnWeaponChanged().Remove(WeaponChangedHandle);
+		Equipment->OnWeaponChanged().Remove(WeaponChangedHandle);
 	}
 
 	WeaponChangedHandle.Reset();
-	BoundCharacter.Reset();
+	BoundEquipment.Reset();
 }
 
 void UFE_PlayerCrossHairWidget::OnWeaponChanged(const UFE_WeaponItemData* WeaponData)
@@ -78,7 +79,7 @@ void UFE_PlayerCrossHairWidget::OnWeaponChanged(const UFE_WeaponItemData* Weapon
 	}
 
 	CachedWeaponData = WeaponData;
-	UTexture2D* CrosshairTexture = WeaponData ? WeaponData->CrosshairTexture.LoadSynchronous() : nullptr;
+	UTexture2D* CrosshairTexture = WeaponData ? WeaponData->CrosshairTexture.Get() : nullptr;
 	if (CrosshairTexture)
 	{
 		Image_CrossHair->SetBrushFromTexture(CrosshairTexture, true);

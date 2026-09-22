@@ -20,9 +20,11 @@ public class FallenEra : ModuleRules
 			"AIModule",
 			"StateTreeModule",
 			"GameplayStateTreeModule",
+			"Niagara",
 			"UMG",
 			"Slate",
-			"SlateCore"
+			"SlateCore",
+			"PhysicsCore"
 			
 		});
 

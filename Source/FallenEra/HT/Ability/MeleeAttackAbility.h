@@ -32,15 +32,14 @@ public:
 		bool bWasCancelled) override;
 
 protected:
-	virtual void ExecuteAttack(const AFE_CombatCharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const override;
+	virtual void ExecuteAttack(const ACharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const override;
 
 private:
 	void PerformCurrentAttack();
 	void StartMeleeTrace();
 	void StopMeleeTrace();
 	void WaitForAttackEvents();
-	FGameplayTag GetAttackStartEventTag(const UFE_MeleeAttackData* AttackData) const;
-	FGameplayTag GetAttackEndEventTag(const UFE_MeleeAttackData* AttackData) const;
+	void CompleteCurrentAttack();
 
 	UFUNCTION()
 	void OnInputReleased(float TimeHeld);
@@ -50,6 +49,9 @@ private:
 
 	UFUNCTION()
 	void OnAttackEndEvent(FGameplayEventData Payload);
+
+	UFUNCTION()
+	void OnAttackResetEvent(FGameplayEventData Payload);
 
 	UFUNCTION()
 	void ExecuteCurrentTrace();
@@ -68,6 +70,9 @@ private:
 	TObjectPtr<UAbilityTask_WaitGameplayEvent> AttackStartTask;
 
 	UPROPERTY()
+	TObjectPtr<UAbilityTask_WaitGameplayEvent> AttackResetTask;
+
+	UPROPERTY()
 	TObjectPtr<UFE_MeleeTraceTask> MeleeTraceTask;
 
 	UPROPERTY()
@@ -84,4 +89,5 @@ private:
 
 	/** Prevents applying the same melee attack to the same actor every trace frame. */
 	mutable TSet<AActor*> DamagedActorsThisAttack;
+	mutable TMap<TWeakObjectPtr<AActor>, float> NextRepeatedHitTimes;
 };

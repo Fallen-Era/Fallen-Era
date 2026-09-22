@@ -15,6 +15,10 @@ void UFallenEraAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag
 	{
 		if (AbilitySpec.Ability && AbilitySpec.GetDynamicSpecSourceTags().HasTagExact(InputTag))
 		{
+			const UFallenEraGameplayAbility* AbilityCDO = Cast<UFallenEraGameplayAbility>(AbilitySpec.Ability);
+			const bool bUsesHeldActivation = AbilityCDO &&
+				AbilityCDO->GetActivationPolicy() == EFallenEraAbilityActivationPolicy::WhileInputActive;
+
 			// Do not discard a pending release while an ability is active. Otherwise
 			// a quick re-press can keep an attack ability active indefinitely.
 			if (!AbilitySpec.IsActive())
@@ -24,9 +28,12 @@ void UFallenEraAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag
 			}
 			else
 			{
-				// Preserve a press that happened during the previous attack. It is
-				// consumed once the active ability finishes.
-				PendingReactivationSpecHandles.AddUnique(AbilitySpec.Handle);
+				// Held-policy abilities retry through InputHeldSpecHandles. Only
+				// one-shot abilities need an explicit pending reactivation.
+				if (!bUsesHeldActivation)
+				{
+					PendingReactivationSpecHandles.AddUnique(AbilitySpec.Handle);
+				}
 			}
 			InputPressedSpecHandles.AddUnique(AbilitySpec.Handle);
 			InputHeldSpecHandles.AddUnique(AbilitySpec.Handle);
