@@ -50,6 +50,12 @@ public:
     
     /** [Server Only] 서브시스템이 재계산 결과를 기록 */
     void SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance);
+    
+    /** [Server Only] 저장용 스냅샷 기록. 서브클래스는 Super 호출 후 자기 상태를 Flags/OwnerId 에 채운다. */
+    virtual void WriteRecord(FFEBuildPieceRecord& OutRecord) const;
+
+    /** [Server Only] 복원. SpawnActorDeferred → InitializePiece → ReadRecord → FinishSpawning 순서로 호출한다. */
+    virtual void ReadRecord(const FFEBuildPieceRecord& Record);
 
     /** [Client Only] 프리뷰 고스트 색상(유효/무효) 교체. 서브클래스는 추가 메시에도 적용 */
     virtual void SetPreviewValid(bool bIsValid);

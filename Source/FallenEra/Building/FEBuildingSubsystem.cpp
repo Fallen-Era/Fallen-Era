@@ -5,6 +5,9 @@
 #include "FEBuildInventoryProvider.h"
 #include "FEBuildPiece.h"
 #include "FEBuildPieceDefinition.h"
+#include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
+#include "HAL/IConsoleManager.h"
 #include "FEBuildingSettings.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
@@ -22,6 +25,33 @@ namespace
     /** 침구 위 리스폰 높이 */
     constexpr float RespawnHeight = 100.f;
 }
+
+// 세이브 인터페이스가 오기 전까지 쓰는 인메모리 스냅샷. 그때 이 전역과 명령 2개는 어댑터 호출로 바뀐다.
+static TArray<FFEBuildPieceRecord> GBuildSnapshot;
+
+static FAutoConsoleCommandWithWorld CmdBuildSnapshotSave(
+    TEXT("fe.Build.SnapshotSave"),
+    TEXT("Save all placed build pieces into an in-memory snapshot."),
+    FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+    {
+        if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(World))
+        {
+            Subsystem->CollectRecords(GBuildSnapshot);
+            UE_LOG(LogFEBuilding, Log, TEXT("Snapshot saved: %d piece(s)"), GBuildSnapshot.Num());
+        }
+    }));
+
+static FAutoConsoleCommandWithWorld CmdBuildSnapshotLoad(
+    TEXT("fe.Build.SnapshotLoad"),
+    TEXT("Destroy current build pieces and restore the in-memory snapshot."),
+    FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+    {
+        if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(World))
+        {
+            UE_LOG(LogFEBuilding, Log, TEXT("Snapshot load requested: %d piece(s)"), GBuildSnapshot.Num());
+            Subsystem->RestoreRecords(GBuildSnapshot);
+        }
+    }));
 
 UFEBuildingSubsystem* UFEBuildingSubsystem::Get(const UWorld* World)
 {
@@ -183,33 +213,41 @@ void UFEBuildingSubsystem::MarkDirty()
     RecalculateTimer = World->GetTimerManager().SetTimerForNextTick(this, &UFEBuildingSubsystem::Recalculate);
 }
 
+FString UFEBuildingSubsystem::GetStablePlayerId(const APlayerState* PlayerState)
+{
+    // HT 가 AFallenEraPlayerState::GetStablePlayerId() 를 추가하면 아래 return 한 줄만 교체한다.
+    //   return PlayerState ? Cast<AFallenEraPlayerState>(PlayerState)->GetStablePlayerId() : FString();
+    // 그때까지는 플레이어 이름으로 대신한다 — 같은 세션 안에서만 확실히 유효하다.
+    return PlayerState ? PlayerState->GetPlayerName() : FString();
+}
+
 void UFEBuildingSubsystem::SetRespawnBed(APlayerState* PlayerState, AFEBuildBed* Bed)
 {
-    if (PlayerState == nullptr || Bed == nullptr)
+    const FString PlayerId = GetStablePlayerId(PlayerState);
+    if (PlayerId.IsEmpty() || Bed == nullptr)
     {
         return;
     }
 
     // 플레이어당 침구 하나: 이전 침구 해제
-    if (TObjectPtr<AFEBuildBed>* Previous = RespawnBeds.Find(PlayerState))
+    if (TObjectPtr<AFEBuildBed>* Previous = RespawnBeds.Find(PlayerId))
     {
         if (*Previous && *Previous != Bed)
         {
-            (*Previous)->SetOwnerPlayerState(nullptr);
+            (*Previous)->SetOwnerPlayerId(FString());
         }
     }
     // 침구당 주인 하나: 다른 플레이어가 쓰던 침구면 그쪽 등록 해제
-    if (APlayerState* OldOwner = Bed->GetOwnerPlayerState())
+    const FString OldOwnerId = Bed->GetOwnerPlayerId();
+    if (!OldOwnerId.IsEmpty() && OldOwnerId != PlayerId)
     {
-        if (OldOwner != PlayerState)
-        {
-            RespawnBeds.Remove(OldOwner);
-        }
+        RespawnBeds.Remove(OldOwnerId);
     }
 
-    RespawnBeds.Add(PlayerState, Bed);
-    Bed->SetOwnerPlayerState(PlayerState);
-    UE_LOG(LogFEBuilding, Log, TEXT("Respawn bed set: %s -> %s"), *GetNameSafe(PlayerState), *Bed->GetName());
+    RespawnBeds.Add(PlayerId, Bed);
+    Bed->SetOwnerPlayerId(PlayerId);
+    UE_LOG(LogFEBuilding, Log, TEXT("Respawn bed set: %s -> %s"), *PlayerId, *Bed->GetName());
+
 }
 
 void UFEBuildingSubsystem::ClearRespawnBed(AFEBuildBed* Bed)
@@ -233,7 +271,7 @@ bool UFEBuildingSubsystem::GetRespawnTransform(const APlayerState* PlayerState, 
     {
         return false;
     }
-    const TObjectPtr<AFEBuildBed>* Found = RespawnBeds.Find(const_cast<APlayerState*>(PlayerState));
+    const TObjectPtr<AFEBuildBed>* Found = RespawnBeds.Find(GetStablePlayerId(PlayerState));
     const bool bHasBed = Found != nullptr && IsValid(*Found) && (*Found)->GetState() == EFEBuildPieceState::Built;
     if (!bHasBed)
     {
@@ -243,6 +281,113 @@ bool UFEBuildingSubsystem::GetRespawnTransform(const APlayerState* PlayerState, 
     OutTransform.AddToTranslation(FVector(0.f, 0.f, RespawnHeight));
     OutTransform.SetScale3D(FVector::OneVector);
     return true;
+}
+
+void UFEBuildingSubsystem::CollectRecords(TArray<FFEBuildPieceRecord>& OutRecords) const
+{
+    OutRecords.Reset();
+    
+    const UWorld* World = GetWorld();
+    if (World == nullptr || World->GetNetMode() == NM_Client)
+    {
+        // [Server Only] Pieces 는 서버에서만 등록된다. 클라 창에서 부르면 0개가 나오므로 조용히 넘어가지 않는다.
+        UE_LOG(LogFEBuilding, Warning, TEXT("CollectRecords: server only. Run this on the listen-server (host) window."));
+        return;
+    }
+    
+    for (const TObjectPtr<AFEBuildPiece>& Piece : Pieces)
+    {
+        // 정의가 아직 해석되지 않은 피스는 PieceId 만 남아 있어 복원 시 메시가 없다. 건너뛴다.
+        if (IsValid(Piece) && Piece->GetDefinition() != nullptr)
+        {
+            Piece->WriteRecord(OutRecords.AddDefaulted_GetRef());
+        }
+    }
+}
+
+void UFEBuildingSubsystem::RestoreRecords(const TArray<FFEBuildPieceRecord>& Records)
+{
+    UWorld* World = GetWorld();
+    if (World == nullptr || World->GetNetMode() == NM_Client)
+    {
+        UE_LOG(LogFEBuilding, Warning, TEXT("RestoreRecords: server only. Run this on the listen-server (host) window."));
+        return; // [Server Only] 클라이언트는 리플리케이션으로 따라온다
+    }
+
+    // 전체 교체. Destroy 가 UnregisterPiece 로 Pieces 를 건드리므로 복사본으로 순회한다.
+    TArray<TObjectPtr<AFEBuildPiece>> Existing = Pieces;
+    for (const TObjectPtr<AFEBuildPiece>& Piece : Existing)
+    {
+        if (IsValid(Piece))
+        {
+            Piece->Destroy();
+        }
+    }
+    RespawnBeds.Reset();
+
+    PendingRestore = Records;
+    if (PendingRestore.Num() == 0)
+    {
+        return;
+    }
+
+    TArray<FPrimaryAssetId> Ids;
+    for (const FFEBuildPieceRecord& Record : PendingRestore)
+    {
+        Ids.AddUnique(Record.PieceId);
+    }
+
+    // 이미 로드된 에셋뿐이면 핸들은 null 로 오고 델리게이트는 즉시 실행된다 (null 은 실패가 아님).
+    RestoreHandle = UAssetManager::Get().LoadPrimaryAssets(
+        Ids, { UFEBuildPieceDefinition::RuntimeBundle },
+        FStreamableDelegate::CreateUObject(this, &UFEBuildingSubsystem::HandleRestoreAssetsLoaded));
+}
+
+void UFEBuildingSubsystem::HandleRestoreAssetsLoaded()
+{
+    RestoreHandle.Reset();
+    UWorld* World = GetWorld();
+    if (World == nullptr)
+    {
+        return;
+    }
+
+    UAssetManager& AssetManager = UAssetManager::Get();
+    int32 RestoredCount = 0;
+
+    for (const FFEBuildPieceRecord& Record : PendingRestore)
+    {
+        const UFEBuildPieceDefinition* Definition = Cast<UFEBuildPieceDefinition>(AssetManager.GetPrimaryAssetObject(Record.PieceId));
+        if (Definition == nullptr)
+        {
+            UE_LOG(LogFEBuilding, Warning, TEXT("Restore skipped: unknown piece %s"), *Record.PieceId.ToString());
+            continue;
+        }
+
+        UClass* PieceClass = Definition->PieceClass.Get();
+        const FTransform Transform(FRotator(0.f, Record.Yaw, 0.f), Record.Location);
+
+        // 저장된 데이터는 이미 검증을 통과했던 배치다. ValidatePlacement 를 다시 돌리지 않는다
+        // (복원 도중에는 이웃이 아직 안 생겨 스냅 검사가 전부 실패한다).
+        AFEBuildPiece* Spawned = World->SpawnActorDeferred<AFEBuildPiece>(
+            PieceClass ? PieceClass : AFEBuildPiece::StaticClass(), Transform, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+        Spawned->InitializePiece(Definition, Record.State);
+        Spawned->ReadRecord(Record);
+        Spawned->FinishSpawning(Transform);
+
+        if (AFEBuildBed* Bed = Cast<AFEBuildBed>(Spawned))
+        {
+            if (!Bed->GetOwnerPlayerId().IsEmpty())
+            {
+                RespawnBeds.Add(Bed->GetOwnerPlayerId(), Bed);
+            }
+        }
+        ++RestoredCount;
+    }
+
+    PendingRestore.Reset();
+    MarkDirty(); // 지지 거리는 전부 스폰된 뒤 한 번에 다시 계산
+    UE_LOG(LogFEBuilding, Log, TEXT("Restored %d piece(s)"), RestoredCount);
 }
 
 void UFEBuildingSubsystem::Recalculate()

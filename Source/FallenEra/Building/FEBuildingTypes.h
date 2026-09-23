@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Logging/LogMacros.h"
+#include "UObject/PrimaryAssetId.h"
 #include "FEBuildingTypes.generated.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogFEBuilding, Log, All);
@@ -62,4 +63,39 @@ struct FALLENERA_API FFEBuildSocket
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
 	FTransform LocalTransform;
+};
+
+/**
+ * 저장·복원용 피스 1개 스냅샷. 액터 포인터를 담지 않고 값만 담는다 (세이브 파일로 그대로 나가야 하므로).
+ * 서브클래스의 추가 상태는 구조체를 늘리지 않고 Flags(문 열림 등)와 OwnerId(침구 주인)로 좁게 표현한다.
+ */
+USTRUCT()
+struct FALLENERA_API FFEBuildPieceRecord
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FPrimaryAssetId PieceId;
+
+	UPROPERTY()
+	FVector Location = FVector::ZeroVector;
+
+	/** 배치는 Yaw 만 쓴다 (Pitch/Roll 없음) */
+	UPROPERTY()
+	float Yaw = 0.f;
+
+	UPROPERTY()
+	EFEBuildPieceState State = EFEBuildPieceState::Blueprint;
+
+	/** RequiredItems 인덱스별 투입량 */
+	UPROPERTY()
+	TArray<int32> SuppliedCounts;
+
+	/** 피스별 비트 플래그. 문: bit0 = 열림 */
+	UPROPERTY()
+	uint8 Flags = 0;
+
+	/** 침구 주인의 안정 플레이어 ID. 그 외 피스는 빈 문자열 */
+	UPROPERTY()
+	FString OwnerId;
 };
