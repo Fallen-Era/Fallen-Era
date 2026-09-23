@@ -52,6 +52,4 @@ protected:
 	virtual FText GetInteractTextBuilt(AActor* InstigatorActor) const override;
 	virtual void InteractBuilt(AActor* InstigatorActor) override;
 	virtual void OnApplyState(EFEBuildPieceState NewState) override;
-	virtual void WriteRecord(FFEBuildPieceRecord& OutRecord) const override;
-	virtual void ReadRecord(const FFEBuildPieceRecord& Record) override;
 };

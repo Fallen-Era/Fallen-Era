@@ -15,25 +15,24 @@ class FALLENERA_API AFEBuildBed : public AFEBuildPiece
 	GENERATED_BODY()
 
 public:
-	/** [Server Only] 서브시스템이 호출. 빈 문자열이면 주인 없음 */
-	void SetOwnerPlayerId(const FString& NewOwnerId);
+	/** [Server Only] 서브시스템이 호출 */
+	void SetOwnerPlayerState(APlayerState* NewOwner);
 
-	const FString& GetOwnerPlayerId() const;
+	UFUNCTION(BlueprintPure, Category = "FallenEra|Building|Bed")
+	APlayerState* GetOwnerPlayerState() const;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	/** 이 침구를 리스폰 지점으로 쓰는 플레이어의 안정 ID. 프롬프트 문구용으로 리플리케이트 */
+	/** 이 침구를 리스폰 지점으로 쓰는 플레이어. 프롬프트 문구용으로 리플리케이트 */
 	UPROPERTY(Replicated)
-	FString OwnerPlayerId;
+	TObjectPtr<APlayerState> OwnerPlayerState;
 
 	virtual bool CanInteractBuilt(AActor* InstigatorActor) const override;
 	virtual FText GetInteractTextBuilt(AActor* InstigatorActor) const override;
 	virtual void InteractBuilt(AActor* InstigatorActor) override;
-	virtual void WriteRecord(FFEBuildPieceRecord& OutRecord) const override;
-	virtual void ReadRecord(const FFEBuildPieceRecord& Record) override;
 
 private:
 	static APlayerState* GetPlayerStateOf(const AActor* Actor);

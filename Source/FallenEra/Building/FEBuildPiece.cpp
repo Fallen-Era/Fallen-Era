@@ -203,23 +203,6 @@ void AFEBuildPiece::SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDis
     SupportDistance = InBuiltDistance;
 }
 
-void AFEBuildPiece::WriteRecord(FFEBuildPieceRecord& OutRecord) const
-{
-    OutRecord.PieceId = PieceId;
-    OutRecord.Location = GetActorLocation();
-    OutRecord.Yaw = GetActorRotation().Yaw;
-    OutRecord.State = State;
-    OutRecord.SuppliedCounts = SuppliedCounts;
-}
-
-void AFEBuildPiece::ReadRecord(const FFEBuildPieceRecord& Record)
-{
-    // State 와 PieceId 는 앞서 호출된 InitializePiece 가 이미 잡았다. 여기서는 그게 덮어쓴 투입량만 되돌린다.
-    // 정의가 바뀌어 재료 항목 수가 달라졌을 수 있으므로 현재 정의 길이에 맞춘다 (인덱스 기반 접근이 깨지지 않게).
-    SuppliedCounts = Record.SuppliedCounts;
-    SuppliedCounts.SetNum(Definition ? Definition->RequiredItems.Num() : 0);
-}
-
 void AFEBuildPiece::SetPreviewValid(bool bIsValid)
 {
     const UFEBuildingSettings* Settings = UFEBuildingSettings::Get();

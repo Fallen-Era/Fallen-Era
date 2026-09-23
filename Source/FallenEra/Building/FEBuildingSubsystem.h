@@ -12,7 +12,6 @@ class AFEBuildPiece;
 class APlayerState;
 class IFEBuildInventoryProvider;
 class UFEBuildPieceDefinition;
-struct FStreamableHandle;
 
 /**
  * 구조 안정성(지지 거리) 계산과 붕괴 처리. [Server Only] 상태를 가지며, static 함수들은 클라/서버 공용.
@@ -64,15 +63,6 @@ public:
     /** 리스폰 위치. 침구가 없으면 false. 사망/리스폰 로직(HT)이 ChoosePlayerStart 에서 호출하는 연결 지점. */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     bool GetRespawnTransform(const APlayerState* PlayerState, FTransform& OutTransform) const;
-    
-    /** 세션·재접속에 무관한 플레이어 식별자. 침구 주인 판정과 저장의 유일한 키. */
-    static FString GetStablePlayerId(const APlayerState* PlayerState);
-
-    /** [Server Only] 배치된 모든 피스를 레코드로. OutRecords 는 비워진 뒤 채워진다. */
-    void CollectRecords(TArray<FFEBuildPieceRecord>& OutRecords) const;
-
-    /** [Server Only] 현재 구조물을 전부 지우고 레코드로 교체. 정의 에셋 로드가 끝난 뒤 비동기로 스폰된다. */
-    void RestoreRecords(const TArray<FFEBuildPieceRecord>& Records);
 
     virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
 
@@ -83,13 +73,6 @@ private:
     void ComputeDistances(const TMap<AFEBuildPiece*, TArray<AFEBuildPiece*>>& Adjacency, bool bBuiltOnly, TMap<AFEBuildPiece*, uint8>& OutDistance) const;
 
     void CollapseNext();
-    
-    void HandleRestoreAssetsLoaded();
-
-    UPROPERTY(Transient)
-    TArray<FFEBuildPieceRecord> PendingRestore;
-
-    TSharedPtr<FStreamableHandle> RestoreHandle;
 
     UPROPERTY(Transient)
     TArray<TObjectPtr<AFEBuildPiece>> Pieces;
@@ -98,9 +81,9 @@ private:
     UPROPERTY(Transient)
     TArray<TObjectPtr<AFEBuildPiece>> CollapseQueue;
     
-    /** 플레이어 ID별 리스폰 침구 */
+    /** 플레이어별 리스폰 침구 */
     UPROPERTY(Transient)
-    TMap<FString, TObjectPtr<AFEBuildBed>> RespawnBeds;
+    TMap<TObjectPtr<APlayerState>, TObjectPtr<AFEBuildBed>> RespawnBeds;
 
     FTimerHandle RecalculateTimer;
     FTimerHandle CollapseTimer;

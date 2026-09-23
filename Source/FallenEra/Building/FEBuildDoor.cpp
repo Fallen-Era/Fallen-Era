@@ -13,8 +13,7 @@ AFEBuildDoor::AFEBuildDoor()
     Panel = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Panel"));
     Panel->SetupAttachment(Mesh);
     Panel->SetCollisionProfileName(TEXT("BuildBlueprint"));
-    // 문짝은 여닫히며 움직이므로 Movable. Static 이면 런타임 회전 시 NavMesh 가 갱신되지 않는다.
-    Panel->SetMobility(EComponentMobility::Movable);
+    Panel->SetCanEverAffectNavigation(false); // 문과 NavMesh 연동은 S6
 }
 
 void AFEBuildDoor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -68,8 +67,6 @@ void AFEBuildDoor::OnApplyState(EFEBuildPieceState NewState)
     Panel->SetRelativeLocation(HingeOffset);
     Panel->EmptyOverrideMaterials();
     Panel->SetCollisionProfileName(GetCollisionProfileForState(NewState));
-    // 완성된 문만 NavMesh 에 반영. 청사진·고스트는 좀비가 그냥 지나간다.
-    Panel->SetCanEverAffectNavigation(NewState == EFEBuildPieceState::Built);
 
     switch (NewState)
     {
@@ -83,19 +80,6 @@ void AFEBuildDoor::OnApplyState(EFEBuildPieceState NewState)
         break;
     }
     OnRep_IsOpen();
-}
-
-void AFEBuildDoor::WriteRecord(FFEBuildPieceRecord& OutRecord) const
-{
-    Super::WriteRecord(OutRecord);
-    OutRecord.Flags = bIsOpen ? 1 : 0;
-}
-
-void AFEBuildDoor::ReadRecord(const FFEBuildPieceRecord& Record)
-{
-    Super::ReadRecord(Record);
-    bIsOpen = (Record.Flags & 1) != 0;
-    OnRep_IsOpen(); // InitializePiece 가 닫힌 상태로 그려 놓았으므로 여기서 각도를 다시 잡는다
 }
 
 #undef LOCTEXT_NAMESPACE

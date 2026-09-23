@@ -11,7 +11,7 @@
 void AFEBuildBed::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	DOREPLIFETIME(AFEBuildBed, OwnerPlayerId);
+	DOREPLIFETIME(AFEBuildBed, OwnerPlayerState);
 }
 
 void AFEBuildBed::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -26,17 +26,17 @@ void AFEBuildBed::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
-void AFEBuildBed::SetOwnerPlayerId(const FString& NewOwnerId)
+void AFEBuildBed::SetOwnerPlayerState(APlayerState* NewOwner)
 {
 	if (HasAuthority())
 	{
-		OwnerPlayerId = NewOwnerId;
+		OwnerPlayerState = NewOwner;
 	}
 }
 
-const FString& AFEBuildBed::GetOwnerPlayerId() const
+APlayerState* AFEBuildBed::GetOwnerPlayerState() const
 {
-	return OwnerPlayerId;
+	return OwnerPlayerState;
 }
 
 APlayerState* AFEBuildBed::GetPlayerStateOf(const AActor* Actor)
@@ -52,9 +52,7 @@ bool AFEBuildBed::CanInteractBuilt(AActor* InstigatorActor) const
 
 FText AFEBuildBed::GetInteractTextBuilt(AActor* InstigatorActor) const
 {
-	const FString MyId = UFEBuildingSubsystem::GetStablePlayerId(GetPlayerStateOf(InstigatorActor));
-	const bool bIsMine = !MyId.IsEmpty() && MyId == OwnerPlayerId;
-	
+	const bool bIsMine = OwnerPlayerState != nullptr && OwnerPlayerState == GetPlayerStateOf(InstigatorActor);
 	return bIsMine ? LOCTEXT("BedMine", "내 스폰 지점") : LOCTEXT("BedSet", "스폰 지점으로 설정");
 }
 
@@ -66,18 +64,6 @@ void AFEBuildBed::InteractBuilt(AActor* InstigatorActor)
 	{
 		Subsystem->SetRespawnBed(PlayerState, this);
 	}
-}
-
-void AFEBuildBed::WriteRecord(FFEBuildPieceRecord& OutRecord) const
-{
-	Super::WriteRecord(OutRecord);
-	OutRecord.OwnerId = OwnerPlayerId;
-}
-
-void AFEBuildBed::ReadRecord(const FFEBuildPieceRecord& Record)
-{
-	Super::ReadRecord(Record);
-	OwnerPlayerId = Record.OwnerId;
 }
 
 #undef LOCTEXT_NAMESPACE
