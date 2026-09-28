@@ -24,7 +24,8 @@ public class FallenEra : ModuleRules
 			"Slate",
 			"Voxel",
 			"VoxelGraph",
-			"VoxelCore"
+			"VoxelCore",
+			"DeveloperSettings"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] 

@@ -27,6 +27,7 @@ protected:
 	
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UButton> Btn_LoadGame;
+
 	
 public:
 	UPROPERTY(BlueprintAssignable)

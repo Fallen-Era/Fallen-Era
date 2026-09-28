@@ -10,6 +10,10 @@
 class UButton;
 class UEditableText;
 
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnNewGameExitClicked);
+
+
 /**
  * 
  */
@@ -30,6 +34,9 @@ protected:
 	TObjectPtr<UButton> Btn_WorldGen;
 	
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UButton> Btn_Exit;
+	
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UEditableText> EDIT_TXT_WorldName;
 	
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
@@ -41,10 +48,18 @@ protected:
 	FText ValidSizeX;
 	FText ValidSizeY;
 	
+public:
+	
+	UPROPERTY(BlueprintAssignable)
+	FOnNewGameExitClicked OnNewGameExitClicked;
+	
 private:
 	
 	UFUNCTION()
 	void OnWorldGenerateClicked();
+	
+	UFUNCTION()
+	void OnExitClicked();
 	
 	UFUNCTION()
 	void OnTXTSizeXChanged(const FText& Text);

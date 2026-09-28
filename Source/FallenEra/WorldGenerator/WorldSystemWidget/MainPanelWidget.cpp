@@ -18,6 +18,11 @@ void UMainPanelWidget::NativeConstruct()
 	
 	MainMenu->OnNewWorldRequested.AddDynamic(this, &UMainPanelWidget::HandleNewGameRequested);
 	MainMenu->OnLoadWorldRequested.AddDynamic(this, &UMainPanelWidget::HandleLoadGameRequested);
+	
+	NewGame->OnNewGameExitClicked.AddDynamic(this, &UMainPanelWidget::HandleMainMenuRequested);
+	LoadGame->OnLoadGameExitCliked.AddDynamic(this, &UMainPanelWidget::HandleMainMenuRequested);
+	
+	
 }
 
 void UMainPanelWidget::HandleNewGameRequested()
@@ -28,4 +33,9 @@ void UMainPanelWidget::HandleNewGameRequested()
 void UMainPanelWidget::HandleLoadGameRequested()
 {
 	WidgetSwitcher->SetActiveWidget(LoadGame);
+}
+
+void UMainPanelWidget::HandleMainMenuRequested()
+{
+	WidgetSwitcher->SetActiveWidget(MainMenu);
 }

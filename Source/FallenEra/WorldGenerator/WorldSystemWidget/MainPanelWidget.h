@@ -42,4 +42,7 @@ private:
 	
 	UFUNCTION()
 	void HandleLoadGameRequested();
+	
+	UFUNCTION()
+	void HandleMainMenuRequested();
 };

@@ -26,6 +26,7 @@
 *.lib
 
 *.md
+!/docs/RUNTIME_MESSAGE_SYSTEM.md
 
 # Executables
 *.exe
@@ -88,3 +89,4 @@ Automation_FallenEra.slnx
 
 # World Generator ignore
 Content/VoxelExamples/*
+docs/RUNTIME_MESSAGE_SYSTEM.md

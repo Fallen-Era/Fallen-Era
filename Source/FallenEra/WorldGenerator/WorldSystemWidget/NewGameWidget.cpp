@@ -6,7 +6,7 @@
 #include "Components/Button.h"
 #include "Components/EditableText.h"
 
-#include "FallenEra/AbilitySystem/FallenEraGameplayTags.h"
+#include "WorldGenerator/GameplayTag/WorldGameplayTag.h"
 #include "GameFramework/GameplayMessageSubsystem.h"
 
 
@@ -17,6 +17,11 @@ void UNewGameWidget::NativeConstruct()
 	if (Btn_WorldGen)
 	{
 		Btn_WorldGen->OnClicked.AddDynamic(this, &UNewGameWidget::OnWorldGenerateClicked);
+	}
+	
+	if (Btn_Exit)
+	{
+		Btn_Exit->OnClicked.AddDynamic(this, &UNewGameWidget::OnExitClicked);
 	}
 	
 	
@@ -68,7 +73,12 @@ void UNewGameWidget::OnWorldGenerateClicked()
 	UGameplayMessageSubsystem& MessageSubsystem = 
 		UGameplayMessageSubsystem::Get(this);
 	
-	MessageSubsystem.BroadcastMessage(FallenEraGameplayTags::TAG_Event_World_CreateRequested, Request);
+	MessageSubsystem.BroadcastMessage(WorldGameplayTag::TAG_Event_World_CreateRequested, Request);
+}
+
+void UNewGameWidget::OnExitClicked()
+{
+	OnNewGameExitClicked.Broadcast();
 }
 
 void UNewGameWidget::OnTXTSizeXChanged(const FText& Text)

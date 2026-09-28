@@ -73,7 +73,7 @@ struct FALLENERA_API FWorldProfileData
 	GENERATED_BODY()
 	
 	UPROPERTY()
-	FGuid WorldIds;
+	FGuid WorldId;
 	
 	UPROPERTY()
 	int32 SchemaVersion = 1;

@@ -10,8 +10,11 @@
 #include "GameFramework/GameplayMessageSubsystem.h"
 #include "WorldRegistrySubsystem.generated.h"
 
+class UWorldGeneratorSettings;
 class UVoxelHeightLayer;
 class UVoxelHeightGraph;
+class UWorldPersistenceTracker;
+
 struct FVoxelHeightGraphStampRef;
 /**
  * 
@@ -55,6 +58,12 @@ private:
 		FString& OutError);
 	
 private:
+	UPROPERTY()
+	const UWorldGeneratorSettings* WorldGeneratorSettings = nullptr;
+	
+	UPROPERTY(Transient)
+	TObjectPtr<UWorldPersistenceTracker> ActiveTracker;
+	
 	UPROPERTY()
 	TArray<FWorldRegistryEntry> Worlds;
 	
