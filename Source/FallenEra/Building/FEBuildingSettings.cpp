@@ -44,3 +44,8 @@ FText UFEBuildingSettings::GetItemDisplayName(FGameplayTag ItemTag) const
 	
 	return FText::FromString(Last.IsEmpty() ? ItemTag.ToString() : Last);
 }
+
+TSoftObjectPtr<UTexture2D> UFEBuildingSettings::GetItemIcon(FGameplayTag ItemTag) const
+{
+	return ItemIcons.FindRef(ItemTag);
+}

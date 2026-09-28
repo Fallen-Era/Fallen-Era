@@ -23,6 +23,7 @@ public class FallenEra : ModuleRules
 			"UMG",
 			"ModelViewViewModel",
 			"Slate",
+			"SlateCore",
 			"DeveloperSettings"
 		});
 

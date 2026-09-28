@@ -24,13 +24,29 @@ int32 UFEMockInventoryComponent::RemoveItems(FGameplayTag ItemTag, int32 Count)
 	return Removed;
 }
 
-void UFEMockInventoryComponent::AddItems(FGameplayTag ItemTag, int32 Count)
+int32 UFEMockInventoryComponent::AddItems(FGameplayTag ItemTag, int32 Count)
 {
 	if (Count <= 0)
 	{
-		return;
+		return 0;
 	}
 	int32& Stock = Items.FindOrAdd(ItemTag);
 	Stock += Count;
 	UE_LOG(LogFEBuilding, Log, TEXT("%s: %s +%d (now %d)"), *GetNameSafe(GetOwner()), *ItemTag.ToString(), Count, Stock);
+	
+	return Count;
+}
+
+void UFEMockInventoryComponent::GetItems(TArray<FFEBuildItemCost>& OutItems) const
+{
+	OutItems.Reset();
+	for (const TPair<FGameplayTag, int32>& Pair : Items)
+	{
+		if (Pair.Value > 0)
+		{
+			FFEBuildItemCost& Entry = OutItems.AddDefaulted_GetRef();
+			Entry.ItemTag = Pair.Key;
+			Entry.Count = Pair.Value;
+		}
+	}
 }

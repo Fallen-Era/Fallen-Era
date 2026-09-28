@@ -21,7 +21,8 @@ class FALLENERA_API UFEMockInventoryComponent : public UActorComponent, public I
 public:
 	virtual int32 CountItems(FGameplayTag ItemTag) const override;
 	virtual int32 RemoveItems(FGameplayTag ItemTag, int32 Count) override;
-	virtual void AddItems(FGameplayTag ItemTag, int32 Count) override;
+	virtual int32 AddItems(FGameplayTag ItemTag, int32 Count) override;
+	virtual void GetItems(TArray<FFEBuildItemCost>& OutItems) const override;
 
 protected:
 	/** 테스트용 초기 재고. 예: Item.Resource.Wood = 100 */

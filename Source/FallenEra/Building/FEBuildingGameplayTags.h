@@ -41,6 +41,7 @@ namespace FEBuildingTags
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_CornerTop);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Furniture_Base);
 
-    // ponytail: 아이템 담당(병일)이 Item.* 태그를 정의하면 이 줄과 DA 의 재료 태그를 교체하고 삭제
+    // 아이템 담당이 Item.* 태그를 정의하면 이 줄과 DA 의 재료 태그를 교체하고 삭제
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_Wood);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_Stone);
 }

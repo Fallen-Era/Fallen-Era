@@ -9,6 +9,7 @@
 #include "FEBuildingTypes.h"
 #include "FEBuildingComponent.generated.h"
 
+class AFEBuildStorage;
 class UFEBuildingViewModel;
 class AFEBuildPiece;
 class UFEBuildPieceDefinition;
@@ -69,6 +70,21 @@ public:
     /** [Client Only] 투입 패널의 한 항목 "넣기" → 서버 요청 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void SupplyItem(FGameplayTag ItemTag);
+    
+    /** [Client Only] 저장고 패널 열기. 같은 저장고면 닫는다. AFEBuildStorage::InteractBuiltLocal 이 호출 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void OpenStoragePanel(AFEBuildStorage* Storage);
+
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void CloseStoragePanel();
+
+    /** [Client Only] 소지품 칸 클릭 → 이 종류를 Count 개 보관함으로 (칸·용량까지) */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void StoreStack(FGameplayTag ItemTag, int32 Count);
+
+    /** [Client Only] 보관함 칸 클릭 → 그 칸을 통째로 내 인벤토리로 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void TakeSlot(int32 SlotIndex, FGameplayTag ItemTag);
 
     /** HUD 위젯이 바인딩할 뷰모델. 지연 생성 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
@@ -102,6 +118,22 @@ protected:
     /** [Server RPC] 요청자의 인벤토리에서 Piece 의 ItemTag 항목에 있는 만큼 투입 */
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerSupplyItem(AFEBuildPiece* Piece, FGameplayTag ItemTag);
+    
+    /** [Server RPC] 요청자의 인벤토리 → 보관함. Count 는 클라 표시 기준이며 서버가 실제 보유량으로 다시 자른다 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerStoreItem(AFEBuildStorage* Storage, FGameplayTag ItemTag, int32 Count);
+
+    /** [Server RPC] 보관함 SlotIndex 칸 → 요청자의 인벤토리 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerTakeItem(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag);
+
+    /** [Server RPC] 패널을 열 때 소지품 목록 요청 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerRequestInventory();
+
+    /** [Client RPC] 소지품 스냅샷. 인벤토리는 리플리케이트되지 않으므로 패널 표시용으로만 받는다 */
+    UFUNCTION(Client, Reliable)
+    void ClientReceiveInventory(const TArray<FFEBuildItemCost>& InItems);
 
 private:
     void HandlePreviewAssetsLoaded(FPrimaryAssetId LoadedPieceId);
@@ -137,6 +169,20 @@ private:
 
     UFUNCTION()
     void HandleSupplyTargetDestroyed(AActor* DestroyedActor);
+    
+    /** 보관함 칸(내용만 갱신)과 소지품 칸(다시 생성)을 그린다 */
+    void RefreshStorageSlots();
+
+    /** [Server Only] 현재 소지품을 요청자에게 보낸다 */
+    void SendInventorySnapshot();
+    
+    /** [Client Only] HUD 에 안내 문구를 2초 띄운다 */
+    void ShowNotice(const FText& Text);
+
+    FTimerHandle NoticeTimer;
+
+    UFUNCTION()
+    void HandleStorageTargetDestroyed(AActor* DestroyedActor);
 
     bool bIsMenuOpen = false;
 
@@ -146,6 +192,13 @@ private:
     /** 투입 패널이 보고 있는 청사진 */
     UPROPERTY(Transient)
     TObjectPtr<AFEBuildPiece> SupplyTarget;
+    
+    /** 저장고 패널이 보고 있는 저장고 */
+    UPROPERTY(Transient)
+    TObjectPtr<AFEBuildStorage> StorageTarget;
+
+    /** [Client Only] 서버가 보내 준 소지품 스냅샷. 패널 표시에만 쓴다 (판정은 전부 서버) */
+    TArray<FFEBuildItemCost> CarriedItems;
 
     TSharedPtr<FStreamableHandle> MenuLoadHandle;
 

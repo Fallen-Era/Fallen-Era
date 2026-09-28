@@ -7,6 +7,7 @@
 #include "FEBuildingSettings.h"
 #include "FEBuildingSubsystem.h"
 #include "FEBuildingViewModel.h"
+#include "FEBuildStorage.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StaticMesh.h"
@@ -189,10 +190,18 @@ void UFEBuildingComponent::CancelBuild()
 
 void UFEBuildingComponent::DemolishPiece()
 {
-    if (AFEBuildPiece* Piece = FindPieceUnderCrosshair())
+    AFEBuildPiece* Piece = FindPieceUnderCrosshair();
+    if (Piece == nullptr) return;
+
+    // 내용물은 리플리케이트되므로 클라가 먼저 판단해 바로 알려 준다. 서버도 같은 검사를 다시 한다.
+    FText Reason;
+    if (!Piece->CanDemolish(Reason))
     {
-        ServerDemolishPiece(Piece);
+        UE_LOG(LogFEBuilding, Log, TEXT("Demolish blocked: %s (%s)"), *Piece->GetName(), *Reason.ToString());
+        ShowNotice(Reason);
+        return;
     }
+    ServerDemolishPiece(Piece);
 }
 
 void UFEBuildingComponent::ToggleBuildMenu()
@@ -302,6 +311,130 @@ void UFEBuildingComponent::CloseSupplyPanel()
     UpdateUIMode();
 }
 
+void UFEBuildingComponent::OpenStoragePanel(AFEBuildStorage* Storage)
+{
+    if (Storage == nullptr || Storage == StorageTarget)
+    {
+        CloseStoragePanel();
+        return;
+    }
+    CloseStoragePanel();
+
+    StorageTarget = Storage;
+    StorageTarget->OnContentsChangedNative.AddUObject(this, &UFEBuildingComponent::RefreshStorageSlots);
+    StorageTarget->OnDestroyed.AddDynamic(this, &UFEBuildingComponent::HandleStorageTargetDestroyed);
+
+    // 보관함 칸은 열 때 Capacity 개를 한 번 만들고 이후엔 내용만 바꾼다. TileView 가 매번 새로 그려지며 깜빡이지 않게.
+    TArray<UObject*> Slots;
+    for (int32 Index = 0; Index < Storage->GetCapacity(); ++Index)
+    {
+        UFEItemSlotViewModel* Slot = NewObject<UFEItemSlotViewModel>(GetViewModel());
+        Slot->Initialize(this, true, Index);
+        Slots.Add(Slot);
+    }
+    GetViewModel()->SetStorageSlots(Slots);
+
+    const UFEBuildPieceDefinition* Definition = Storage->GetDefinition();
+    GetViewModel()->SetStorageTitle(Definition ? Definition->DisplayName : FText::GetEmpty());
+    GetViewModel()->SetStoragePanelOpen(true);
+
+    RefreshStorageSlots();      // 보관함 내용만으로 먼저 그린다
+    ServerRequestInventory();   // 소지품이 도착하면 ClientReceiveInventory 가 다시 그린다
+    UpdateUIMode();
+}
+
+void UFEBuildingComponent::CloseStoragePanel()
+{
+    if (StorageTarget)
+    {
+        StorageTarget->OnContentsChangedNative.RemoveAll(this);
+        StorageTarget->OnDestroyed.RemoveDynamic(this, &UFEBuildingComponent::HandleStorageTargetDestroyed);
+        StorageTarget = nullptr;
+    }
+    CarriedItems.Reset();
+    GetViewModel()->SetStoragePanelOpen(false);
+    GetViewModel()->SetStorageSlots(TArray<UObject*>());
+    GetViewModel()->SetCarriedSlots(TArray<UObject*>());
+    UpdateUIMode();
+}
+
+void UFEBuildingComponent::StoreStack(FGameplayTag ItemTag, int32 Count)
+{
+    if (StorageTarget && ItemTag.IsValid() && Count > 0)
+    {
+        ServerStoreItem(StorageTarget, ItemTag, Count);
+    }
+}
+
+void UFEBuildingComponent::TakeSlot(int32 SlotIndex, FGameplayTag ItemTag)
+{
+    if (StorageTarget && ItemTag.IsValid() && SlotIndex >= 0)
+    {
+        ServerTakeItem(StorageTarget, SlotIndex, ItemTag);
+    }
+}
+
+void UFEBuildingComponent::RefreshStorageSlots()
+{
+    if (StorageTarget == nullptr)
+    {
+        return;
+    }
+
+    // 보관함: 앞쪽부터 찬 칸, 나머지는 빈 칸
+    const TArray<FFEBuildItemCost>& Contents = StorageTarget->GetContents();
+    const TArray<TObjectPtr<UObject>>& Slots = GetViewModel()->StorageSlots;
+    for (int32 Index = 0; Index < Slots.Num(); ++Index)
+    {
+        UFEItemSlotViewModel* Slot = Cast<UFEItemSlotViewModel>(Slots[Index]);
+        if (Slot == nullptr)
+        {
+            continue;
+        }
+        if (Contents.IsValidIndex(Index))
+        {
+            Slot->SetItem(Contents[Index].ItemTag, Contents[Index].Count);
+        }
+        else
+        {
+            Slot->SetEmpty();
+        }
+    }
+
+    // 소지품: 보관함과 같은 스택 상한으로 나눠 보여 준다. 칸을 누르면 그 칸의 개수만큼 넣는다.
+    // ponytail: 표시용 분할. 실제 인벤토리(병일)의 칸 구조가 오면 그쪽 칸을 그대로 쓴다.
+    const int32 MaxStack = StorageTarget->GetMaxStackSize();
+    TArray<UObject*> Carried;
+    for (const FFEBuildItemCost& Entry : CarriedItems)
+    {
+        for (int32 Left = Entry.Count; Left > 0; Left -= MaxStack)
+        {
+            UFEItemSlotViewModel* Slot = NewObject<UFEItemSlotViewModel>(GetViewModel());
+            Slot->Initialize(this, false, INDEX_NONE);
+            Slot->SetItem(Entry.ItemTag, FMath::Min(Left, MaxStack));
+            Carried.Add(Slot);
+        }
+    }
+    
+    GetViewModel()->SetCarriedSlots(Carried);
+}
+
+void UFEBuildingComponent::HandleStorageTargetDestroyed(AActor* DestroyedActor)
+{
+    CloseStoragePanel();
+}
+
+void UFEBuildingComponent::ShowNotice(const FText& Text)
+{
+    GetViewModel()->SetNotice(Text);
+
+    // 2초 뒤 지운다. 연달아 오면 타이머가 처음부터 다시 돈다
+    GetWorld()->GetTimerManager().SetTimer(NoticeTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+    {
+        GetViewModel()->SetNotice(FText::GetEmpty());
+    }), 2.f, false);
+}
+
 bool UFEBuildingComponent::IsInBuildMode() const
 {
     return bIsInBuildMode;
@@ -362,7 +495,7 @@ void UFEBuildingComponent::UpdateUIMode()
         return;
     }
 
-    const bool bUIOpen = bIsMenuOpen || SupplyTarget != nullptr;
+    const bool bUIOpen = bIsMenuOpen || SupplyTarget != nullptr || StorageTarget != nullptr;
     PlayerController->SetShowMouseCursor(bUIOpen);
     if (bUIOpen)
     {
@@ -390,6 +523,7 @@ void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     DestroyPreview();
     CloseSupplyPanel();
+    CloseStoragePanel();
     Super::EndPlay(EndPlayReason);
 }
 
@@ -896,11 +1030,17 @@ bool UFEBuildingComponent::ServerDemolishPiece_Validate(AFEBuildPiece* Piece)
 
 void UFEBuildingComponent::ServerDemolishPiece_Implementation(AFEBuildPiece* Piece)
 {
-    if (!IsPieceInReach(Piece))
+    if (!IsPieceInReach(Piece)) return;
+
+    // 클라 검사와 서버 사이에 다른 플레이어가 아이템을 넣었을 수 있다. 판정은 서버 값으로.
+    FText Reason;
+    if (!Piece->CanDemolish(Reason))
     {
+        UE_LOG(LogFEBuilding, Log, TEXT("Demolish refused on server: %s (%s)"), *Piece->GetName(), *Reason.ToString());
         return;
     }
-    // ponytail: 철거 권한(지은 사람/팀) 검사 없음. 소유권 규칙이 회의에서 정해지면 여기에 추가.
+
+    // 철거 권한(지은 사람/팀) 검사 없음. 소유권 규칙이 회의에서 정해지면 여기에 추가.
     Piece->Demolish(UFEBuildingSubsystem::FindInventoryProvider(GetOwner()));
 }
 
@@ -922,6 +1062,82 @@ void UFEBuildingComponent::ServerSupplyItem_Implementation(AFEBuildPiece* Piece,
         return;
     }
     Piece->TrySupply(*Inventory, ItemTag);
+}
+
+bool UFEBuildingComponent::ServerStoreItem_Validate(AFEBuildStorage* Storage, FGameplayTag ItemTag, int32 Count)
+{
+    return Storage != nullptr && ItemTag.IsValid() && Count > 0;
+}
+
+void UFEBuildingComponent::ServerStoreItem_Implementation(AFEBuildStorage* Storage, FGameplayTag ItemTag, int32 Count)
+{
+    IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
+    if (!IsPieceInReach(Storage) || Inventory == nullptr)
+    {
+        return;
+    }
+
+    // 클라가 보낸 개수는 화면 기준이다. 실제 보유량으로 다시 자른 뒤,
+    // 보관함에 먼저 넣어 보고(칸 제한) 실제로 들어간 만큼만 인벤토리에서 뺀다. 순서가 반대면 아이템이 증발한다.
+    const int32 Requested = FMath::Min(Count, Inventory->CountItems(ItemTag));
+    const int32 Stored = Storage->StoreItems(ItemTag, Requested);
+    if (Stored > 0)
+    {
+        Inventory->RemoveItems(ItemTag, Stored);
+    }
+    SendInventorySnapshot();
+}
+
+bool UFEBuildingComponent::ServerTakeItem_Validate(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag)
+{
+    return Storage != nullptr && SlotIndex >= 0 && ItemTag.IsValid();
+}
+
+void UFEBuildingComponent::ServerTakeItem_Implementation(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag)
+{
+    IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
+    if (!IsPieceInReach(Storage) || Inventory == nullptr)
+    {
+        return;
+    }
+
+    const int32 Taken = Storage->TakeSlot(SlotIndex, ItemTag);
+    if (Taken > 0)
+    {
+        // 인벤토리가 다 받지 못하면 남은 만큼 보관함에 되돌린다. 방금 한 칸을 비웠으므로 항상 들어간다.
+        const int32 Added = Inventory->AddItems(ItemTag, Taken);
+        if (Added < Taken)
+        {
+            Storage->StoreItems(ItemTag, Taken - Added);
+        }
+    }
+    SendInventorySnapshot();
+}
+
+bool UFEBuildingComponent::ServerRequestInventory_Validate()
+{
+    return true;
+}
+
+void UFEBuildingComponent::ServerRequestInventory_Implementation()
+{
+    SendInventorySnapshot();
+}
+
+void UFEBuildingComponent::SendInventorySnapshot()
+{
+    TArray<FFEBuildItemCost> Snapshot;
+    if (IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner()))
+    {
+        Inventory->GetItems(Snapshot);
+    }
+    ClientReceiveInventory(Snapshot);
+}
+
+void UFEBuildingComponent::ClientReceiveInventory_Implementation(const TArray<FFEBuildItemCost>& InItems)
+{
+    CarriedItems = InItems;
+    RefreshStorageSlots();
 }
 
 #undef LOCTEXT_NAMESPACE

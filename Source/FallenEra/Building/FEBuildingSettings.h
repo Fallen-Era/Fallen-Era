@@ -8,6 +8,7 @@
 #include "FEBuildingSettings.generated.h"
 
 class UMaterialInterface;
+class UTexture2D;
 
 /** Project Settings > Game > Building. 모든 피스가 공유하는 튜닝 값. DefaultGame.ini 에 저장되어 팀과 공유됨. */
 UCLASS(config = Game, defaultconfig, meta = (DisplayName = "Building"))
@@ -28,6 +29,9 @@ public:
 	
 	/** 재료 태그의 표시명. 표에 없으면 태그 마지막 마디 (예: "Wood") */
 	FText GetItemDisplayName(FGameplayTag ItemTag) const;
+	
+	/** 재료 태그의 아이콘. 표에 없으면 빈 포인터 (UI 는 이름 텍스트로 대신 표시) */
+	TSoftObjectPtr<UTexture2D> GetItemIcon(FGameplayTag ItemTag) const;
 
 	/** 회전 입력 1회당 Yaw. 회의 결정: 15도 */
 	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Placement", meta = (ClampMin = 1, ClampMax = 90))
@@ -64,4 +68,8 @@ public:
 	
 	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Items", meta = (Categories = "Item"))
 	TMap<FGameplayTag, FText> ItemDisplayNames;
+	
+	/** ponytail: 아이템 데이터가 아이콘을 갖게 되면 ItemDisplayNames 와 함께 삭제 */
+	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Items", meta = (Categories = "Item"))
+	TMap<FGameplayTag, TSoftObjectPtr<UTexture2D>> ItemIcons;
 };

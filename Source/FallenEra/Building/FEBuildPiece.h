@@ -41,6 +41,9 @@ public:
     
     /** [Server Only] 재료가 다 찬 청사진을 완성 시도. 지지 구조가 아직 청사진이면 false (대기). */
     bool TryComplete();
+    
+    /** 철거 가능한가. 불가면 OutReason 에 플레이어에게 보여 줄 이유. 서버·클라 공용 (리플리케이트된 값만 본다) */
+    virtual bool CanDemolish(FText& OutReason) const;
 
     /** [Server Only] 환불 후 제거. 청사진은 투입분 100%, Built 는 RefundRate. Inventory 가 없으면 환불 없이 제거. */
     void Demolish(IFEBuildInventoryProvider* Inventory);
@@ -53,6 +56,12 @@ public:
 
     /** [Client Only] 프리뷰 고스트 색상(유효/무효) 교체. 서브클래스는 추가 메시에도 적용 */
     virtual void SetPreviewValid(bool bIsValid);
+    
+    /** [Server Only] 저장용 스냅샷 기록. 서브클래스는 Super 호출 후 자기 상태를 Flags/OwnerId 에 채운다. */
+    virtual void WriteRecord(FFEBuildPieceRecord& OutRecord) const;
+
+    /** [Server Only] 복원. SpawnActorDeferred → InitializePiece → ReadRecord → FinishSpawning 순서로 호출한다. */
+    virtual void ReadRecord(const FFEBuildPieceRecord& Record);
 
     // IFEInteractable
     virtual bool CanInteract_Implementation(AActor* InstigatorActor) const override;

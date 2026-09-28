@@ -32,5 +32,6 @@ namespace FEBuildingTags
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Build_Socket_Ceiling_CornerTop,  "Build.Socket.Ceiling.CornerTop", "천장 윗면 코너. 2층 기둥이 서는 자리 (상대 전용)");
     UE_DEFINE_GAMEPLAY_TAG(Build_Socket_Furniture_Base,             "Build.Socket.Furniture.Base");
 
-    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_Wood,              "Item.Resource.Wood", "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_Wood,              "Item.Resource.Wood",  "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_Stone,             "Item.Resource.Stone", "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
 }
