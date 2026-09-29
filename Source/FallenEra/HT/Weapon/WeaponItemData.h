@@ -299,6 +299,14 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Attack", meta=(ClampMin="0.0"))
 	float AttackSoundPitch = 1.0f;
 
+	/** AI hearing loudness emitted by an authoritative attack that has an AttackSound. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Attack|AI", meta=(ClampMin="0.0"))
+	float AttackNoiseLoudness = 1.0f;
+
+	/** Optional hard cap for AI hearing. Zero uses the listener's HearingRange. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Attack|AI", meta=(ClampMin="0.0"))
+	float AttackNoiseMaxRange = 0.0f;
+
 	/** Surface-specific Niagara and sound presentation used by GameplayCue.Impact. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Impact")
 	TObjectPtr<UFE_ImpactEffectData> ImpactEffectData;

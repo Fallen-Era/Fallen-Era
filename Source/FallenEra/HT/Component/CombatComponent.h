@@ -25,6 +25,7 @@ class FALLENERA_API UFE_CombatComponent : public UActorComponent
 
 public:
 	UFE_CombatComponent();
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Authority multicasts; a predicting client only plays its local presentation. */
 	void PlayAttackMontage(UAnimMontage* Montage, bool bPredictedByOwner);
@@ -33,11 +34,17 @@ public:
 		USoundBase* AttackSound,
 		float SoundVolume,
 		float SoundPitch,
+		float NoiseLoudness,
+		float NoiseMaxRange,
 		UNiagaraSystem* MuzzleSystem,
 		UParticleSystem* MuzzleParticleSystem,
 		FName MuzzleSocketName,
 		FVector MuzzleScale,
 		bool bPredictedByOwner);
+
+	/** Reports a server-authoritative hearing stimulus. Use for footsteps and non-weapon sounds. */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Combat|AI")
+	void ReportCombatNoise(float Loudness = 1.0f, float MaxRange = 0.0f, FName NoiseTag = NAME_None);
 	void StartChargeProjectilePresentation(
 		TSubclassOf<AFE_CombatProjectile> ProjectileClass,
 		EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
@@ -78,6 +85,12 @@ public:
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Reaction")
 	float CalculateReceivedKnockback(float IncomingKnockback) const;
 
+	/** Runtime reactions supplied by the owning character's cached AI settings. */
+	void SetHitReactionMontages(const TArray<TObjectPtr<UAnimMontage>>& NewMontages)
+	{
+		HitReactionMontages = NewMontages;
+	}
+
 	/** Plays the configured death montage once when this actor's Health reaches zero. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat|Death")
 	void HandleDeath();
@@ -91,7 +104,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat", meta=(AllowedClasses="/Script/GameplayAbilities.GameplayEffect"))
 	TSoftClassPtr<UGameplayEffect> DamageEffectClass;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Reaction")
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category="FallenEra|Combat|Reaction")
 	TArray<TObjectPtr<UAnimMontage>> HitReactionMontages;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Death")
@@ -152,6 +165,10 @@ private:
 	void ClearStunState();
 	void PlayHitReactionMontage(UAnimMontage* HitMontage);
 	void PlayDeathMontage(UAnimMontage* Montage);
+	void ApplyDeathCollisionState();
+
+	UFUNCTION()
+	void OnRep_DeathCollisionDisabled();
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayHitReaction(UAnimMontage* HitMontage);
@@ -166,4 +183,7 @@ private:
 
 	bool bReactionStunActive = false;
 	bool bDeathMontagePlayed = false;
+
+	UPROPERTY(ReplicatedUsing=OnRep_DeathCollisionDisabled)
+	bool bDeathCollisionDisabled = false;
 };

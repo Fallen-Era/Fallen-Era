@@ -174,6 +174,8 @@ void UFE_PlayerAttackAbility::PlayAttackEffects(
 			WeaponData->AttackSound.Get(),
 			WeaponData->AttackSoundVolume,
 			WeaponData->AttackSoundPitch,
+			WeaponData->AttackNoiseLoudness,
+			WeaponData->AttackNoiseMaxRange,
 			MuzzleSystem,
 			MuzzleParticleSystem,
 			MuzzleSocketName,

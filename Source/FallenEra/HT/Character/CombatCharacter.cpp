@@ -4,17 +4,32 @@
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
 #include "InputMappingContext.h"
+#include "HT/Combat/FECombatTeams.h"
 #include "HT/Component/CombatComponent.h"
+#include "Perception/AIPerceptionStimuliSourceComponent.h"
+#include "Perception/AISense_Sight.h"
 
 AFE_CombatCharacter::AFE_CombatCharacter()
 {
 	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
+	PerceptionStimuliSourceComponent =
+		CreateDefaultSubobject<UAIPerceptionStimuliSourceComponent>(TEXT("PerceptionStimuliSourceComponent"));
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionProfileName(TEXT("Player"));
+	}
 	bReplicates = true;
+}
+
+FGenericTeamId AFE_CombatCharacter::GetGenericTeamId() const
+{
+	return FECombatTeams::Player;
 }
 
 FFE_CombatDamageResult AFE_CombatCharacter::ReceiveCombatDamage_Implementation(
@@ -29,6 +44,10 @@ FFE_CombatDamageResult AFE_CombatCharacter::ReceiveCombatDamage_Implementation(
 void AFE_CombatCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	if (HasAuthority() && PerceptionStimuliSourceComponent)
+	{
+		PerceptionStimuliSourceComponent->RegisterForSense(UAISense_Sight::StaticClass());
+	}
 	SetCombatInputEnabled(true);
 }
 

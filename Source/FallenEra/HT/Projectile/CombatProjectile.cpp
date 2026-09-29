@@ -97,6 +97,9 @@ void AFE_CombatProjectile::InitializeProjectile(
 	}
 	if (ProjectileMovement)
 	{
+		// StopSimulating() clears UpdatedComponent after a projectile comes to rest.
+		// Pooled instances must restore it before a new velocity can move the actor.
+		ProjectileMovement->SetUpdatedComponent(CollisionComponent);
 		ProjectileMovement->InitialSpeed = LaunchVelocity.Size();
 		// Zero means unlimited. Keeping this equal to the initial speed clamps the
 		// gravity-accelerated velocity and makes the real path diverge from the preview.
@@ -152,8 +155,16 @@ void AFE_CombatProjectile::ActivateFromPool(
 	SetActorEnableCollision(!bInLocalPreview);
 	if (CollisionComponent)
 	{
+		CollisionComponent->ClearMoveIgnoreActors();
 		CollisionComponent->SetCollisionEnabled(
 			bInLocalPreview ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
+	}
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->SetUpdatedComponent(CollisionComponent);
+		ProjectileMovement->StopMovementImmediately();
+		ProjectileMovement->Velocity = FVector::ZeroVector;
+		ProjectileMovement->Deactivate();
 	}
 	if (ProjectileMesh)
 	{

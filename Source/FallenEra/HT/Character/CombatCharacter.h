@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AbilitySystemComponent.h"
 #include "FallenEraCharacter.h"
+#include "GenericTeamAgentInterface.h"
 #include "HT/Component/EquipmentComponent.h"
 #include "HT/Interface/Damageable.h"
 #include "HT/Interface/CombatPresentation.h"
@@ -19,7 +20,8 @@ class UFE_WeaponAttackData;
  * into AFallenEraCharacter.
  */
 UCLASS()
-class FALLENERA_API AFE_CombatCharacter : public AFallenEraCharacter, public IFE_CombatPresentation, public IFE_Damageable
+class FALLENERA_API AFE_CombatCharacter : public AFallenEraCharacter, public IFE_CombatPresentation,
+	public IFE_Damageable, public IGenericTeamAgentInterface
 {
 	GENERATED_BODY()
 
@@ -28,6 +30,7 @@ public:
 	virtual USkeletalMeshComponent* GetCombatFirstPersonMesh() const override { return GetFirstPersonMesh(); }
 	virtual FFE_CombatDamageResult ReceiveCombatDamage_Implementation(
 		const FFE_CombatDamageRequest& DamageRequest) override;
+	virtual FGenericTeamId GetGenericTeamId() const override;
 
 	virtual void BeginPlay() override;
 	virtual void PossessedBy(AController* NewController) override;
@@ -83,6 +86,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Equipment", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UFE_EquipmentComponent> EquipmentComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<class UAIPerceptionStimuliSourceComponent> PerceptionStimuliSourceComponent;
 
 	void HandleCombatLeftClickStarted(const FInputActionValue& Value);
 	void HandleCombatLeftClickReleased(const FInputActionValue& Value);

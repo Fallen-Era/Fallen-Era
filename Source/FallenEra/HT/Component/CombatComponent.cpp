@@ -7,12 +7,15 @@
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/Controller.h"
 #include "HT/Interface/CombatPresentation.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "HT/Combat/FECombatTeams.h"
 #include "HT/Component/EquipmentComponent.h"
 #include "HT/Effect/DamageGameplayEffect.h"
 #include "HT/Projectile/CombatProjectile.h"
@@ -22,7 +25,10 @@
 #include "Kismet/GameplayStatics.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
+#include "Net/UnrealNetwork.h"
 #include "Particles/ParticleSystem.h"
+#include "Perception/AISense_Damage.h"
+#include "Perception/AISense_Hearing.h"
 #include "Sound/SoundBase.h"
 #include "TimerManager.h"
 
@@ -31,6 +37,12 @@ UFE_CombatComponent::UFE_CombatComponent()
 	PrimaryComponentTick.bCanEverTick = false;
 	SetIsReplicatedByDefault(true);
 	DamageEffectClass = UFE_DamageGameplayEffect::StaticClass();
+}
+
+void UFE_CombatComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(UFE_CombatComponent, bDeathCollisionDisabled);
 }
 
 UAbilitySystemComponent* UFE_CombatComponent::FindAbilitySystemComponent(AActor* Actor)
@@ -106,6 +118,8 @@ void UFE_CombatComponent::PlayWeaponAttackEffects(
 	USoundBase* AttackSound,
 	float SoundVolume,
 	float SoundPitch,
+	float NoiseLoudness,
+	float NoiseMaxRange,
 	UNiagaraSystem* MuzzleSystem,
 	UParticleSystem* MuzzleParticleSystem,
 	FName MuzzleSocketName,
@@ -113,23 +127,48 @@ void UFE_CombatComponent::PlayWeaponAttackEffects(
 	bool bPredictedByOwner)
 {
 	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn || (!AttackSound && !MuzzleSystem && !MuzzleParticleSystem))
+	if (!Pawn)
 	{
 		return;
 	}
 
+	const bool bHasPresentation = AttackSound || MuzzleSystem || MuzzleParticleSystem;
 	if (Pawn->HasAuthority())
 	{
-		MulticastPlayWeaponAttackEffects(
-			AttackSound, SoundVolume, SoundPitch, MuzzleSystem, MuzzleParticleSystem,
-			MuzzleSocketName, MuzzleScale, bPredictedByOwner);
+		if (AttackSound && NoiseLoudness > 0.0f)
+		{
+			ReportCombatNoise(NoiseLoudness, NoiseMaxRange, TEXT("WeaponAttack"));
+		}
+		if (bHasPresentation)
+		{
+			MulticastPlayWeaponAttackEffects(
+				AttackSound, SoundVolume, SoundPitch, MuzzleSystem, MuzzleParticleSystem,
+				MuzzleSocketName, MuzzleScale, bPredictedByOwner);
+		}
 	}
-	else if (bPredictedByOwner && Pawn->IsLocallyControlled())
+	else if (bHasPresentation && bPredictedByOwner && Pawn->IsLocallyControlled())
 	{
 		PlayWeaponAttackEffectsLocal(
 			AttackSound, SoundVolume, SoundPitch, MuzzleSystem, MuzzleParticleSystem,
 			MuzzleSocketName, MuzzleScale);
 	}
+}
+
+void UFE_CombatComponent::ReportCombatNoise(float Loudness, float MaxRange, FName NoiseTag)
+{
+	AActor* NoiseInstigator = GetOwner();
+	if (!NoiseInstigator || !NoiseInstigator->HasAuthority() || Loudness <= 0.0f)
+	{
+		return;
+	}
+
+	UAISense_Hearing::ReportNoiseEvent(
+		NoiseInstigator,
+		NoiseInstigator->GetActorLocation(),
+		Loudness,
+		NoiseInstigator,
+		FMath::Max(0.0f, MaxRange),
+		NoiseTag);
 }
 
 void UFE_CombatComponent::MulticastPlayWeaponAttackEffects_Implementation(
@@ -463,11 +502,18 @@ void UFE_CombatComponent::ApplyDamageReaction(const AActor* DamageSource, const 
 		{
 			if (!bReactionStunActive)
 			{
+				// Stop an ability that was already active before State.Stunned was added.
+				// ActivationBlockedTags only prevents new activations.
+				VictimAbilitySystem->CancelAllAbilities();
 				if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
 				{
 					if (UCharacterMovementComponent* MovementComponent = VictimCharacter->GetCharacterMovement())
 					{
 						MovementComponent->StopMovementImmediately();
+					}
+					if (AController* Controller = VictimCharacter->GetController())
+					{
+						Controller->StopMovement();
 					}
 				}
 
@@ -501,9 +547,47 @@ void UFE_CombatComponent::HandleDeath()
 	}
 
 	bDeathMontagePlayed = true;
+	bDeathCollisionDisabled = true;
+	ApplyDeathCollisionState();
+	Victim->ForceNetUpdate();
 	if (DeathMontage)
 	{
 		MulticastPlayDeathMontage(DeathMontage);
+	}
+}
+
+void UFE_CombatComponent::OnRep_DeathCollisionDisabled()
+{
+	if (bDeathCollisionDisabled)
+	{
+		ApplyDeathCollisionState();
+	}
+}
+
+void UFE_CombatComponent::ApplyDeathCollisionState()
+{
+	AActor* Victim = GetOwner();
+	if (!Victim || !bDeathCollisionDisabled)
+	{
+		return;
+	}
+
+	Victim->SetActorEnableCollision(false);
+	if (ACharacter* Character = Cast<ACharacter>(Victim))
+	{
+		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+		{
+			Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		}
+		if (USkeletalMeshComponent* Mesh = Character->GetMesh())
+		{
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		}
+		if (UCharacterMovementComponent* Movement = Character->GetCharacterMovement())
+		{
+			Movement->StopMovementImmediately();
+			Movement->DisableMovement();
+		}
 	}
 }
 
@@ -615,6 +699,10 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	{
 		return false;
 	}
+	if (TargetActor && FECombatTeams::AreSameTeam(SourceActor, TargetActor))
+	{
+		return false;
+	}
 
 	// Damage is authoritative. Abilities may still predict their own effects separately when needed.
 	if (!SourceActor->HasAuthority())
@@ -664,7 +752,8 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 	AActor* TargetActor = GetOwner();
 	if (!TargetActor || !TargetActor->HasAuthority() ||
 		DamageRequest.TargetActor != TargetActor || !DamageRequest.SourceActor ||
-		!DamageRequest.DamageEffectClass)
+		!DamageRequest.DamageEffectClass ||
+		FECombatTeams::AreSameTeam(DamageRequest.SourceActor, TargetActor))
 	{
 		return Result;
 	}
@@ -695,11 +784,33 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 		return Result;
 	}
 
+	const float HealthBeforeDamage = TargetAbilitySystem->HasAttributeSetForAttribute(
+		UFallenEraAttributeSet::GetHealthAttribute())
+		? TargetAbilitySystem->GetNumericAttribute(UFallenEraAttributeSet::GetHealthAttribute())
+		: 0.0f;
 	Result.bHandled = true;
 	const FActiveGameplayEffectHandle AppliedHandle =
 		TargetAbilitySystem->ApplyGameplayEffectSpecToSelf(*EffectSpec.Data.Get());
 	Result.bDamageApplied = AppliedHandle.WasSuccessfullyApplied();
 	Result.bImpactCueHandled = Result.bDamageApplied && DamageRequest.bHasHitResult;
+	if (Result.bDamageApplied)
+	{
+		const float HealthAfterDamage = TargetAbilitySystem->HasAttributeSetForAttribute(
+			UFallenEraAttributeSet::GetHealthAttribute())
+			? TargetAbilitySystem->GetNumericAttribute(UFallenEraAttributeSet::GetHealthAttribute())
+			: HealthBeforeDamage;
+		const FVector HitLocation = DamageRequest.bHasHitResult
+			? FVector(DamageRequest.HitResult.ImpactPoint)
+			: TargetActor->GetActorLocation();
+		UAISense_Damage::ReportDamageEvent(
+			TargetActor,
+			TargetActor,
+			DamageRequest.SourceActor,
+			FMath::Max(0.0f, HealthBeforeDamage - HealthAfterDamage),
+			DamageRequest.SourceActor->GetActorLocation(),
+			HitLocation,
+			TEXT("CombatDamage"));
+	}
 	if (Result.bDamageApplied && DamageRequest.AttackData)
 	{
 		ApplyDamageReaction(DamageRequest.SourceActor, DamageRequest.AttackData->AttackReactionData);
