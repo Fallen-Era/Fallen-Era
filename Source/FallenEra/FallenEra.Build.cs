@@ -19,6 +19,7 @@ public class FallenEra : ModuleRules
 			"GameplayTasks",
 			"AIModule",
 			"NavigationSystem",
+			"DeveloperSettings",
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"Niagara",

@@ -34,6 +34,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment")
 	void RefreshEquipment();
 
+	/** Asynchronously loads and retains every test-inventory weapon and its soft dependencies. */
+	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment|Loading")
+	void PreloadWeaponAssets();
+
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment")
 	void CycleWeapon();
 
@@ -83,6 +87,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Equipment|Test Inventory")
 	TArray<TSoftObjectPtr<UFE_WeaponItemData>> WeaponDataAssets;
 
+	/** Starts the full weapon working-set preload during BeginPlay to avoid first-equip asset IO stalls. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Equipment|Loading")
+	bool bPreloadWeaponAssetsOnBeginPlay = true;
+
 	/** World representation, hidden from the owning player. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Equipment|Presentation")
 	TObjectPtr<UMeshComponent> EquippedWorldWeaponMesh;
@@ -117,15 +125,21 @@ protected:
 	void ClearEquippedWeaponOffense();
 	void FinishLoadingWeaponDataAssets();
 	void FinishLoadingWeaponDependencies();
+	void FinishPreloadingWeaponDataAssets();
 	void ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData);
 	void RequestWeaponLoad(const TArray<FSoftObjectPath>& AssetPaths, bool bLoadingDataAssets);
-	void GatherWeaponDependencyPaths(const UFE_WeaponItemData* WeaponData, TArray<FSoftObjectPath>& OutPaths) const;
+	void GatherWeaponDependencyPaths(
+		const UFE_WeaponItemData* WeaponData,
+		TArray<FSoftObjectPath>& OutPaths,
+		bool bIncludeLoadedAssets = false) const;
 	UFE_WeaponItemData* FindWeaponDataForTag(FGameplayTag ItemTag) const;
 
 	TArray<FGameplayAbilitySpecHandle> GrantedWeaponAbilityHandles;
 	FActiveGameplayEffectHandle EquippedWeaponOffenseEffectHandle;
 	TWeakObjectPtr<UAbilitySystemComponent> WeaponAbilitySystem;
 	TSharedPtr<FStreamableHandle> WeaponLoadHandle;
+	/** Kept alive for the component lifetime so preloaded soft assets are not garbage-collected. */
+	TSharedPtr<FStreamableHandle> WeaponPreloadHandle;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UFE_WeaponItemData> PendingWeaponData;

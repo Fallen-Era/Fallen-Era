@@ -94,6 +94,12 @@ public:
 	UFUNCTION(BlueprintPure, Category="FallenEra|AI|Settings")
 	bool IsAISettingsCached() const { return bAISettingsCached; }
 
+	/** Called before deferred spawning finishes so the AI controller uses centralized distance management. */
+	void ConfigureSpawnManagement(float VisualCullDistance, float NetCullDistance);
+	void SetManagedSimulationActive(bool bActive);
+	bool IsSpawnManaged() const { return bManagedBySpawnSubsystem; }
+	bool IsManagedSimulationActive() const { return bManagedSimulationActive; }
+
 	void SetNavigationInvokerActive(bool bActive);
 
 protected:
@@ -141,6 +147,9 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category="FallenEra|AI|Settings")
 	bool bAISettingsCached = false;
 
+	UPROPERTY(ReplicatedUsing=OnRep_ManagedVisualCullDistance, Transient)
+	float ManagedVisualCullDistance = 0.0f;
+
 private:
 	void SelectAISettingsIndexAtBeginPlay();
 	void CacheSelectedAISettings();
@@ -149,6 +158,13 @@ private:
 	UFUNCTION()
 	void OnRep_SelectedAISettingsIndex();
 
+	UFUNCTION()
+	void OnRep_ManagedVisualCullDistance();
+
+	void ApplyManagedVisualCullDistance();
+
 	TWeakObjectPtr<AActor> PendingAttackTarget;
 	TSubclassOf<UGameplayEffect> CachedAttackDamageEffect;
+	bool bManagedBySpawnSubsystem = false;
+	bool bManagedSimulationActive = true;
 };

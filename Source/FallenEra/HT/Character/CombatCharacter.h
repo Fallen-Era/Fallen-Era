@@ -14,6 +14,7 @@ class UInputMappingContext;
 class UAnimMontage;
 class UFE_WeaponItemData;
 class UFE_WeaponAttackData;
+class UNavigationInvokerComponent;
 
 /**
  * Personal combat-character sandbox. Keep this class isolated until the weapon flow is ready to merge
@@ -89,6 +90,10 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<class UAIPerceptionStimuliSourceComponent> PerceptionStimuliSourceComponent;
+
+	/** Generates NavMesh ahead of ambient spawn candidates before an enemy exists there. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI|Navigation", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UNavigationInvokerComponent> NavigationInvokerComponent;
 
 	void HandleCombatLeftClickStarted(const FInputActionValue& Value);
 	void HandleCombatLeftClickReleased(const FInputActionValue& Value);

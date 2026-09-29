@@ -26,6 +26,10 @@ UFE_EquipmentComponent::UFE_EquipmentComponent()
 void UFE_EquipmentComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	if (bPreloadWeaponAssetsOnBeginPlay)
+	{
+		PreloadWeaponAssets();
+	}
 	RefreshEquipment();
 }
 
@@ -50,6 +54,11 @@ void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		WeaponLoadHandle->CancelHandle();
 		WeaponLoadHandle.Reset();
 	}
+	if (WeaponPreloadHandle)
+	{
+		WeaponPreloadHandle->CancelHandle();
+		WeaponPreloadHandle.Reset();
+	}
 	ClearArmorEffects();
 	// PlayerState-owned ASCs may outlive the equipped character.
 	ClearEquippedWeaponOffense();
@@ -61,6 +70,33 @@ void UFE_EquipmentComponent::RefreshEquipment()
 {
 	EquipCurrentWeapon();
 	RefreshArmorEquipment();
+}
+
+void UFE_EquipmentComponent::PreloadWeaponAssets()
+{
+	if (WeaponPreloadHandle)
+	{
+		WeaponPreloadHandle->CancelHandle();
+		WeaponPreloadHandle.Reset();
+	}
+
+	TArray<FSoftObjectPath> WeaponDataPaths;
+	for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
+	{
+		if (!WeaponDataAsset.IsNull())
+		{
+			WeaponDataPaths.AddUnique(WeaponDataAsset.ToSoftObjectPath());
+		}
+	}
+	if (WeaponDataPaths.IsEmpty())
+	{
+		return;
+	}
+
+	WeaponPreloadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+		WeaponDataPaths,
+		FStreamableDelegate::CreateUObject(
+			this, &UFE_EquipmentComponent::FinishPreloadingWeaponDataAssets));
 }
 
 void UFE_EquipmentComponent::CycleWeapon()
@@ -197,6 +233,31 @@ void UFE_EquipmentComponent::FinishLoadingWeaponDependencies()
 	ApplyLoadedWeapon(LoadedWeaponData);
 }
 
+void UFE_EquipmentComponent::FinishPreloadingWeaponDataAssets()
+{
+	if (bArmorEndingPlay)
+	{
+		return;
+	}
+
+	// Re-request the data assets together with every dependency in one retained handle.
+	// This keeps the full weapon working set resident after the initial load callback returns.
+	TArray<FSoftObjectPath> PreloadPaths;
+	for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
+	{
+		if (WeaponDataAsset.IsNull())
+		{
+			continue;
+		}
+		PreloadPaths.AddUnique(WeaponDataAsset.ToSoftObjectPath());
+		GatherWeaponDependencyPaths(WeaponDataAsset.Get(), PreloadPaths, true);
+	}
+
+	WeaponPreloadHandle = PreloadPaths.IsEmpty()
+		? nullptr
+		: UAssetManager::GetStreamableManager().RequestAsyncLoad(PreloadPaths);
+}
+
 void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 {
 	CurrentWeaponData = WeaponData;
@@ -224,37 +285,38 @@ void UFE_EquipmentComponent::RequestWeaponLoad(
 
 void UFE_EquipmentComponent::GatherWeaponDependencyPaths(
 	const UFE_WeaponItemData* WeaponData,
-	TArray<FSoftObjectPath>& OutPaths) const
+	TArray<FSoftObjectPath>& OutPaths,
+	bool bIncludeLoadedAssets) const
 {
 	if (!WeaponData)
 	{
 		return;
 	}
-	auto AddUnloadedPath = [&OutPaths](const FSoftObjectPath& Path, bool bIsLoaded)
+	auto AddPath = [&OutPaths, bIncludeLoadedAssets](const FSoftObjectPath& Path, bool bIsLoaded)
 	{
-		if (Path.IsValid() && !bIsLoaded)
+		if (Path.IsValid() && (bIncludeLoadedAssets || !bIsLoaded))
 		{
 			OutPaths.AddUnique(Path);
 		}
 	};
 	if (!WeaponData->SkeletalMesh.IsNull())
 	{
-		AddUnloadedPath(WeaponData->SkeletalMesh.ToSoftObjectPath(), WeaponData->SkeletalMesh.IsValid());
+		AddPath(WeaponData->SkeletalMesh.ToSoftObjectPath(), WeaponData->SkeletalMesh.IsValid());
 	}
 	else
 	{
-		AddUnloadedPath(WeaponData->Mesh.ToSoftObjectPath(), WeaponData->Mesh.IsValid());
+		AddPath(WeaponData->Mesh.ToSoftObjectPath(), WeaponData->Mesh.IsValid());
 	}
-	AddUnloadedPath(WeaponData->WeaponAnimLayerClass.ToSoftObjectPath(), WeaponData->WeaponAnimLayerClass.IsValid());
-	AddUnloadedPath(WeaponData->CrosshairTexture.ToSoftObjectPath(), WeaponData->CrosshairTexture.IsValid());
-	AddUnloadedPath(WeaponData->AttackSound.ToSoftObjectPath(), WeaponData->AttackSound.IsValid());
-	AddUnloadedPath(WeaponData->DefaultDamageEffect.ToSoftObjectPath(), WeaponData->DefaultDamageEffect.IsValid());
+	AddPath(WeaponData->WeaponAnimLayerClass.ToSoftObjectPath(), WeaponData->WeaponAnimLayerClass.IsValid());
+	AddPath(WeaponData->CrosshairTexture.ToSoftObjectPath(), WeaponData->CrosshairTexture.IsValid());
+	AddPath(WeaponData->AttackSound.ToSoftObjectPath(), WeaponData->AttackSound.IsValid());
+	AddPath(WeaponData->DefaultDamageEffect.ToSoftObjectPath(), WeaponData->DefaultDamageEffect.IsValid());
 	if (const UFE_RangedWeaponItemData* RangedWeaponData = Cast<UFE_RangedWeaponItemData>(WeaponData))
 	{
-		AddUnloadedPath(
+		AddPath(
 			RangedWeaponData->MuzzleNiagaraSystem.ToSoftObjectPath(),
 			RangedWeaponData->MuzzleNiagaraSystem.IsValid());
-		AddUnloadedPath(
+		AddPath(
 			RangedWeaponData->MuzzleParticleSystem.ToSoftObjectPath(),
 			RangedWeaponData->MuzzleParticleSystem.IsValid());
 	}
@@ -264,15 +326,15 @@ void UFE_EquipmentComponent::GatherWeaponDependencyPaths(
 		{
 			continue;
 		}
-		AddUnloadedPath(AttackData->AbilityClass.ToSoftObjectPath(), AttackData->AbilityClass.IsValid());
-		AddUnloadedPath(AttackData->DamageEffectOverride.ToSoftObjectPath(), AttackData->DamageEffectOverride.IsValid());
+		AddPath(AttackData->AbilityClass.ToSoftObjectPath(), AttackData->AbilityClass.IsValid());
+		AddPath(AttackData->DamageEffectOverride.ToSoftObjectPath(), AttackData->DamageEffectOverride.IsValid());
 		if (const UFE_ProjectileAttackDataBase* ProjectileData = Cast<UFE_ProjectileAttackDataBase>(AttackData))
 		{
-			AddUnloadedPath(ProjectileData->ProjectileClass.ToSoftObjectPath(), ProjectileData->ProjectileClass.IsValid());
+			AddPath(ProjectileData->ProjectileClass.ToSoftObjectPath(), ProjectileData->ProjectileClass.IsValid());
 		}
 		if (const UFE_ChargedProjectileAttackData* ChargedData = Cast<UFE_ChargedProjectileAttackData>(AttackData))
 		{
-			AddUnloadedPath(
+			AddPath(
 				ChargedData->TrajectoryNiagaraSystem.ToSoftObjectPath(),
 				ChargedData->TrajectoryNiagaraSystem.IsValid());
 		}

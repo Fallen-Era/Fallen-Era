@@ -240,6 +240,15 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Presentation")
 	FTransform ChargeAttachOffset;
 
+	/**
+	 * Gameplay launch origin for CharacterMesh throwables, relative to the character actor.
+	 * This deliberately does not follow the animated hand socket. WeaponMesh attacks keep
+	 * using ProjectileSpawnSocketName for both prediction and spawning.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Launch",
+		meta=(EditCondition="AttachmentTarget == EFE_ChargedProjectileAttachmentTarget::CharacterMesh", MakeEditWidget))
+	FVector FixedThrowStartOffset = FVector(50.0f, 25.0f, 65.0f);
+
 	/** Optional local-only trajectory Niagara. Leave empty for bows without a trajectory preview. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Trajectory")
 	TSoftObjectPtr<UNiagaraSystem> TrajectoryNiagaraSystem;

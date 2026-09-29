@@ -158,31 +158,44 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 
 	OutLocation = CombatCharacter->GetActorLocation();
 	FRotator LaunchRotation = CombatCharacter->GetActorRotation();
-	const UFE_EquipmentComponent* Equipment = CombatCharacter->FindComponentByClass<UFE_EquipmentComponent>();
-	const UMeshComponent* WeaponMesh = nullptr;
-	if (Equipment)
+	const UFE_ChargedProjectileAttackData* ChargedAttackData =
+		Cast<UFE_ChargedProjectileAttackData>(AttackData);
+	const bool bUseFixedThrowOrigin = ChargedAttackData &&
+		ChargedAttackData->AttachmentTarget == EFE_ChargedProjectileAttachmentTarget::CharacterMesh;
+	if (bUseFixedThrowOrigin)
 	{
-		// Authoritative projectiles use the replicated world presentation. Local previews
-		// use the first-person weapon when one exists so the arc starts at the visible muzzle.
-		WeaponMesh = LaunchContext == EFE_ProjectileLaunchContext::LocalPreview
-			? Equipment->GetEquippedFirstPersonWeaponMesh()
-			: Equipment->GetEquippedWorldWeaponMesh();
-		if (!WeaponMesh)
+		OutLocation = CombatCharacter->GetActorTransform().TransformPosition(
+			ChargedAttackData->FixedThrowStartOffset);
+	}
+	else
+	{
+		const UFE_EquipmentComponent* Equipment =
+			CombatCharacter->FindComponentByClass<UFE_EquipmentComponent>();
+		const UMeshComponent* WeaponMesh = nullptr;
+		if (Equipment)
 		{
-			WeaponMesh = Equipment->GetEquippedWorldWeaponMesh();
+			// Authoritative projectiles use the replicated world presentation. Local previews
+			// use the first-person weapon when one exists so the arc starts at the visible muzzle.
+			WeaponMesh = LaunchContext == EFE_ProjectileLaunchContext::LocalPreview
+				? Equipment->GetEquippedFirstPersonWeaponMesh()
+				: Equipment->GetEquippedWorldWeaponMesh();
+			if (!WeaponMesh)
+			{
+				WeaponMesh = Equipment->GetEquippedWorldWeaponMesh();
+			}
 		}
-	}
 
-	if (WeaponMesh && WeaponMesh->DoesSocketExist(AttackData->ProjectileSpawnSocketName))
-	{
-		OutLocation = WeaponMesh->GetSocketLocation(AttackData->ProjectileSpawnSocketName);
-		LaunchRotation = WeaponMesh->GetSocketRotation(AttackData->ProjectileSpawnSocketName);
-	}
-	else if (const USkeletalMeshComponent* Mesh = CombatCharacter->GetMesh();
-		Mesh && Mesh->DoesSocketExist(AttackData->ProjectileSpawnSocketName))
-	{
-		OutLocation = Mesh->GetSocketLocation(AttackData->ProjectileSpawnSocketName);
-		LaunchRotation = Mesh->GetSocketRotation(AttackData->ProjectileSpawnSocketName);
+		if (WeaponMesh && WeaponMesh->DoesSocketExist(AttackData->ProjectileSpawnSocketName))
+		{
+			OutLocation = WeaponMesh->GetSocketLocation(AttackData->ProjectileSpawnSocketName);
+			LaunchRotation = WeaponMesh->GetSocketRotation(AttackData->ProjectileSpawnSocketName);
+		}
+		else if (const USkeletalMeshComponent* Mesh = CombatCharacter->GetMesh();
+			Mesh && Mesh->DoesSocketExist(AttackData->ProjectileSpawnSocketName))
+		{
+			OutLocation = Mesh->GetSocketLocation(AttackData->ProjectileSpawnSocketName);
+			LaunchRotation = Mesh->GetSocketRotation(AttackData->ProjectileSpawnSocketName);
+		}
 	}
 
 	if (AttackData->bUseAimDirection)

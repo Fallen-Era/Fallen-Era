@@ -69,6 +69,7 @@ FFE_CombatDamageResult AFE_EnemyCharacter::ReceiveCombatDamage_Implementation(
 void AFE_EnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	ApplyManagedVisualCullDistance();
 	SelectAISettingsIndexAtBeginPlay();
 	CacheSelectedAISettings();
 	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
@@ -102,6 +103,7 @@ void AFE_EnemyCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AFE_EnemyCharacter, SelectedAISettingsIndex);
+	DOREPLIFETIME(AFE_EnemyCharacter, ManagedVisualCullDistance);
 }
 
 void AFE_EnemyCharacter::SelectAISettingsIndexAtBeginPlay()
@@ -130,6 +132,11 @@ void AFE_EnemyCharacter::SelectAISettingsIndexAtBeginPlay()
 void AFE_EnemyCharacter::OnRep_SelectedAISettingsIndex()
 {
 	CacheSelectedAISettings();
+}
+
+void AFE_EnemyCharacter::OnRep_ManagedVisualCullDistance()
+{
+	ApplyManagedVisualCullDistance();
 }
 
 void AFE_EnemyCharacter::CacheSelectedAISettings()
@@ -263,6 +270,42 @@ void AFE_EnemyCharacter::CancelActiveAttack()
 void AFE_EnemyCharacter::ClearPendingAttackTarget()
 {
 	PendingAttackTarget.Reset();
+}
+
+void AFE_EnemyCharacter::ConfigureSpawnManagement(
+	float VisualCullDistance,
+	float NetCullDistance)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	bManagedBySpawnSubsystem = true;
+	ManagedVisualCullDistance = FMath::Max(0.0f, VisualCullDistance);
+	SetNetCullDistanceSquared(FMath::Square(FMath::Max(0.0f, NetCullDistance)));
+	ApplyManagedVisualCullDistance();
+	ForceNetUpdate();
+}
+
+void AFE_EnemyCharacter::SetManagedSimulationActive(bool bActive)
+{
+	if (!HasAuthority() || !bManagedBySpawnSubsystem)
+	{
+		return;
+	}
+	bManagedSimulationActive = bActive;
+	if (AFE_EnemyAIController* EnemyController = Cast<AFE_EnemyAIController>(GetController()))
+	{
+		EnemyController->SetManagedSimulationActive(bActive);
+	}
+}
+
+void AFE_EnemyCharacter::ApplyManagedVisualCullDistance()
+{
+	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+	{
+		CharacterMesh->SetCullDistance(ManagedVisualCullDistance);
+	}
 }
 
 void AFE_EnemyCharacter::SetNavigationInvokerActive(bool bActive)

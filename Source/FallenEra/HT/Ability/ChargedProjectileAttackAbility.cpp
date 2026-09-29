@@ -204,15 +204,17 @@ void UFE_ChargedProjectileAttackAbility::StartLocalChargePresentation()
 
 	if (UNiagaraSystem* TrajectorySystem = CachedChargedAttackData->TrajectoryNiagaraSystem.Get())
 	{
-		TrajectoryComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-			CombatCharacter,
+		TrajectoryComponent = UNiagaraFunctionLibrary::SpawnSystemAttached(
 			TrajectorySystem,
+			CombatCharacter->GetRootComponent(),
+			NAME_None,
 			FVector::ZeroVector,
 			FRotator::ZeroRotator,
 			FVector::OneVector,
-			false,
+			EAttachLocation::SnapToTarget,
 			false,
 			ENCPoolMethod::ManualRelease,
+			false,
 			true);
 		UpdateLocalTrajectory();
 		if (TrajectoryComponent)
@@ -294,19 +296,21 @@ void UFE_ChargedProjectileAttackAbility::UpdateLocalTrajectory()
 
 	TArray<FVector> TrajectoryPoints;
 	TrajectoryPoints.Reserve(FMath::Max(2, PredictionResult.PathData.Num()));
+	const FTransform TrajectoryTransform = TrajectoryComponent->GetComponentTransform();
 	for (const FPredictProjectilePathPointData& PointData : PredictionResult.PathData)
 	{
-		TrajectoryPoints.Add(PointData.Location);
+		TrajectoryPoints.Add(TrajectoryTransform.InverseTransformPosition(PointData.Location));
 	}
 
 	// Keep the ribbon valid even if prediction cannot produce a complete step.
 	if (TrajectoryPoints.IsEmpty())
 	{
-		TrajectoryPoints.Add(StartLocation);
+		TrajectoryPoints.Add(TrajectoryTransform.InverseTransformPosition(StartLocation));
 	}
 	if (TrajectoryPoints.Num() == 1)
 	{
-		TrajectoryPoints.Add(StartLocation + LaunchDirection);
+		TrajectoryPoints.Add(
+			TrajectoryTransform.InverseTransformPosition(StartLocation + LaunchDirection));
 	}
 
 	UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector(

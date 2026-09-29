@@ -76,6 +76,7 @@ void AFE_EnemyAIController::OnPossess(APawn* InPawn)
 	}
 
 	HomeLocation = InPawn->GetActorLocation();
+	bUsesManagedSimulation = CastChecked<AFE_EnemyCharacter>(InPawn)->IsSpawnManaged();
 	ApplyPerceptionSettings();
 	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
 	const float SafeInterval = FMath::Max(0.1f, DecisionInterval);
@@ -87,7 +88,35 @@ void AFE_EnemyAIController::OnUnPossess()
 {
 	GetWorldTimerManager().ClearTimer(DecisionTimerHandle);
 	ClearTarget();
+	bUsesManagedSimulation = false;
 	Super::OnUnPossess();
+}
+
+void AFE_EnemyAIController::SetManagedSimulationActive(bool bActive)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	bUsesManagedSimulation = true;
+	SetAIActive(bActive);
+}
+
+bool AFE_EnemyAIController::SetEncounterCombatTarget(AActor* TargetActor)
+{
+	if (!HasAuthority() || !IsValidTarget(TargetActor))
+	{
+		return false;
+	}
+
+	SetAIActive(true);
+	ClearInvestigation();
+	StopMovement();
+	CurrentTarget = TargetActor;
+	bCurrentTargetVisible = HasActiveSightStimulus(*TargetActor);
+	bEncounterTargetPendingSight = !bCurrentTargetVisible;
+	TargetLostTime = -1.0f;
+	return true;
 }
 
 void AFE_EnemyAIController::OnMoveCompleted(
@@ -159,6 +188,7 @@ void AFE_EnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStim
 			StopMovement();
 			CurrentTarget = Actor;
 			bCurrentTargetVisible = HasActiveSightStimulus(*Actor);
+			bEncounterTargetPendingSight = false;
 			// Hearing/damage acquisition is still an active perception. Do not start the
 			// forget timer until that stimulus expires or sight is acquired and then lost.
 			TargetLostTime = -1.0f;
@@ -169,6 +199,7 @@ void AFE_EnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStim
 				HasActiveSightStimulus(*Actor))
 			{
 				bCurrentTargetVisible = true;
+				bEncounterTargetPendingSight = false;
 				TargetLostTime = -1.0f;
 			}
 			else if (!bCurrentTargetVisible && TargetLostTime >= 0.0f)
@@ -219,7 +250,10 @@ void AFE_EnemyAIController::UpdateDecision()
 		return;
 	}
 
-	SetAIActive(IsPlayerWithinActivationDistance());
+	if (!bUsesManagedSimulation)
+	{
+		SetAIActive(IsPlayerWithinActivationDistance());
+	}
 	if (!bAIActive)
 	{
 		return;
@@ -229,6 +263,7 @@ void AFE_EnemyAIController::UpdateDecision()
 	if (TargetActor && HasActiveSightStimulus(*TargetActor))
 	{
 		bCurrentTargetVisible = true;
+		bEncounterTargetPendingSight = false;
 		TargetLostTime = -1.0f;
 	}
 	else if (TargetActor && bCurrentTargetVisible)
@@ -236,7 +271,7 @@ void AFE_EnemyAIController::UpdateDecision()
 		bCurrentTargetVisible = false;
 		TargetLostTime = GetWorld()->GetTimeSeconds();
 	}
-	else if (TargetActor && TargetLostTime < 0.0f &&
+	else if (TargetActor && !bEncounterTargetPendingSight && TargetLostTime < 0.0f &&
 		!HasActiveNonSightStimulus(*TargetActor))
 	{
 		// A target acquired only by hearing/damage keeps being investigated while that
@@ -353,6 +388,7 @@ void AFE_EnemyAIController::ClearTarget()
 	CurrentTarget.Reset();
 	TargetLostTime = -1.0f;
 	bCurrentTargetVisible = false;
+	bEncounterTargetPendingSight = false;
 	ClearInvestigation();
 	ClearFocus(EAIFocusPriority::Gameplay);
 }
@@ -367,6 +403,7 @@ void AFE_EnemyAIController::SetInvestigationLocation(const FVector& Location)
 	StopMovement();
 	CurrentTarget.Reset();
 	bCurrentTargetVisible = false;
+	bEncounterTargetPendingSight = false;
 	TargetLostTime = -1.0f;
 	InvestigationLocation = Location;
 	bHasInvestigationLocation = true;
@@ -431,8 +468,12 @@ void AFE_EnemyAIController::SetAIActive(bool bNewActive)
 	if (EnemyPerceptionComponent)
 	{
 		// Sight performs continuous queries, so it sleeps with distant AI. Hearing and damage
-		// are event-driven and remain enabled so a nearby noise or incoming hit can wake the AI.
+		// stay enabled for legacy placed AI, while centrally managed AI sleeps completely.
 		EnemyPerceptionComponent->SetSenseEnabled(UAISense_Sight::StaticClass(), bAIActive);
+		EnemyPerceptionComponent->SetSenseEnabled(
+			UAISense_Hearing::StaticClass(), bAIActive || !bUsesManagedSimulation);
+		EnemyPerceptionComponent->SetSenseEnabled(
+			UAISense_Damage::StaticClass(), bAIActive || !bUsesManagedSimulation);
 	}
 	if (AFE_EnemyCharacter* EnemyCharacter = Cast<AFE_EnemyCharacter>(GetPawn()))
 	{
@@ -450,7 +491,14 @@ void AFE_EnemyAIController::SetAIActive(bool bNewActive)
 	else
 	{
 		ClearTarget();
-		SetDecisionTimerRate(FMath::Max(0.1f, DormantDecisionInterval));
+		if (bUsesManagedSimulation)
+		{
+			GetWorldTimerManager().ClearTimer(DecisionTimerHandle);
+		}
+		else
+		{
+			SetDecisionTimerRate(FMath::Max(0.1f, DormantDecisionInterval));
+		}
 	}
 }
 

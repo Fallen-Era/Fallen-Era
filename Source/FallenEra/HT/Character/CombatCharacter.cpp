@@ -12,6 +12,7 @@
 #include "InputMappingContext.h"
 #include "HT/Combat/FECombatTeams.h"
 #include "HT/Component/CombatComponent.h"
+#include "NavigationInvokerComponent.h"
 #include "Perception/AIPerceptionStimuliSourceComponent.h"
 #include "Perception/AISense_Sight.h"
 
@@ -20,6 +21,8 @@ AFE_CombatCharacter::AFE_CombatCharacter()
 	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
 	PerceptionStimuliSourceComponent =
 		CreateDefaultSubobject<UAIPerceptionStimuliSourceComponent>(TEXT("PerceptionStimuliSourceComponent"));
+	NavigationInvokerComponent = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvokerComponent"));
+	NavigationInvokerComponent->SetGenerationRadii(10000.0f, 12000.0f);
 	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
 	{
 		Capsule->SetCollisionProfileName(TEXT("Player"));

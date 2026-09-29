@@ -23,6 +23,12 @@ public:
 	virtual ETeamAttitude::Type GetTeamAttitudeTowards(const AActor& Other) const override;
 	virtual void GetActorEyesViewPoint(FVector& OutLocation, FRotator& OutRotation) const override;
 
+	/** Central spawn management calls this instead of making every controller scan all players. */
+	void SetManagedSimulationActive(bool bActive);
+
+	/** Encounter spawns chase this target immediately, before perception has produced a stimulus. */
+	bool SetEncounterCombatTarget(AActor* TargetActor);
+
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
@@ -117,6 +123,8 @@ private:
 	FAIRequestID InvestigationMoveRequestId = FAIRequestID::InvalidRequest;
 	FTimerHandle DecisionTimerHandle;
 	bool bAIActive = true;
+	bool bUsesManagedSimulation = false;
 	bool bCurrentTargetVisible = false;
+	bool bEncounterTargetPendingSight = false;
 	bool bHasInvestigationLocation = false;
 };
