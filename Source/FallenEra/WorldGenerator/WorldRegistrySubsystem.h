@@ -10,6 +10,7 @@
 #include "GameFramework/GameplayMessageSubsystem.h"
 #include "WorldRegistrySubsystem.generated.h"
 
+class UWorldRegistrySaveGame;
 class UWorldGeneratorSettings;
 class UVoxelHeightLayer;
 class UVoxelHeightGraph;
@@ -30,7 +31,7 @@ class FALLENERA_API UWorldRegistrySubsystem : public UGameInstanceSubsystem
 	
 public:
 	
-	const TArray<FWorldRegistryEntry>& GetWorlds() const;
+	UWorldRegistrySaveGame* GetRegistry() { return WorldRegistry; } 
 	
 	bool GetWorldProfile(
 		const FGuid& WorldId,
@@ -41,14 +42,17 @@ private:
 		FGameplayTag Channel,
 		const FWorldCreateRequest& Request);
 	
-	void SaveWorld();
-	void LoadWorld(const FWorldProfileData& WorldProfile);
+	bool SaveWorld();
+	void LoadWorld(const FString SlotName);
 	
 	void DeleteWorld(
 	const FGuid& WorldId);
 	
-	void LoadRegistry();
-	void SaveRegistry();
+	
+	void AddRegistry(FWorldRegistryData& NewEntry);
+	void RemoveRegistry(FWorldRegistryData& ExistEntry);
+	
+	
 	
 	bool MakeTerrainStamp(
 		UVoxelHeightGraph* Graph,
@@ -58,6 +62,9 @@ private:
 		FString& OutError);
 	
 private:
+	void LoadRegistry();
+	void SaveRegistry();
+	
 	UPROPERTY()
 	const UWorldGeneratorSettings* WorldGeneratorSettings = nullptr;
 	
@@ -65,7 +72,10 @@ private:
 	TObjectPtr<UWorldPersistenceTracker> ActiveTracker;
 	
 	UPROPERTY()
-	TArray<FWorldRegistryEntry> Worlds;
+	TObjectPtr<UWorldRegistrySaveGame> WorldRegistry = nullptr;
 	
 	FGameplayMessageListenerHandle WorldCreateRequestHandle;
+	
+	static const FString RegistrySlotName;
+	static constexpr int32 RegistryUserIndex = 0;
 };

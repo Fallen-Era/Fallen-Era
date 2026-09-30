@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "GameFramework/GameplayMessageSubsystem.h"
+#include "WorldGenerator/Data/Payload.h"
 #include "MainPanelWidget.generated.h"
 
 class UWidgetSwitcher;
@@ -33,6 +35,8 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<ULoadGameWidget> LoadGame;
 	
+	
+	
 protected:
 	virtual void NativeConstruct() override;
 	
@@ -45,4 +49,10 @@ private:
 	
 	UFUNCTION()
 	void HandleMainMenuRequested();
+	
+	UFUNCTION()
+	void MessageBoxPopup(FGameplayTag Channel, const FMessageBoxRequest& Request);
+
+	FGameplayMessageListenerHandle MessageBoxListenerHandle;
+	
 };

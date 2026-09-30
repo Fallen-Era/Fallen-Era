@@ -23,15 +23,23 @@ public:
 	
 	void AcknowledgeSaved(uint64 Revision){ SavedRevision = FMath::Max(SavedRevision, Revision); }
 	
-	FGuid GetWorldId() { return WorldId; }
+	FGuid GetWorldId() { return RegistryData.WorldId; }
+	FString& GetSlotName() {return RegistryData.ProfileSlotName; }
 	FGuid GetSessionId() { return SessionId; }
 	
 protected:
-	void SetWorldId(FGuid NewWorldId) { WorldId = NewWorldId; }
+	void SetWorldId(FGuid NewWorldId) { RegistryData.WorldId = NewWorldId; }
 	void SetSessionId(FGuid NewSessionId) { SessionId = NewSessionId; }
+	void SetSlotName(FString NewSlotName) { RegistryData.ProfileSlotName = NewSlotName; }
+	
+
+	
+	
+	friend class UWorldRegistrySubsystem;
 	
 private:
-	FGuid WorldId;
+	
+	FWorldRegistryData RegistryData;
 	FGuid SessionId;
 	
 	uint64 CurrentRevision = 0;

@@ -8,5 +8,6 @@
 namespace WorldGameplayTag
 {
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Event_World_CreateRequested);
+	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Event_World_Widget_MessageBox);
 }
 

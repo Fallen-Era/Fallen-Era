@@ -32,6 +32,42 @@
 #include "Heightmap/VoxelHeightmapStamp.h"
 #include "Kismet/GameplayStatics.h"
 #include "Save/WorldProfileSaveGame.h"
+#include "Save/WorldRegistrySaveGame.h"
+
+
+const FString UWorldRegistrySubsystem::RegistrySlotName = TEXT("WorldRegistry");
+
+
+void UWorldRegistrySubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+	
+	WorldGeneratorSettings = GetDefault<UWorldGeneratorSettings>();
+	
+	UGameplayMessageSubsystem* MessageSubsystem =
+		Collection.InitializeDependency<UGameplayMessageSubsystem>();
+	
+	WorldCreateRequestHandle =
+		MessageSubsystem->RegisterListener<FWorldCreateRequest>(
+		WorldGameplayTag::TAG_Event_World_CreateRequested,
+		this,
+		&ThisClass::CreateWorld);
+	
+	ActiveTracker = NewObject<UWorldPersistenceTracker>();
+	LoadRegistry();
+}
+
+void UWorldRegistrySubsystem::Deinitialize()
+{
+	WorldCreateRequestHandle.Unregister();
+	
+	SaveRegistry();
+	
+	
+	
+	Super::Deinitialize();
+}
+
 
 #if !UE_BUILD_SHIPPING
 namespace
@@ -100,32 +136,32 @@ FAutoConsoleCommandWithWorld LogTerrainAmplitudeCommand(
 #endif
 
 
-void UWorldRegistrySubsystem::Initialize(FSubsystemCollectionBase& Collection)
-{
-	Super::Initialize(Collection);
-	
-	WorldGeneratorSettings = GetDefault<UWorldGeneratorSettings>();
-	
-	UGameplayMessageSubsystem* MessageSubsystem =
-		Collection.InitializeDependency<UGameplayMessageSubsystem>();
-	
-	WorldCreateRequestHandle =
-		MessageSubsystem->RegisterListener<FWorldCreateRequest>(
-		WorldGameplayTag::TAG_Event_World_CreateRequested,
-		this,
-		&ThisClass::CreateWorld);
-}
 
-void UWorldRegistrySubsystem::Deinitialize()
-{
-	WorldCreateRequestHandle.Unregister();
-	
-	Super::Deinitialize();
-}
 
 void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCreateRequest& Request)
 {
+	
+	if (WorldRegistry->Find(Request.DisplayName))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s::%s : A world with the same name already exists."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		// 오류 반환
+		UGameplayMessageSubsystem& MessageSubsystem = UGameplayMessageSubsystem::Get(this);
+		
+		FMessageBoxRequest MessageBoxRequest = 
+		{
+			FText::FromString(TEXT("Warrning")),
+			FText::FromString(TEXT("A World with the same name already exists.")),
+			EMessageBoxType::Yes
+		};
+		
+		MessageSubsystem.BroadcastMessage(WorldGameplayTag::TAG_Event_World_Widget_MessageBox, MessageBoxRequest);
+		
+		return;
+	}
+	
 	const FIntPoint WorldSize = Request.WorldSize;
+	
+
 	
 	UWorld* World = GetWorld();
 	
@@ -210,22 +246,49 @@ void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCrea
 	// {
 	// 	VoxelWorld->CreateRuntime();
 	// }
+	
 
 	UE_LOG(LogTemp, Log, TEXT("%s::%s : Terrain generation requested."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 	
 	
-	SaveWorld();
+	// 시스템 내부 고유 식별자 생성. 
+	const FGuid WorldId = FGuid::NewGuid();
+	const FString SlotName = FString::Printf(
+		TEXT("World_%s"),
+		*WorldId.ToString(EGuidFormats::Digits));
+	
+	FWorldRegistryData Entry;
+	Entry.WorldId = WorldId;
+	Entry.DisplayName = Request.DisplayName;
+	Entry.ProfileSlotName = SlotName;
+	Entry.WorldSize = WorldSize;
+	Entry.Diffculty = EWorldDiffculty::InTheHell;
+	
+	ActiveTracker->SetWorldId(WorldId);
+	ActiveTracker->SetSlotName(SlotName);
+	
+	if (SaveWorld())
+	{
+		AddRegistry(Entry);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to save the world after gerneration."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return;
+	}
+	
+	
 }
 
 
-void UWorldRegistrySubsystem::SaveWorld()
+bool UWorldRegistrySubsystem::SaveWorld()
 {
 	UWorld* CurrentWorld = GetWorld();
 	
 	if (!IsValid(CurrentWorld))
 	{
 		UE_LOG(LogTemp, Fatal, TEXT("%s::%s : Current World is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
-		return;
+		return false;
 	}
 	
 	AVoxelWorld* VoxelWorld = Cast<AVoxelWorld>(UGameplayStatics::GetActorOfClass(CurrentWorld, AVoxelWorld::StaticClass()));
@@ -233,14 +296,14 @@ void UWorldRegistrySubsystem::SaveWorld()
 	if (!IsValid(VoxelWorld))
 	{
 		UE_LOG(LogTemp, Fatal, TEXT("%s::%s : Voxel World is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
-		return;
+		return false;
 	}
 	
 	UVoxelLayerStack* Stack = VoxelWorld->LayerStack;
 	if (!Stack)
 	{
 		UE_LOG(LogTemp, Fatal, TEXT("%s::%s : Stack"), *GetClass()->GetName(), TEXT(__FUNCTION__));
-		return;
+		return false;
 	}
 	
 	const auto Manager = FVoxelStampManager::Get(CurrentWorld);
@@ -300,7 +363,7 @@ void UWorldRegistrySubsystem::SaveWorld()
 		if (!StampRef.IsA<FVoxelHeightGraphStamp>() && !StampRef.IsA<FVoxelHeightmapStamp>())
 		{
 			UE_LOG(LogTemp, Error, TEXT("%s::%s : Unsupported stamp type"), *GetClass()->GetName(), TEXT(__FUNCTION__));
-			return;
+			return false;
 		}
 		
 		FWorldStampSnapshot& Snapshot = Save->StampSnapshots.AddDefaulted_GetRef();
@@ -314,14 +377,15 @@ void UWorldRegistrySubsystem::SaveWorld()
 	if (Save->StampSnapshots.IsEmpty())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s::%s : No stamps to save"), *GetClass()->GetName(), TEXT(__FUNCTION__));
-		return;
+		return false;
 	}
 	
-	const bool bSaved = UGameplayStatics::SaveGameToSlot(Save, TEXT("VoxelStampTest"), 0);
+	const bool bSaved = UGameplayStatics::SaveGameToSlot(Save, ActiveTracker->GetSlotName(), 0);
+	return true;
 	
 }
 
-void UWorldRegistrySubsystem::LoadWorld(const FWorldProfileData& WorldProfile)
+void UWorldRegistrySubsystem::LoadWorld(const FString SlotName)
 {
 	UWorld* World = GetWorld();
 	if (!IsValid(World))
@@ -329,7 +393,8 @@ void UWorldRegistrySubsystem::LoadWorld(const FWorldProfileData& WorldProfile)
 		return;
 	}
 	
-	UWorldProfileSaveGame* Save = Cast<UWorldProfileSaveGame>(UGameplayStatics::LoadGameFromSlot(("VoxelStampTest"), 0));
+	
+	UWorldProfileSaveGame* Save = Cast<UWorldProfileSaveGame>(UGameplayStatics::LoadGameFromSlot((SlotName), 0));
 	
 	if (!Save)
 	{
@@ -376,13 +441,69 @@ void UWorldRegistrySubsystem::LoadWorld(const FWorldProfileData& WorldProfile)
 	UE_LOG(LogTemp, Log, TEXT("%s::%s : Stamp restore: %d / %d"), *GetClass()->GetName(), TEXT(__FUNCTION__), LoadedCount, Save->StampSnapshots.Num());
 }
 
+void UWorldRegistrySubsystem::AddRegistry(FWorldRegistryData& NewEntry)
+{
+	WorldRegistry->AddRegistry(NewEntry);
+}
+
+void UWorldRegistrySubsystem::RemoveRegistry(FWorldRegistryData& ExistEntry)
+{
+	if (WorldRegistry->Find(ExistEntry.DisplayName))
+	{
+		WorldRegistry->RemoveRegistry(ExistEntry);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("%s::%s : Entry is not exist."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return;
+	}
+}
+
+
+
 void UWorldRegistrySubsystem::LoadRegistry()
 {
+	if (UGameplayStatics::DoesSaveGameExist(
+		RegistrySlotName,
+		RegistryUserIndex))
+	{
+		USaveGame* LoadedSaveGame = 
+			UGameplayStatics::LoadGameFromSlot(RegistrySlotName, RegistryUserIndex);
+		
+		WorldRegistry = Cast<UWorldRegistrySaveGame>(LoadedSaveGame);
+	}
+	
+	if (!WorldRegistry)
+	{
+		WorldRegistry = Cast<UWorldRegistrySaveGame>(UGameplayStatics::CreateSaveGameObject(UWorldRegistrySaveGame::StaticClass()));
+		
+		if (!WorldRegistry)
+		{
+			UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to create WorldRegistrySaveGame."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+			return;
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("%s::%s : Create New World Registry."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("%s::%s : Loaded World Registry."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+	}
 	
 }
 
 void UWorldRegistrySubsystem::SaveRegistry()
 {
+	if (WorldRegistry)
+	{
+		UGameplayStatics::SaveGameToSlot(WorldRegistry, RegistrySlotName, RegistryUserIndex);
+		UE_LOG(LogTemp, Log, TEXT("%s::%s : Saved Registry."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+	}
+	else
+	{
+		LoadRegistry();
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : Registry save failed. Reason: Runtime object is invalid. Attempting to reload. Please try saving again."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+	}
 }
 
 

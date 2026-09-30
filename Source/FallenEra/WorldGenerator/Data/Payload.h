@@ -5,6 +5,24 @@
 #include "CoreMinimal.h"
 #include "Payload.generated.h"
 
+UENUM(Blueprintable)
+enum class EWorldDiffculty : uint8
+{
+	Easy UMETA(DisplayName="Easy"),
+	Normal UMETA(DisplayName="Normal"),
+	Hard UMETA(DisplayName="Hard"),
+	VeryHard UMETA(DisplayName="VeryHard"),
+	HellGate UMETA(DisplayName="HellGate"),
+	InTheHell UMETA(DisplayName="InTheHell"),
+};
+
+
+UENUM(BlueprintType)
+enum class EMessageBoxType : uint8
+{
+	Yes UMETA(DisplayName="Yes"),
+	YesNo UMETA(DisplayName="Yes / No"),
+};
 
 USTRUCT(BlueprintType)
 struct FALLENERA_API FWorldCreateRequest
@@ -19,17 +37,41 @@ struct FALLENERA_API FWorldCreateRequest
 	
 };
 
+
+USTRUCT(BLueprintType)
+struct FALLENERA_API FMessageBoxRequest
+{
+	GENERATED_BODY()
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FText Title;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FText Message;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	EMessageBoxType Type = EMessageBoxType::Yes;
+	
+	
+};
+
 // World List에 표시되는 데이터.
 USTRUCT(BlueprintType)
-struct FALLENERA_API FWorldRegistryEntry
+struct FALLENERA_API FWorldRegistryData
 {
 	GENERATED_BODY()
 	
 	UPROPERTY(VisibleAnywhere)
-	FGuid WorldIds;
+	FGuid WorldId;
 	
 	UPROPERTY(VisibleAnywhere)
 	FString DisplayName;
+	
+	UPROPERTY(VisibleAnywhere)
+	EWorldDiffculty Diffculty;
+	
+	UPROPERTY(VisibleAnywhere)
+	FIntVector2 WorldSize;
 	
 	UPROPERTY(VisibleAnywhere)
 	FString ProfileSlotName;

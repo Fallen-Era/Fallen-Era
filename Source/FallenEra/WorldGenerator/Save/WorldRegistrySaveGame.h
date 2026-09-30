@@ -15,6 +15,20 @@ class FALLENERA_API UWorldRegistrySaveGame : public USaveGame
 {
 	GENERATED_BODY()
 	
+	
+public:
+	bool Find(FString DisplayName);
+	TArray<FWorldRegistryData>& GetWorldRegistryList() { return Worlds; }
+	
+
+protected:
+	void AddRegistry(FWorldRegistryData& NewEntry);
+	void RemoveRegistry(FWorldRegistryData& NewEntry);
+	
+	
+friend class UWorldRegistrySubsystem;
+	
+private:
 	UPROPERTY()
-	TArray<FWorldRegistryEntry> Worlds;
+	TArray<FWorldRegistryData> Worlds;
 };

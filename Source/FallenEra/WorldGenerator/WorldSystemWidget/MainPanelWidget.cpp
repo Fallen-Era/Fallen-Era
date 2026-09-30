@@ -9,6 +9,10 @@
 #include "NetworkMessage.h"
 
 #include "Components/WidgetSwitcher.h"
+#include "WorldGenerator/WorldRegistrySubsystem.h"
+
+#include "WorldGenerator/GameplayTag/WorldGameplayTag.h"
+#include "WorldGenerator/Save/WorldRegistrySaveGame.h"
 
 void UMainPanelWidget::NativeConstruct()
 {
@@ -23,6 +27,16 @@ void UMainPanelWidget::NativeConstruct()
 	LoadGame->OnLoadGameExitCliked.AddDynamic(this, &UMainPanelWidget::HandleMainMenuRequested);
 	
 	
+	UGameplayMessageSubsystem& MessageSubsystem =
+		UGameplayMessageSubsystem::Get(this);
+	
+	MessageBoxListenerHandle =
+		MessageSubsystem.RegisterListener<FMessageBoxRequest>(
+		WorldGameplayTag::TAG_Event_World_Widget_MessageBox,
+		this,
+		&ThisClass::MessageBoxPopup);
+	
+	
 }
 
 void UMainPanelWidget::HandleNewGameRequested()
@@ -32,10 +46,22 @@ void UMainPanelWidget::HandleNewGameRequested()
 
 void UMainPanelWidget::HandleLoadGameRequested()
 {
+	UWorldRegistrySubsystem* WorldRegistrySubsystem = 
+	GetGameInstance()->GetSubsystem<UWorldRegistrySubsystem>();
+	
+	UWorldRegistrySaveGame* Registry = WorldRegistrySubsystem->GetRegistry();
+	
+	LoadGame->UpdateRegistryElements(Registry->GetWorldRegistryList());
+	
 	WidgetSwitcher->SetActiveWidget(LoadGame);
 }
 
 void UMainPanelWidget::HandleMainMenuRequested()
 {
 	WidgetSwitcher->SetActiveWidget(MainMenu);
+}
+
+void UMainPanelWidget::MessageBoxPopup(FGameplayTag Channel, const FMessageBoxRequest& Request)
+{
+	
 }
