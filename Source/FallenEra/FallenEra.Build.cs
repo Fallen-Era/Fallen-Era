@@ -21,10 +21,12 @@ public class FallenEra : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate",
 			"Voxel",
 			"VoxelGraph",
 			"VoxelCore",
+			"ModelViewViewModel",
+			"Slate",
+			"SlateCore",
 			"DeveloperSettings"
 		});
 
@@ -39,6 +41,8 @@ public class FallenEra : ModuleRules
 			"FallenEra/AbilitySystem",
 			"FallenEra/AbilitySystem/Abilities",
 			"FallenEra/AbilitySystem/Attributes",
+			"FallenEra/Building",
+			"FallenEra/Interaction",
 		});
 
 		// Uncomment if you are using Slate UI

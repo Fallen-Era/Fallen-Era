@@ -43,6 +43,10 @@
 		{
 			"Name": "AsyncMessageSystem",
 			"Enabled": true
+		},
+		{
+			"Name": "ModelViewViewModel",
+			"Enabled": true
 		}
 	]
 }
