@@ -17,10 +17,11 @@
 #include "FallenEraPlayerState.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
-#include "HT/Combat/FECombatTeams.h"
-#include "HT/Component/CombatComponent.h"
-#include "HT/Component/CharacterStatusComponent.h"
-#include "HT/Component/EquipmentComponent.h"
+#include "Combat/FECombatGameplayTags.h"
+#include "Combat/FECombatTeams.h"
+#include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FECharacterStatusComponent.h"
+#include "Combat/Component/FEEquipmentComponent.h"
 #include "NavigationInvokerComponent.h"
 #include "Perception/AIPerceptionStimuliSourceComponent.h"
 #include "Perception/AISense_Sight.h"
@@ -309,25 +310,25 @@ void AFallenEraCharacter::MulticastPlayAttackMontage_Implementation(UAnimMontage
 void AFallenEraCharacter::HandleCombatLeftClickStarted(const FInputActionValue& Value)
 {
 	(void)Value;
-	PressCombatAbility(FallenEraGameplayTags::Ability_Input_Combat_LeftClick);
+	PressCombatAbility(FallenEraCombatGameplayTags::Ability_Input_Combat_LeftClick);
 }
 
 void AFallenEraCharacter::HandleCombatLeftClickReleased(const FInputActionValue& Value)
 {
 	(void)Value;
-	ReleaseCombatAbility(FallenEraGameplayTags::Ability_Input_Combat_LeftClick);
+	ReleaseCombatAbility(FallenEraCombatGameplayTags::Ability_Input_Combat_LeftClick);
 }
 
 void AFallenEraCharacter::HandleCombatRightClickStarted(const FInputActionValue& Value)
 {
 	(void)Value;
-	PressCombatAbility(FallenEraGameplayTags::Ability_Input_Combat_RightClick);
+	PressCombatAbility(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
 }
 
 void AFallenEraCharacter::HandleCombatRightClickReleased(const FInputActionValue& Value)
 {
 	(void)Value;
-	ReleaseCombatAbility(FallenEraGameplayTags::Ability_Input_Combat_RightClick);
+	ReleaseCombatAbility(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
 }
 
 void AFallenEraCharacter::HandleCombatSwap(const FInputActionValue& Value)

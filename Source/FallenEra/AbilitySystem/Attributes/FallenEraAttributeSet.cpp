@@ -2,7 +2,7 @@
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "GameplayEffectExtension.h"
-#include "HT/Component/CombatComponent.h"
+#include "Combat/Component/FECombatComponent.h"
 #include "Net/UnrealNetwork.h"
 
 UFallenEraAttributeSet::UFallenEraAttributeSet()

@@ -7,8 +7,8 @@
 #include "GameFramework/Character.h"
 #include "GameplayTagContainer.h"
 #include "GenericTeamAgentInterface.h"
-#include "HT/Interface/CombatPresentation.h"
-#include "HT/Interface/Damageable.h"
+#include "Combat/Interface/FECombatPresentation.h"
+#include "Combat/Interface/FEDamageable.h"
 #include "Logging/LogMacros.h"
 #include "FallenEraCharacter.generated.h"
 
