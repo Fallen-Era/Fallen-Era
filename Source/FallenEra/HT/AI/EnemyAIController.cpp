@@ -4,6 +4,7 @@
 #include "AbilitySystemComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "HT/AI/AITargetCoordinatorSubsystem.h"
 #include "HT/Character/EnemyCharacter.h"
 #include "HT/Combat/FECombatTeams.h"
 #include "HT/Component/CombatComponent.h"
@@ -76,6 +77,8 @@ void AFE_EnemyAIController::OnPossess(APawn* InPawn)
 	}
 
 	HomeLocation = InPawn->GetActorLocation();
+	TargetMemories.Reset();
+	CurrentTargetAcquiredTime = -1.0f;
 	bUsesManagedSimulation = CastChecked<AFE_EnemyCharacter>(InPawn)->IsSpawnManaged();
 	ApplyPerceptionSettings();
 	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
@@ -88,6 +91,7 @@ void AFE_EnemyAIController::OnUnPossess()
 {
 	GetWorldTimerManager().ClearTimer(DecisionTimerHandle);
 	ClearTarget();
+	TargetMemories.Reset();
 	bUsesManagedSimulation = false;
 	Super::OnUnPossess();
 }
@@ -110,9 +114,10 @@ bool AFE_EnemyAIController::SetEncounterCombatTarget(AActor* TargetActor)
 	}
 
 	SetAIActive(true);
-	ClearInvestigation();
-	StopMovement();
-	CurrentTarget = TargetActor;
+	FFE_AITargetMemory& Memory = FindOrAddTargetMemory(*TargetActor);
+	Memory.LastKnownLocation = TargetActor->GetActorLocation();
+	Memory.LastStimulusTime = GetWorld()->GetTimeSeconds();
+	SelectCombatTarget(TargetActor);
 	bCurrentTargetVisible = HasActiveSightStimulus(*TargetActor);
 	bEncounterTargetPendingSight = !bCurrentTargetVisible;
 	TargetLostTime = -1.0f;
@@ -144,69 +149,64 @@ void AFE_EnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStim
 	{
 		return;
 	}
-	APawn* ControlledPawn = GetPawn();
-	if (!ControlledPawn)
+	if (!GetPawn())
 	{
 		return;
 	}
 
 	const FAISenseID SightSenseId = UAISense::GetSenseID<UAISense_Sight>();
 	const FAISenseID HearingSenseId = UAISense::GetSenseID<UAISense_Hearing>();
+	const FAISenseID DamageSenseId = UAISense::GetSenseID<UAISense_Damage>();
 	const bool bSightStimulus = Stimulus.Type == SightSenseId;
 	const bool bHearingStimulus = Stimulus.Type == HearingSenseId;
+	const bool bDamageStimulus = Stimulus.Type == DamageSenseId;
 
 	if (bHearingStimulus)
 	{
 		if (Stimulus.WasSuccessfullySensed() && IsValidTarget(Actor))
 		{
 			SetAIActive(true);
-			if (!HasActiveSightStimulus(*Actor))
+			if (HasActiveSightStimulus(*Actor))
 			{
-				if (!CurrentTarget.IsValid())
-				{
-					// Hearing remembers the reported position, not the moving source actor.
-					SetInvestigationLocation(Stimulus.StimulusLocation);
-				}
-				return;
+				RecordSightStimulus(*Actor, Stimulus);
+				EvaluateBestCombatTarget();
+			}
+			else if (!CurrentTarget.IsValid())
+			{
+				// Hearing remembers the reported position, not the moving source actor.
+				SetInvestigationLocation(Stimulus.StimulusLocation);
 			}
 		}
-		else
-		{
-			return;
-		}
+		return;
 	}
 
-	if (Stimulus.WasSuccessfullySensed() && IsValidTarget(Actor))
+	if (!IsValidTarget(Actor))
 	{
-		SetAIActive(true);
-		const bool bSelectedNewTarget = !CurrentTarget.IsValid() ||
-			FVector::DistSquared(ControlledPawn->GetActorLocation(), Actor->GetActorLocation()) <
-			FVector::DistSquared(ControlledPawn->GetActorLocation(), CurrentTarget->GetActorLocation());
-		if (bSelectedNewTarget)
-		{
-			ClearInvestigation();
-			StopMovement();
-			CurrentTarget = Actor;
-			bCurrentTargetVisible = HasActiveSightStimulus(*Actor);
-			bEncounterTargetPendingSight = false;
-			// Hearing/damage acquisition is still an active perception. Do not start the
-			// forget timer until that stimulus expires or sight is acquired and then lost.
-			TargetLostTime = -1.0f;
-		}
 		if (CurrentTarget.Get() == Actor)
 		{
-			if (bSightStimulus ||
-				HasActiveSightStimulus(*Actor))
-			{
-				bCurrentTargetVisible = true;
-				bEncounterTargetPendingSight = false;
-				TargetLostTime = -1.0f;
-			}
-			else if (!bCurrentTargetVisible && TargetLostTime >= 0.0f)
-			{
-				// A new hearing/damage event refreshes an already-running lost-target timer.
-				TargetLostTime = GetWorld()->GetTimeSeconds();
-			}
+			ClearTarget();
+		}
+		return;
+	}
+
+	if (Stimulus.WasSuccessfullySensed())
+	{
+		SetAIActive(true);
+		if (bSightStimulus)
+		{
+			RecordSightStimulus(*Actor, Stimulus);
+		}
+		else if (bDamageStimulus)
+		{
+			RecordDamageStimulus(*Actor, Stimulus);
+		}
+
+		EvaluateBestCombatTarget(bDamageStimulus);
+		if (CurrentTarget.Get() == Actor && HasActiveSightStimulus(*Actor))
+		{
+			bCurrentTargetVisible = true;
+			bEncounterTargetPendingSight = false;
+			TargetLostTime = -1.0f;
 		}
 	}
 	else if (CurrentTarget.Get() == Actor &&
@@ -216,6 +216,7 @@ void AFE_EnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStim
 		// discard a target that sight is still tracking.
 		bCurrentTargetVisible = false;
 		TargetLostTime = GetWorld()->GetTimeSeconds();
+		StopMovement();
 	}
 }
 
@@ -270,12 +271,12 @@ void AFE_EnemyAIController::UpdateDecision()
 	{
 		bCurrentTargetVisible = false;
 		TargetLostTime = GetWorld()->GetTimeSeconds();
+		StopMovement();
 	}
-	else if (TargetActor && !bEncounterTargetPendingSight && TargetLostTime < 0.0f &&
-		!HasActiveNonSightStimulus(*TargetActor))
+	else if (TargetActor && !bEncounterTargetPendingSight && TargetLostTime < 0.0f)
 	{
-		// A target acquired only by hearing/damage keeps being investigated while that
-		// stimulus is active. Once it expires without sight acquisition, start forgetting.
+		// Perception MaxAge and combat memory are separate. Damage may stay in the
+		// perception cache longer, but non-visible combat pursuit still times out here.
 		TargetLostTime = GetWorld()->GetTimeSeconds();
 	}
 	if (TargetActor && (!IsValidTarget(TargetActor) ||
@@ -285,6 +286,9 @@ void AFE_EnemyAIController::UpdateDecision()
 		ClearTarget();
 		TargetActor = nullptr;
 	}
+
+	EvaluateBestCombatTarget();
+	TargetActor = CurrentTarget.Get();
 
 	if (TargetActor)
 	{
@@ -359,8 +363,27 @@ void AFE_EnemyAIController::UpdatePatrol(AFE_EnemyCharacter& EnemyCharacter)
 void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AActor& TargetActor)
 {
 	SetMovementSpeed(EnemyCharacter, EnemyCharacter.GetChaseMovementSpeed());
-	SetFocus(&TargetActor, EAIFocusPriority::Gameplay);
 	const float AttackRange = FMath::Max(0.0f, EnemyCharacter.GetAttackRange());
+	const bool bCanTrackActor = HasActiveSightStimulus(TargetActor) || bEncounterTargetPendingSight;
+	if (!bCanTrackActor)
+	{
+		const FVector LastKnownLocation = GetLastKnownTargetLocation(TargetActor);
+		ClearFocus(EAIFocusPriority::Gameplay);
+		SetFocalPoint(LastKnownLocation, EAIFocusPriority::Gameplay);
+		if (GetMoveStatus() != EPathFollowingStatus::Moving)
+		{
+			MoveToLocation(
+				LastKnownLocation,
+				FMath::Max(50.0f, AttackRange * 0.8f),
+				true,
+				true,
+				true,
+				false);
+		}
+		return;
+	}
+
+	SetFocus(&TargetActor, EAIFocusPriority::Gameplay);
 	const float DistanceSquared = FVector::DistSquared(
 		EnemyCharacter.GetActorLocation(), TargetActor.GetActorLocation());
 	if (DistanceSquared <= FMath::Square(AttackRange) && LineOfSightTo(&TargetActor))
@@ -382,10 +405,299 @@ void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AAc
 	}
 }
 
+void AFE_EnemyAIController::EvaluateBestCombatTarget(bool bIgnoreMinimumLockTime)
+{
+	if (!GetPawn() || !GetWorld())
+	{
+		return;
+	}
+
+	RefreshVisibleTargetMemories();
+	PruneTargetMemories();
+
+	AActor* CurrentActor = CurrentTarget.Get();
+	const FFE_AITargetMemory* CurrentMemory = CurrentActor ? FindTargetMemory(*CurrentActor) : nullptr;
+	const float CurrentScore = CurrentActor && CurrentMemory && IsValidTarget(CurrentActor)
+		? CalculateTargetScore(*CurrentActor, *CurrentMemory)
+		: -TNumericLimits<float>::Max();
+
+	AActor* BestActor = nullptr;
+	float BestScore = -TNumericLimits<float>::Max();
+	for (const FFE_AITargetMemory& Memory : TargetMemories)
+	{
+		AActor* Candidate = Memory.Actor.Get();
+		if (!IsValidTarget(Candidate))
+		{
+			continue;
+		}
+
+		const float CandidateScore = CalculateTargetScore(*Candidate, Memory);
+		if (CandidateScore > BestScore)
+		{
+			BestScore = CandidateScore;
+			BestActor = Candidate;
+		}
+	}
+
+	if (!BestActor)
+	{
+		if (CurrentActor && !IsValidTarget(CurrentActor))
+		{
+			ClearTarget();
+		}
+		return;
+	}
+	if (BestActor == CurrentActor)
+	{
+		return;
+	}
+	if (!CurrentActor || !CurrentMemory || !IsValidTarget(CurrentActor))
+	{
+		SelectCombatTarget(BestActor);
+		return;
+	}
+
+	const FSAITargetSelectionSettings& Settings = GetTargetSelectionSettings();
+	const float TimeSinceAcquired = GetWorld()->GetTimeSeconds() - CurrentTargetAcquiredTime;
+	if (!bIgnoreMinimumLockTime &&
+		TimeSinceAcquired < FMath::Max(0.0f, Settings.MinimumTargetLockTime))
+	{
+		return;
+	}
+
+	if (BestScore >= CurrentScore + FMath::Max(0.0f, Settings.SwitchScoreAdvantage))
+	{
+		SelectCombatTarget(BestActor);
+	}
+}
+
+void AFE_EnemyAIController::SelectCombatTarget(AActor* TargetActor)
+{
+	if (!IsValidTarget(TargetActor) || CurrentTarget.Get() == TargetActor || !GetWorld())
+	{
+		return;
+	}
+
+	StopMovement();
+	ClearInvestigation();
+	if (UFE_AITargetCoordinatorSubsystem* Coordinator =
+		GetWorld()->GetSubsystem<UFE_AITargetCoordinatorSubsystem>())
+	{
+		Coordinator->SetAssignedTarget(this, TargetActor);
+	}
+
+	CurrentTarget = TargetActor;
+	CurrentTargetAcquiredTime = GetWorld()->GetTimeSeconds();
+	bCurrentTargetVisible = HasActiveSightStimulus(*TargetActor);
+	bEncounterTargetPendingSight = false;
+	TargetLostTime = bCurrentTargetVisible ? -1.0f : GetWorld()->GetTimeSeconds();
+}
+
+FFE_AITargetMemory& AFE_EnemyAIController::FindOrAddTargetMemory(AActor& Actor)
+{
+	if (FFE_AITargetMemory* ExistingMemory = TargetMemories.FindByPredicate(
+		[&Actor](const FFE_AITargetMemory& Memory)
+		{
+			return Memory.Actor.Get() == &Actor;
+		}))
+	{
+		return *ExistingMemory;
+	}
+
+	FFE_AITargetMemory& NewMemory = TargetMemories.AddDefaulted_GetRef();
+	NewMemory.Actor = &Actor;
+	NewMemory.LastKnownLocation = Actor.GetActorLocation();
+	return NewMemory;
+}
+
+const FFE_AITargetMemory* AFE_EnemyAIController::FindTargetMemory(const AActor& Actor) const
+{
+	return TargetMemories.FindByPredicate(
+		[&Actor](const FFE_AITargetMemory& Memory)
+		{
+			return Memory.Actor.Get() == &Actor;
+		});
+}
+
+void AFE_EnemyAIController::RecordSightStimulus(AActor& Actor, const FAIStimulus& Stimulus)
+{
+	(void)Stimulus;
+	FFE_AITargetMemory& Memory = FindOrAddTargetMemory(Actor);
+	const float CurrentTime = GetWorld()->GetTimeSeconds();
+	Memory.LastKnownLocation = Actor.GetActorLocation();
+	Memory.LastStimulusTime = CurrentTime;
+	Memory.LastSeenTime = CurrentTime;
+}
+
+void AFE_EnemyAIController::RecordDamageStimulus(AActor& Actor, const FAIStimulus& Stimulus)
+{
+	FFE_AITargetMemory& Memory = FindOrAddTargetMemory(Actor);
+	const float CurrentTime = GetWorld()->GetTimeSeconds();
+	const float DecaySeconds = GetTargetSelectionSettings().DamageThreatDecaySeconds;
+	if (Memory.LastDamageTime >= 0.0f && DecaySeconds > UE_SMALL_NUMBER)
+	{
+		Memory.AccumulatedDamage *= FMath::Exp(
+			-(CurrentTime - Memory.LastDamageTime) / DecaySeconds);
+	}
+	else if (DecaySeconds <= UE_SMALL_NUMBER)
+	{
+		Memory.AccumulatedDamage = 0.0f;
+	}
+
+	Memory.AccumulatedDamage += FMath::Max(0.0f, Stimulus.Strength);
+	Memory.LastDamageTime = CurrentTime;
+	Memory.LastStimulusTime = CurrentTime;
+	Memory.LastKnownLocation = Actor.GetActorLocation();
+}
+
+void AFE_EnemyAIController::RefreshVisibleTargetMemories()
+{
+	if (!EnemyPerceptionComponent || !GetWorld())
+	{
+		return;
+	}
+
+	TArray<AActor*> VisibleActors;
+	EnemyPerceptionComponent->GetCurrentlyPerceivedActors(
+		UAISense_Sight::StaticClass(), VisibleActors);
+	const float CurrentTime = GetWorld()->GetTimeSeconds();
+	for (AActor* VisibleActor : VisibleActors)
+	{
+		if (!IsValidTarget(VisibleActor))
+		{
+			continue;
+		}
+		FFE_AITargetMemory& Memory = FindOrAddTargetMemory(*VisibleActor);
+		Memory.LastKnownLocation = VisibleActor->GetActorLocation();
+		Memory.LastStimulusTime = CurrentTime;
+		Memory.LastSeenTime = CurrentTime;
+	}
+}
+
+void AFE_EnemyAIController::PruneTargetMemories()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	const float CurrentTime = GetWorld()->GetTimeSeconds();
+	const float MemoryDuration = FMath::Max(
+		0.0f, GetTargetSelectionSettings().TargetMemoryDuration);
+	TargetMemories.RemoveAll(
+		[this, CurrentTime, MemoryDuration](const FFE_AITargetMemory& Memory)
+		{
+			AActor* Actor = Memory.Actor.Get();
+			if (!IsValidTarget(Actor))
+			{
+				return true;
+			}
+			if (CurrentTarget.Get() == Actor || HasActiveSightStimulus(*Actor))
+			{
+				return false;
+			}
+			return Memory.LastStimulusTime < 0.0f ||
+				CurrentTime - Memory.LastStimulusTime > MemoryDuration;
+		});
+}
+
+float AFE_EnemyAIController::CalculateTargetScore(
+	const AActor& Actor,
+	const FFE_AITargetMemory& Memory) const
+{
+	const APawn* ControlledPawn = GetPawn();
+	const UWorld* World = GetWorld();
+	if (!ControlledPawn || !World)
+	{
+		return -TNumericLimits<float>::Max();
+	}
+
+	const FSAITargetSelectionSettings& Settings = GetTargetSelectionSettings();
+	const float CurrentTime = World->GetTimeSeconds();
+	const float EvaluationRadius = FMath::Max(1.0f, LoseSightRadius);
+	const float Distance = FVector::Dist(ControlledPawn->GetActorLocation(), Actor.GetActorLocation());
+	float Score = FMath::Max(0.0f, Settings.ProximityScore) *
+		(1.0f - FMath::Clamp(Distance / EvaluationRadius, 0.0f, 1.0f));
+
+	if (HasActiveSightStimulus(Actor))
+	{
+		Score += FMath::Max(0.0f, Settings.VisibleTargetScore);
+	}
+	else if (Memory.LastSeenTime >= 0.0f && TargetForgetDelay > UE_SMALL_NUMBER)
+	{
+		const float SeenRecency = 1.0f - FMath::Clamp(
+			(CurrentTime - Memory.LastSeenTime) / TargetForgetDelay, 0.0f, 1.0f);
+		Score += FMath::Max(0.0f, Settings.VisibleTargetScore) * 0.25f * SeenRecency;
+	}
+
+	if (Memory.LastDamageTime >= 0.0f && Settings.DamageThreatDecaySeconds > UE_SMALL_NUMBER)
+	{
+		const float DamageThreat = Memory.AccumulatedDamage * FMath::Exp(
+			-(CurrentTime - Memory.LastDamageTime) / Settings.DamageThreatDecaySeconds);
+		Score += DamageThreat * FMath::Max(0.0f, Settings.DamageScorePerPoint);
+	}
+
+	if (CurrentTarget.Get() == &Actor)
+	{
+		Score += FMath::Max(0.0f, Settings.CurrentTargetScore);
+	}
+
+	if (const UFE_AITargetCoordinatorSubsystem* Coordinator =
+		World->GetSubsystem<UFE_AITargetCoordinatorSubsystem>())
+	{
+		int32 OtherEnemyCount = Coordinator->GetTargetLoad(&Actor);
+		if (CurrentTarget.Get() == &Actor)
+		{
+			OtherEnemyCount = FMath::Max(0, OtherEnemyCount - 1);
+		}
+		Score -= OtherEnemyCount * FMath::Max(0.0f, Settings.TargetLoadPenalty);
+	}
+
+	const uint32 PreferenceHash = HashCombine(GetTypeHash(GetFName()), GetTypeHash(Actor.GetFName()));
+	const float Preference = static_cast<float>(PreferenceHash & 0xffff) / 65535.0f;
+	Score += Preference * FMath::Max(0.0f, Settings.PreferenceVariance);
+	return Score;
+}
+
+const FSAITargetSelectionSettings& AFE_EnemyAIController::GetTargetSelectionSettings() const
+{
+	if (const AFE_EnemyCharacter* EnemyCharacter = Cast<AFE_EnemyCharacter>(GetPawn()))
+	{
+		return EnemyCharacter->GetTargetSelectionSettings();
+	}
+	static const FSAITargetSelectionSettings DefaultSettings;
+	return DefaultSettings;
+}
+
+FVector AFE_EnemyAIController::GetLastKnownTargetLocation(const AActor& Actor) const
+{
+	if (const FFE_AITargetMemory* Memory = FindTargetMemory(Actor);
+		Memory && FAISystem::IsValidLocation(Memory->LastKnownLocation))
+	{
+		return Memory->LastKnownLocation;
+	}
+	return Actor.GetActorLocation();
+}
+
 void AFE_EnemyAIController::ClearTarget()
 {
 	StopMovement();
+	AActor* PreviousTarget = CurrentTarget.Get();
+	if (UFE_AITargetCoordinatorSubsystem* Coordinator =
+		GetWorld() ? GetWorld()->GetSubsystem<UFE_AITargetCoordinatorSubsystem>() : nullptr)
+	{
+		Coordinator->ClearAssignedTarget(this);
+	}
 	CurrentTarget.Reset();
+	CurrentTargetAcquiredTime = -1.0f;
+	if (PreviousTarget)
+	{
+		TargetMemories.RemoveAll(
+			[PreviousTarget](const FFE_AITargetMemory& Memory)
+			{
+				return Memory.Actor.Get() == PreviousTarget;
+			});
+	}
 	TargetLostTime = -1.0f;
 	bCurrentTargetVisible = false;
 	bEncounterTargetPendingSight = false;
@@ -401,7 +713,13 @@ void AFE_EnemyAIController::SetInvestigationLocation(const FVector& Location)
 	}
 
 	StopMovement();
+	if (UFE_AITargetCoordinatorSubsystem* Coordinator =
+		GetWorld() ? GetWorld()->GetSubsystem<UFE_AITargetCoordinatorSubsystem>() : nullptr)
+	{
+		Coordinator->ClearAssignedTarget(this);
+	}
 	CurrentTarget.Reset();
+	CurrentTargetAcquiredTime = -1.0f;
 	bCurrentTargetVisible = false;
 	bEncounterTargetPendingSight = false;
 	TargetLostTime = -1.0f;
@@ -549,15 +867,6 @@ bool AFE_EnemyAIController::HasActiveSightStimulus(const AActor& Actor) const
 {
 	return EnemyPerceptionComponent && EnemyPerceptionComponent->HasActiveStimulus(
 		Actor, UAISense::GetSenseID<UAISense_Sight>());
-}
-
-bool AFE_EnemyAIController::HasActiveNonSightStimulus(const AActor& Actor) const
-{
-	return EnemyPerceptionComponent &&
-		(EnemyPerceptionComponent->HasActiveStimulus(
-			Actor, UAISense::GetSenseID<UAISense_Hearing>()) ||
-		 EnemyPerceptionComponent->HasActiveStimulus(
-			Actor, UAISense::GetSenseID<UAISense_Damage>()));
 }
 
 void AFE_EnemyAIController::SetMovementSpeed(

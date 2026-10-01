@@ -6,13 +6,24 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "Engine/LocalPlayer.h"
+#include "GameFramework/PlayerController.h"
 #include "InputActionValue.h"
+#include "InputAction.h"
+#include "InputMappingContext.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "FallenEra.h"
 #include "FallenEraPlayerState.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
+#include "HT/Combat/FECombatTeams.h"
 #include "HT/Component/CombatComponent.h"
+#include "HT/Component/CharacterStatusComponent.h"
+#include "HT/Component/EquipmentComponent.h"
+#include "NavigationInvokerComponent.h"
+#include "Perception/AIPerceptionStimuliSourceComponent.h"
+#include "Perception/AISense_Sight.h"
 
 AFallenEraCharacter::AFallenEraCharacter()
 {
@@ -48,6 +59,14 @@ AFallenEraCharacter::AFallenEraCharacter()
 	GetCharacterMovement()->AirControl = 0.5f;
 
 	CombatComponent = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("CombatComponent"));
+	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
+	CharacterStatusComponent = CreateDefaultSubobject<UFE_CharacterStatusComponent>(TEXT("CharacterStatusComponent"));
+	PerceptionStimuliSourceComponent =
+		CreateDefaultSubobject<UAIPerceptionStimuliSourceComponent>(TEXT("PerceptionStimuliSourceComponent"));
+	NavigationInvokerComponent = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvokerComponent"));
+	NavigationInvokerComponent->SetGenerationRadii(10000.0f, 12000.0f);
+	GetCapsuleComponent()->SetCollisionProfileName(TEXT("Player"));
+	bReplicates = true;
 }
 
 UAbilitySystemComponent* AFallenEraCharacter::GetAbilitySystemComponent() const
@@ -61,6 +80,29 @@ UFallenEraAbilitySystemComponent* AFallenEraCharacter::GetFallenEraAbilitySystem
 	return FallenEraPlayerState ? FallenEraPlayerState->GetFallenEraAbilitySystemComponent() : nullptr;
 }
 
+FGenericTeamId AFallenEraCharacter::GetGenericTeamId() const
+{
+	return FECombatTeams::Player;
+}
+
+FFE_CombatDamageResult AFallenEraCharacter::ReceiveCombatDamage_Implementation(
+	const FFE_CombatDamageRequest& DamageRequest)
+{
+	return CombatComponent
+		? CombatComponent->ApplyGameplayEffectDamage(DamageRequest)
+		: FFE_CombatDamageResult();
+}
+
+void AFallenEraCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+	if (HasAuthority() && PerceptionStimuliSourceComponent)
+	{
+		PerceptionStimuliSourceComponent->RegisterForSense(UAISense_Sight::StaticClass());
+	}
+	SetCombatInputEnabled(true);
+}
+
 void AFallenEraCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
@@ -68,6 +110,10 @@ void AFallenEraCharacter::PossessedBy(AController* NewController)
 	if (AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>())
 	{
 		FallenEraPlayerState->InitializeAbilitySystem(this);
+	}
+	if (HasAuthority() && EquipmentComponent)
+	{
+		EquipmentComponent->RefreshEquipment();
 	}
 }
 
@@ -78,6 +124,10 @@ void AFallenEraCharacter::OnRep_PlayerState()
 	if (AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>())
 	{
 		FallenEraPlayerState->InitializeAbilitySystem(this);
+	}
+	if (EquipmentComponent)
+	{
+		EquipmentComponent->RefreshEquipment();
 	}
 }
 
@@ -105,6 +155,39 @@ void AFallenEraCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 				EnhancedInputComponent->BindAction(Binding.InputAction, ETriggerEvent::Completed, this, &AFallenEraCharacter::AbilityInputReleased, Binding.InputTag);
 				EnhancedInputComponent->BindAction(Binding.InputAction, ETriggerEvent::Canceled, this, &AFallenEraCharacter::AbilityInputReleased, Binding.InputTag);
 			}
+		}
+
+		if (CombatLeftClickAction)
+		{
+			EnhancedInputComponent->BindAction(
+				CombatLeftClickAction, ETriggerEvent::Started,
+				this, &AFallenEraCharacter::HandleCombatLeftClickStarted);
+			EnhancedInputComponent->BindAction(
+				CombatLeftClickAction, ETriggerEvent::Completed,
+				this, &AFallenEraCharacter::HandleCombatLeftClickReleased);
+			EnhancedInputComponent->BindAction(
+				CombatLeftClickAction, ETriggerEvent::Canceled,
+				this, &AFallenEraCharacter::HandleCombatLeftClickReleased);
+		}
+
+		if (CombatRightClickAction)
+		{
+			EnhancedInputComponent->BindAction(
+				CombatRightClickAction, ETriggerEvent::Started,
+				this, &AFallenEraCharacter::HandleCombatRightClickStarted);
+			EnhancedInputComponent->BindAction(
+				CombatRightClickAction, ETriggerEvent::Completed,
+				this, &AFallenEraCharacter::HandleCombatRightClickReleased);
+			EnhancedInputComponent->BindAction(
+				CombatRightClickAction, ETriggerEvent::Canceled,
+				this, &AFallenEraCharacter::HandleCombatRightClickReleased);
+		}
+
+		if (CombatSwapAction)
+		{
+			EnhancedInputComponent->BindAction(
+				CombatSwapAction, ETriggerEvent::Started,
+				this, &AFallenEraCharacter::HandleCombatSwap);
 		}
 	}
 	else
@@ -204,4 +287,96 @@ void AFallenEraCharacter::DoJumpEnd()
 {
 	// pass StopJumping to the character
 	StopJumping();
+}
+
+void AFallenEraCharacter::PlayAttackMontage(UAnimMontage* Montage)
+{
+	if (CombatComponent)
+	{
+		CombatComponent->PlayAttackMontageLocal(Montage);
+	}
+}
+
+void AFallenEraCharacter::MulticastPlayAttackMontage_Implementation(UAnimMontage* Montage)
+{
+	if (!HasAuthority() && IsLocallyControlled())
+	{
+		return;
+	}
+	PlayAttackMontage(Montage);
+}
+
+void AFallenEraCharacter::HandleCombatLeftClickStarted(const FInputActionValue& Value)
+{
+	(void)Value;
+	PressCombatAbility(FallenEraGameplayTags::Ability_Input_Combat_LeftClick);
+}
+
+void AFallenEraCharacter::HandleCombatLeftClickReleased(const FInputActionValue& Value)
+{
+	(void)Value;
+	ReleaseCombatAbility(FallenEraGameplayTags::Ability_Input_Combat_LeftClick);
+}
+
+void AFallenEraCharacter::HandleCombatRightClickStarted(const FInputActionValue& Value)
+{
+	(void)Value;
+	PressCombatAbility(FallenEraGameplayTags::Ability_Input_Combat_RightClick);
+}
+
+void AFallenEraCharacter::HandleCombatRightClickReleased(const FInputActionValue& Value)
+{
+	(void)Value;
+	ReleaseCombatAbility(FallenEraGameplayTags::Ability_Input_Combat_RightClick);
+}
+
+void AFallenEraCharacter::HandleCombatSwap(const FInputActionValue& Value)
+{
+	if (Value.Get<bool>() && EquipmentComponent)
+	{
+		EquipmentComponent->CycleWeapon();
+	}
+}
+
+void AFallenEraCharacter::PressCombatAbility(const FGameplayTag& InputTag)
+{
+	if (UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent())
+	{
+		AbilitySystem->AbilityInputTagPressed(InputTag);
+	}
+}
+
+void AFallenEraCharacter::ReleaseCombatAbility(const FGameplayTag& InputTag)
+{
+	if (UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent())
+	{
+		AbilitySystem->AbilityInputTagReleased(InputTag);
+	}
+}
+
+void AFallenEraCharacter::SetCombatInputEnabled(bool bEnabled)
+{
+	if (!IsLocallyControlled() || !CombatMappingContext)
+	{
+		return;
+	}
+
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	UEnhancedInputLocalPlayerSubsystem* Subsystem = LocalPlayer
+		? ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(LocalPlayer)
+		: nullptr;
+	if (!Subsystem)
+	{
+		return;
+	}
+
+	if (bEnabled)
+	{
+		Subsystem->AddMappingContext(CombatMappingContext, CombatMappingPriority);
+	}
+	else
+	{
+		Subsystem->RemoveMappingContext(CombatMappingContext);
+	}
 }

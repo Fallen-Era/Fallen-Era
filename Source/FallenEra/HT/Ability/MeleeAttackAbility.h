@@ -40,6 +40,7 @@ private:
 	void StopMeleeTrace();
 	void WaitForAttackEvents();
 	void CompleteCurrentAttack();
+	int32 SelectDeterministicRandomAttackIndex();
 
 	UFUNCTION()
 	void OnInputReleased(float TimeHeld);
@@ -82,6 +83,8 @@ private:
 	TArray<TObjectPtr<UFE_MeleeAttackData>> CachedComboAttacks;
 
 	int32 CurrentComboIndex = 0;
+	uint32 AttackSelectionSeed = 0;
+	int32 AttackSelectionOrdinal = 0;
 	bool bAttackAutomatic = false;
 	bool bAttackInProgress = false;
 	bool bMeleeTraceActive = false;

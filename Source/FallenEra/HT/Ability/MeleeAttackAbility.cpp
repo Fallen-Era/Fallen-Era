@@ -20,6 +20,10 @@ void UFE_MeleeAttackAbility::ActivateAbility(
 
 	bInputReleased = false;
 	CurrentComboIndex = 0;
+	AttackSelectionSeed = HashCombine(
+		GetTypeHash(Handle),
+		GetTypeHash(ActivationInfo.GetActivationPredictionKey()));
+	AttackSelectionOrdinal = 0;
 	bAttackAutomatic = false;
 	bAttackInProgress = false;
 	bMeleeTraceActive = false;
@@ -54,7 +58,7 @@ void UFE_MeleeAttackAbility::ActivateAbility(
 	if (const UFE_MeleeWeaponItemData* MeleeWeaponData = Cast<UFE_MeleeWeaponItemData>(WeaponData);
 		MeleeWeaponData && MeleeWeaponData->AttackSequenceMode == EFE_MeleeAttackSequenceMode::RandomSingle)
 	{
-		CurrentComboIndex = FMath::RandRange(0, CachedComboAttacks.Num() - 1);
+		CurrentComboIndex = SelectDeterministicRandomAttackIndex();
 	}
 
 	CacheAttackContext(WeaponData, CachedComboAttacks[CurrentComboIndex]);
@@ -371,13 +375,30 @@ void UFE_MeleeAttackAbility::CompleteCurrentAttack()
 	if (const UFE_MeleeWeaponItemData* MeleeWeaponData = Cast<UFE_MeleeWeaponItemData>(GetCachedWeaponData());
 		MeleeWeaponData && MeleeWeaponData->AttackSequenceMode == EFE_MeleeAttackSequenceMode::RandomSingle)
 	{
-		CurrentComboIndex = FMath::RandRange(0, CachedComboAttacks.Num() - 1);
+		CurrentComboIndex = SelectDeterministicRandomAttackIndex();
 	}
 	else
 	{
 		CurrentComboIndex = (CurrentComboIndex + 1) % CachedComboAttacks.Num();
 	}
 	PerformCurrentAttack();
+}
+
+int32 UFE_MeleeAttackAbility::SelectDeterministicRandomAttackIndex()
+{
+	if (CachedComboAttacks.IsEmpty())
+	{
+		return INDEX_NONE;
+	}
+
+	// Local-predicted client and authority receive the same spec handle and prediction
+	// key. Deriving every selection from those values keeps montage choice identical
+	// without adding an RPC or restarting the owner's predicted montage.
+	const uint32 SelectionSeed = HashCombine(
+		AttackSelectionSeed,
+		GetTypeHash(AttackSelectionOrdinal++));
+	FRandomStream RandomStream(static_cast<int32>(SelectionSeed));
+	return RandomStream.RandRange(0, CachedComboAttacks.Num() - 1);
 }
 
 void UFE_MeleeAttackAbility::OnFallbackIntervalElapsed()

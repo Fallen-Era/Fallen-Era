@@ -10,6 +10,17 @@ class UAISenseConfig_Damage;
 class UAISenseConfig_Hearing;
 class UAISenseConfig_Sight;
 class AFE_EnemyCharacter;
+struct FSAITargetSelectionSettings;
+
+struct FFE_AITargetMemory
+{
+	TWeakObjectPtr<AActor> Actor;
+	FVector LastKnownLocation = FVector::ZeroVector;
+	float LastStimulusTime = -1.0f;
+	float LastSeenTime = -1.0f;
+	float LastDamageTime = -1.0f;
+	float AccumulatedDamage = 0.0f;
+};
 
 /** Event-driven sight with a staggered low-frequency decision loop for open-world enemies. */
 UCLASS()
@@ -29,6 +40,9 @@ public:
 	/** Encounter spawns chase this target immediately, before perception has produced a stimulus. */
 	bool SetEncounterCombatTarget(AActor* TargetActor);
 
+	UFUNCTION(BlueprintPure, Category="FallenEra|AI|Target")
+	AActor* GetCurrentCombatTarget() const { return CurrentTarget.Get(); }
+
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
@@ -42,6 +56,8 @@ private:
 	void UpdatePatrol(AFE_EnemyCharacter& EnemyCharacter);
 	void UpdateInvestigation(AFE_EnemyCharacter& EnemyCharacter);
 	void UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AActor& TargetActor);
+	void EvaluateBestCombatTarget(bool bIgnoreMinimumLockTime = false);
+	void SelectCombatTarget(AActor* TargetActor);
 	void ClearTarget();
 	void SetInvestigationLocation(const FVector& Location);
 	void ClearInvestigation();
@@ -53,7 +69,15 @@ private:
 	void ApplyPerceptionSettings();
 	bool IsPlayerTarget(const AActor* Actor) const;
 	bool HasActiveSightStimulus(const AActor& Actor) const;
-	bool HasActiveNonSightStimulus(const AActor& Actor) const;
+	FFE_AITargetMemory& FindOrAddTargetMemory(AActor& Actor);
+	const FFE_AITargetMemory* FindTargetMemory(const AActor& Actor) const;
+	void RecordSightStimulus(AActor& Actor, const FAIStimulus& Stimulus);
+	void RecordDamageStimulus(AActor& Actor, const FAIStimulus& Stimulus);
+	void RefreshVisibleTargetMemories();
+	void PruneTargetMemories();
+	float CalculateTargetScore(const AActor& Actor, const FFE_AITargetMemory& Memory) const;
+	const FSAITargetSelectionSettings& GetTargetSelectionSettings() const;
+	FVector GetLastKnownTargetLocation(const AActor& Actor) const;
 	void SetMovementSpeed(AFE_EnemyCharacter& EnemyCharacter, float MovementSpeed) const;
 
 	UPROPERTY(VisibleAnywhere, Category="FallenEra|AI")
@@ -116,10 +140,12 @@ private:
 	float InvestigationAcceptanceRadius = 100.0f;
 
 	TWeakObjectPtr<AActor> CurrentTarget;
+	TArray<FFE_AITargetMemory> TargetMemories;
 	FVector HomeLocation = FVector::ZeroVector;
 	FVector InvestigationLocation = FVector::ZeroVector;
 	float TargetLostTime = -1.0f;
 	float NextPatrolRequestTime = 0.0f;
+	float CurrentTargetAcquiredTime = -1.0f;
 	FAIRequestID InvestigationMoveRequestId = FAIRequestID::InvalidRequest;
 	FTimerHandle DecisionTimerHandle;
 	bool bAIActive = true;

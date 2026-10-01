@@ -17,6 +17,7 @@ class AFE_CombatProjectile;
 class UFE_ImpactEffectData;
 class UNiagaraSystem;
 class UParticleSystem;
+class UFE_CrossHairWidget;
 
 UENUM(BlueprintType)
 enum class EFE_MeleeAttackSequenceMode : uint8
@@ -74,6 +75,10 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack")
 	TObjectPtr<UAnimMontage> AttackMontage;
+
+	/** Optional montage played by the equipped skeletal weapon mesh. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Weapon Mesh")
+	TObjectPtr<UAnimMontage> WeaponMeshAttackMontage;
 
 	/** Hit-reaction values applied after DamageExecutionCalculation succeeds. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Reaction")
@@ -209,7 +214,7 @@ public:
 };
 
 /** Hold-to-charge projectile parameters shared by bows and throwable weapons. */
-UCLASS(BlueprintType, EditInlineNew, DefaultToInstanced)
+UCLASS(Abstract, BlueprintType, EditInlineNew, DefaultToInstanced)
 class FALLENERA_API UFE_ChargedProjectileAttackData : public UFE_ProjectileAttackDataBase
 {
 	GENERATED_BODY()
@@ -249,7 +254,36 @@ public:
 		meta=(EditCondition="AttachmentTarget == EFE_ChargedProjectileAttachmentTarget::CharacterMesh", MakeEditWidget))
 	FVector FixedThrowStartOffset = FVector(50.0f, 25.0f, 65.0f);
 
-	/** Optional local-only trajectory Niagara. Leave empty for bows without a trajectory preview. */
+
+};
+
+/** Bow-only charged presentation. Camera and charge animation are not used by throwables. */
+UCLASS(BlueprintType, EditInlineNew, DefaultToInstanced)
+class FALLENERA_API UFE_BowAttackData : public UFE_ChargedProjectileAttackData
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Bow|Camera", meta=(MakeEditWidget))
+	FTransform ChargeCameraRelativeTransform = FTransform(
+		FRotator(1.782045, 80.778150, -89.150872),
+		FVector(12.977573, 71.894966, -38.414821),
+		FVector::OneVector);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Bow|Camera", meta=(ClampMin="0.0", Units="s"))
+	float ChargeCameraBlendInTime = 0.2f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Bow|Camera", meta=(ClampMin="0.0", Units="s"))
+	float ChargeCameraBlendOutTime = 0.2f;
+};
+
+/** Throwable-only charged presentation. The trajectory is local and never replicated. */
+UCLASS(BlueprintType, EditInlineNew, DefaultToInstanced)
+class FALLENERA_API UFE_GrenadeAttackData : public UFE_ChargedProjectileAttackData
+{
+	GENERATED_BODY()
+
+public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Charged Projectile|Trajectory")
 	TSoftObjectPtr<UNiagaraSystem> TrajectoryNiagaraSystem;
 
@@ -294,9 +328,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
 	TSoftClassPtr<UAnimInstance> WeaponAnimLayerClass;
 
-	/** Crosshair texture shown while this weapon is equipped. */
+	/** Per-weapon crosshair widget. The HUD replaces its active child when equipment changes. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
-	TSoftObjectPtr<UTexture2D> CrosshairTexture;
+	TSoftClassPtr<UFE_CrossHairWidget> CrosshairWidgetClass;
+
+	/** AnimBP assigned directly to both equipped skeletal weapon meshes. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
+	TSoftClassPtr<UAnimInstance> WeaponMeshAnimInstanceClass;
 
 	/** Spatial sound played once whenever this weapon performs an attack. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Attack")

@@ -36,14 +36,19 @@ void UFE_HitscanAttackAbility::ActivateAbility(
 
 	const float CurrentTime = CombatCharacter->GetWorld() ? CombatCharacter->GetWorld()->GetTimeSeconds() : 0.0f;
 	if ((!HitscanAttackData->bAutomatic && CurrentTime < NextFireTime) ||
-		!CommitAbility(Handle, ActorInfo, ActivationInfo))
+		!CheckCost(Handle, ActorInfo) ||
+		!CommitAbilityCooldown(Handle, ActorInfo, ActivationInfo, false))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
 	}
 	CacheAttackContext(WeaponData, AttackData);
 
-	FireOnce();
+	if (!FireOnce())
+	{
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
+		return;
+	}
 	if (!HitscanAttackData->bAutomatic)
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
@@ -56,27 +61,35 @@ void UFE_HitscanAttackAbility::ActivateAbility(
 	ScheduleNextShot();
 }
 
-void UFE_HitscanAttackAbility::FireOnce()
+bool UFE_HitscanAttackAbility::FireOnce()
 {
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponItemData* WeaponData = GetCachedWeaponData();
 	const UFE_HitscanAttackData* AttackData = Cast<UFE_HitscanAttackData>(GetCachedAttackData());
 	if (!CombatCharacter || !WeaponData || !AttackData || !CombatCharacter->GetWorld())
 	{
-		return;
+		return false;
 	}
 
 	const float CurrentTime = CombatCharacter->GetWorld()->GetTimeSeconds();
 	if (CurrentTime < NextFireTime)
 	{
-		return;
+		// A quick re-press keeps the ability alive until the previous shot interval ends.
+		return true;
+	}
+
+	// Cost belongs to a shot, not to the lifetime of an automatic-fire ability.
+	// A future ammo Cost GameplayEffect will therefore consume one round here.
+	if (!CommitAbilityCost(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo))
+	{
+		return false;
 	}
 	NextFireTime = CurrentTime + FMath::Max(0.01f, AttackData->FireInterval);
 
 	PlayAttackPresentation(CombatCharacter, WeaponData, AttackData);
 	if (!CombatCharacter->HasAuthority())
 	{
-		return;
+		return true;
 	}
 
 	FVector ViewStart = CombatCharacter->GetActorLocation();
@@ -158,6 +171,7 @@ void UFE_HitscanAttackAbility::FireOnce()
 			}
 		}
 	}
+	return true;
 }
 
 void UFE_HitscanAttackAbility::ScheduleNextShot()
@@ -187,7 +201,11 @@ void UFE_HitscanAttackAbility::OnFireIntervalElapsed()
 {
 	if (!bInputReleased && IsActive())
 	{
-		FireOnce();
+		if (!FireOnce())
+		{
+			EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+			return;
+		}
 		ScheduleNextShot();
 	}
 }

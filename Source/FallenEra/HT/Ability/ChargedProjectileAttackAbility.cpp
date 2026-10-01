@@ -1,16 +1,11 @@
 #include "HT/Ability/ChargedProjectileAttackAbility.h"
 
-#include "Abilities/Tasks/AbilityTask_WaitDelay.h"
 #include "Abilities/Tasks/AbilityTask_WaitInputRelease.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "HT/Component/CombatComponent.h"
 #include "HT/Projectile/CombatProjectile.h"
 #include "HT/Weapon/WeaponItemData.h"
-#include "Kismet/GameplayStatics.h"
-#include "NiagaraComponent.h"
-#include "NiagaraDataInterfaceArrayFunctionLibrary.h"
-#include "NiagaraFunctionLibrary.h"
 
 UFE_ChargedProjectileAttackAbility::UFE_ChargedProjectileAttackAbility()
 {
@@ -35,7 +30,7 @@ void UFE_ChargedProjectileAttackAbility::ActivateAbility(
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponItemData* WeaponData = CombatCharacter ? GetWeaponData(CombatCharacter) : nullptr;
 	const UFE_ChargedProjectileAttackData* AttackData = Cast<UFE_ChargedProjectileAttackData>(ResolveAttackData(CombatCharacter));
-	if (!CombatCharacter || !WeaponData || !AttackData ||
+	if (!CombatCharacter || !WeaponData || !AttackData || !SupportsChargedAttackData(AttackData) ||
 		!CanFireProjectile(CombatCharacter, AttackData) ||
 		!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
@@ -73,12 +68,6 @@ void UFE_ChargedProjectileAttackAbility::EndAbility(
 		InputReleaseTask->EndTask();
 		InputReleaseTask = nullptr;
 	}
-	if (TrajectoryUpdateTask)
-	{
-		TrajectoryUpdateTask->EndTask();
-		TrajectoryUpdateTask = nullptr;
-	}
-
 	StopLocalChargePresentation();
 	CachedChargedAttackData = nullptr;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
@@ -88,16 +77,6 @@ void UFE_ChargedProjectileAttackAbility::HandleInputReleased(float TimeHeld)
 {
 	(void)TimeHeld;
 	BeginRelease();
-}
-
-void UFE_ChargedProjectileAttackAbility::HandleTrajectoryUpdate()
-{
-	TrajectoryUpdateTask = nullptr;
-	if (!bReleaseRequested && IsActive())
-	{
-		UpdateLocalTrajectory();
-		ScheduleTrajectoryUpdate();
-	}
 }
 
 void UFE_ChargedProjectileAttackAbility::BeginRelease()
@@ -113,6 +92,15 @@ void UFE_ChargedProjectileAttackAbility::BeginRelease()
 
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	PlayAttackMontage(CombatCharacter, CachedChargedAttackData->ReleaseMontage);
+	if (CombatCharacter && CachedChargedAttackData->WeaponMeshAttackMontage)
+	{
+		if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
+		{
+			Combat->PlayWeaponMeshMontage(
+				CachedChargedAttackData->WeaponMeshAttackMontage,
+				NetExecutionPolicy == EGameplayAbilityNetExecutionPolicy::LocalPredicted);
+		}
+	}
 	PlayAttackEffects(CombatCharacter, GetCachedWeaponData(), CachedChargedAttackData);
 	FireChargedProjectile();
 }
@@ -185,7 +173,6 @@ void UFE_ChargedProjectileAttackAbility::StartLocalChargePresentation()
 	{
 		return;
 	}
-
 	if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
 	{
 		Combat->StartChargeProjectilePresentation(
@@ -196,37 +183,13 @@ void UFE_ChargedProjectileAttackAbility::StartLocalChargePresentation()
 			true);
 		bChargePresentationActive = true;
 	}
-
-	if (!CombatCharacter->IsLocallyControlled())
-	{
-		return;
-	}
-
-	if (UNiagaraSystem* TrajectorySystem = CachedChargedAttackData->TrajectoryNiagaraSystem.Get())
-	{
-		TrajectoryComponent = UNiagaraFunctionLibrary::SpawnSystemAttached(
-			TrajectorySystem,
-			CombatCharacter->GetRootComponent(),
-			NAME_None,
-			FVector::ZeroVector,
-			FRotator::ZeroRotator,
-			FVector::OneVector,
-			EAttachLocation::SnapToTarget,
-			false,
-			ENCPoolMethod::ManualRelease,
-			false,
-			true);
-		UpdateLocalTrajectory();
-		if (TrajectoryComponent)
-		{
-			TrajectoryComponent->Activate(true);
-		}
-		ScheduleTrajectoryUpdate();
-	}
+	StartSpecializedChargePresentation();
 }
 
 void UFE_ChargedProjectileAttackAbility::StopLocalChargePresentation()
 {
+	StopSpecializedChargePresentation();
+
 	if (bChargePresentationActive)
 	{
 		if (ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo()))
@@ -239,95 +202,19 @@ void UFE_ChargedProjectileAttackAbility::StopLocalChargePresentation()
 		bChargePresentationActive = false;
 	}
 
-	if (TrajectoryUpdateTask)
-	{
-		TrajectoryUpdateTask->EndTask();
-		TrajectoryUpdateTask = nullptr;
-	}
-	if (TrajectoryComponent)
-	{
-		TrajectoryComponent->DeactivateImmediate();
-		TrajectoryComponent->ReleaseToPool();
-		TrajectoryComponent = nullptr;
-	}
 }
 
-void UFE_ChargedProjectileAttackAbility::UpdateLocalTrajectory()
+void UFE_ChargedProjectileAttackAbility::StartSpecializedChargePresentation()
 {
-	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
-	if (!CombatCharacter || !TrajectoryComponent || !CachedChargedAttackData || !CombatCharacter->GetWorld())
-	{
-		return;
-	}
-
-	FVector StartLocation;
-	FVector LaunchDirection;
-	if (!GetProjectileLaunchTransform(
-		CombatCharacter,
-		CachedChargedAttackData,
-		EFE_ProjectileLaunchContext::LocalPreview,
-		StartLocation,
-		LaunchDirection))
-	{
-		return;
-	}
-
-	const float LaunchSpeed = FMath::Lerp(
-		FMath::Max(0.0f, CachedChargedAttackData->MinLaunchSpeed),
-		FMath::Max(CachedChargedAttackData->MinLaunchSpeed, CachedChargedAttackData->MaxLaunchSpeed),
-		CalculateChargeAlpha());
-	const FVector LaunchVelocity = LaunchDirection * LaunchSpeed;
-
-	FPredictProjectilePathParams PredictionParams;
-	PredictionParams.StartLocation = StartLocation;
-	PredictionParams.LaunchVelocity = LaunchVelocity;
-	PredictionParams.ProjectileRadius = FMath::Max(0.0f, CachedChargedAttackData->TrajectoryCollisionRadius);
-	PredictionParams.MaxSimTime = FMath::Max(0.1f, CachedChargedAttackData->TrajectorySimulationTime);
-	PredictionParams.SimFrequency = FMath::Max(5.0f, CachedChargedAttackData->TrajectorySimulationFrequency);
-	PredictionParams.OverrideGravityZ =
-		CombatCharacter->GetWorld()->GetGravityZ() * CachedChargedAttackData->GravityScale;
-	PredictionParams.bTraceWithCollision = true;
-	PredictionParams.bTraceComplex = false;
-	PredictionParams.TraceChannel = GetAttackTraceChannel();
-	PredictionParams.ActorsToIgnore.Add(const_cast<ACharacter*>(CombatCharacter));
-
-	FPredictProjectilePathResult PredictionResult;
-	UGameplayStatics::PredictProjectilePath(CombatCharacter, PredictionParams, PredictionResult);
-
-	TArray<FVector> TrajectoryPoints;
-	TrajectoryPoints.Reserve(FMath::Max(2, PredictionResult.PathData.Num()));
-	const FTransform TrajectoryTransform = TrajectoryComponent->GetComponentTransform();
-	for (const FPredictProjectilePathPointData& PointData : PredictionResult.PathData)
-	{
-		TrajectoryPoints.Add(TrajectoryTransform.InverseTransformPosition(PointData.Location));
-	}
-
-	// Keep the ribbon valid even if prediction cannot produce a complete step.
-	if (TrajectoryPoints.IsEmpty())
-	{
-		TrajectoryPoints.Add(TrajectoryTransform.InverseTransformPosition(StartLocation));
-	}
-	if (TrajectoryPoints.Num() == 1)
-	{
-		TrajectoryPoints.Add(
-			TrajectoryTransform.InverseTransformPosition(StartLocation + LaunchDirection));
-	}
-
-	UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector(
-		TrajectoryComponent,
-		TEXT("User.TrajectoryPoints"),
-		TrajectoryPoints);
 }
 
-void UFE_ChargedProjectileAttackAbility::ScheduleTrajectoryUpdate()
+void UFE_ChargedProjectileAttackAbility::StopSpecializedChargePresentation()
 {
-	if (!TrajectoryComponent || !CachedChargedAttackData || bReleaseRequested)
-	{
-		return;
-	}
+}
 
-	TrajectoryUpdateTask = UAbilityTask_WaitDelay::WaitDelay(
-		this, FMath::Max(0.016f, CachedChargedAttackData->TrajectoryUpdateInterval));
-	TrajectoryUpdateTask->OnFinish.AddDynamic(this, &UFE_ChargedProjectileAttackAbility::HandleTrajectoryUpdate);
-	TrajectoryUpdateTask->ReadyForActivation();
+bool UFE_ChargedProjectileAttackAbility::SupportsChargedAttackData(
+	const UFE_ChargedProjectileAttackData* AttackData) const
+{
+	(void)AttackData;
+	return false;
 }

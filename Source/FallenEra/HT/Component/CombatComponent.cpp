@@ -3,10 +3,12 @@
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
 #include "HT/Armor/ArmorGameplayTags.h"
+#include "HT/Animation/FEBowAnimInstance.h"
 #include "AbilitySystemInterface.h"
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
+#include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -16,6 +18,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "HT/Combat/FECombatTeams.h"
+#include "HT/Component/CharacterStatusComponent.h"
 #include "HT/Component/EquipmentComponent.h"
 #include "HT/Effect/DamageGameplayEffect.h"
 #include "HT/Projectile/CombatProjectile.h"
@@ -39,10 +42,26 @@ UFE_CombatComponent::UFE_CombatComponent()
 	DamageEffectClass = UFE_DamageGameplayEffect::StaticClass();
 }
 
+void UFE_CombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(CameraTransitionTimer);
+	}
+	if (UCameraComponent* Camera = ChargeCamera.Get(); Camera && bOriginalCameraTransformCached)
+	{
+		Camera->SetRelativeTransform(OriginalCameraRelativeTransform);
+	}
+	ChargeCamera.Reset();
+	bOriginalCameraTransformCached = false;
+	Super::EndPlay(EndPlayReason);
+}
+
 void UFE_CombatComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(UFE_CombatComponent, bDeathCollisionDisabled);
+	DOREPLIFETIME(UFE_CombatComponent, BowChargeAlpha);
 }
 
 UAbilitySystemComponent* UFE_CombatComponent::FindAbilitySystemComponent(AActor* Actor)
@@ -94,6 +113,7 @@ void UFE_CombatComponent::PlayAttackMontageLocal(UAnimMontage* Montage)
 	{
 		return;
 	}
+	ActiveAttackMontage = Montage;
 	if (USkeletalMeshComponent* Mesh = Character->GetMesh())
 	{
 		if (UAnimInstance* Anim = Mesh->GetAnimInstance())
@@ -112,6 +132,280 @@ void UFE_CombatComponent::PlayAttackMontageLocal(UAnimMontage* Montage)
 	// 		}
 	// 	}
 	// }
+}
+
+void UFE_CombatComponent::PlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner)
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	if (!Pawn || !Montage)
+	{
+		return;
+	}
+	if (Pawn->HasAuthority())
+	{
+		MulticastPlayWeaponMeshMontage(Montage, bPredictedByOwner);
+	}
+	else if (bPredictedByOwner && Pawn->IsLocallyControlled())
+	{
+		MulticastPlayWeaponMeshMontage_Implementation(Montage, false);
+	}
+}
+
+void UFE_CombatComponent::MulticastPlayWeaponMeshMontage_Implementation(
+	UAnimMontage* Montage,
+	bool bPredictedByOwner)
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	if (!Pawn || !Montage || (!Pawn->HasAuthority() && Pawn->IsLocallyControlled() && bPredictedByOwner))
+	{
+		return;
+	}
+
+	ActiveWeaponMeshMontage = Montage;
+	const UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
+	auto PlayOnMesh = [Montage](UMeshComponent* Mesh)
+	{
+		if (USkeletalMeshComponent* SkeletalMesh = Cast<USkeletalMeshComponent>(Mesh))
+		{
+			if (UAnimInstance* AnimInstance = SkeletalMesh->GetAnimInstance())
+			{
+				AnimInstance->Montage_Play(Montage);
+			}
+		}
+	};
+	if (Equipment)
+	{
+		PlayOnMesh(Equipment->GetEquippedWorldWeaponMesh());
+		PlayOnMesh(Equipment->GetEquippedFirstPersonWeaponMesh());
+	}
+}
+
+void UFE_CombatComponent::SetBowChargeAlpha(float NewChargeAlpha)
+{
+	const float ClampedAlpha = FMath::Clamp(NewChargeAlpha, 0.0f, 1.0f);
+	if (FMath::IsNearlyEqual(BowChargeAlpha, ClampedAlpha))
+	{
+		return;
+	}
+	BowChargeAlpha = ClampedAlpha;
+	ApplyBowChargeAlphaLocal();
+	BowChargeChangedDelegate.Broadcast(BowChargeAlpha);
+}
+
+void UFE_CombatComponent::OnRep_BowChargeAlpha()
+{
+	ApplyBowChargeAlphaLocal();
+	BowChargeChangedDelegate.Broadcast(BowChargeAlpha);
+}
+
+void UFE_CombatComponent::ApplyBowChargeAlphaLocal()
+{
+	const UFE_EquipmentComponent* Equipment = GetOwner()
+		? GetOwner()->FindComponentByClass<UFE_EquipmentComponent>()
+		: nullptr;
+	auto ApplyToMesh = [this](UMeshComponent* Mesh)
+	{
+		if (USkeletalMeshComponent* SkeletalMesh = Cast<USkeletalMeshComponent>(Mesh))
+		{
+			if (UFEBowAnimInstance* BowAnim = Cast<UFEBowAnimInstance>(SkeletalMesh->GetAnimInstance()))
+			{
+				BowAnim->SetChargeAlpha(BowChargeAlpha);
+			}
+		}
+	};
+	if (Equipment)
+	{
+		ApplyToMesh(Equipment->GetEquippedWorldWeaponMesh());
+		ApplyToMesh(Equipment->GetEquippedFirstPersonWeaponMesh());
+	}
+}
+
+void UFE_CombatComponent::StartChargeCameraPresentation(
+	const FTransform& TargetRelativeTransform,
+	float BlendInDuration,
+	float BlendOutDuration)
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	if (!Pawn || !Pawn->IsLocallyControlled())
+	{
+		return;
+	}
+
+	UCameraComponent* Camera = IFE_CombatPresentation::FindCombatCamera(Pawn);
+	if (!Camera)
+	{
+		return;
+	}
+	ChargeCamera = Camera;
+	if (!bOriginalCameraTransformCached)
+	{
+		OriginalCameraRelativeTransform = Camera->GetRelativeTransform();
+		bOriginalCameraTransformCached = true;
+	}
+	CameraBlendOutDuration = FMath::Max(0.0f, BlendOutDuration);
+	bChargeCameraPresentationActive = true;
+	StartCameraTransition(TargetRelativeTransform, BlendInDuration, false);
+}
+
+void UFE_CombatComponent::StopChargeCameraPresentation()
+{
+	if (!bChargeCameraPresentationActive || !bOriginalCameraTransformCached)
+	{
+		return;
+	}
+	bChargeCameraPresentationActive = false;
+	StartCameraTransition(OriginalCameraRelativeTransform, CameraBlendOutDuration, true);
+}
+
+void UFE_CombatComponent::StartCameraTransition(
+	const FTransform& TargetTransform,
+	float Duration,
+	bool bReturning)
+{
+	UCameraComponent* Camera = ChargeCamera.Get();
+	UWorld* World = GetWorld();
+	if (!Camera || !World)
+	{
+		bChargeCameraPresentationActive = false;
+		bOriginalCameraTransformCached = false;
+		ChargeCamera.Reset();
+		return;
+	}
+
+	World->GetTimerManager().ClearTimer(CameraTransitionTimer);
+	CameraTransitionStartTransform = Camera->GetRelativeTransform();
+	CameraTransitionTargetTransform = TargetTransform;
+	CameraTransitionStartTime = World->GetTimeSeconds();
+	CameraTransitionDuration = FMath::Max(0.0f, Duration);
+	bCameraTransitionReturning = bReturning;
+	if (CameraTransitionDuration <= KINDA_SMALL_NUMBER)
+	{
+		Camera->SetRelativeTransform(CameraTransitionTargetTransform);
+		if (bCameraTransitionReturning)
+		{
+			bOriginalCameraTransformCached = false;
+			ChargeCamera.Reset();
+		}
+		return;
+	}
+
+	World->GetTimerManager().SetTimer(
+		CameraTransitionTimer,
+		this,
+		&UFE_CombatComponent::HandleCameraTransition,
+		1.0f / 60.0f,
+		true);
+}
+
+void UFE_CombatComponent::HandleCameraTransition()
+{
+	UCameraComponent* Camera = ChargeCamera.Get();
+	UWorld* World = GetWorld();
+	if (!Camera || !World)
+	{
+		if (World)
+		{
+			World->GetTimerManager().ClearTimer(CameraTransitionTimer);
+		}
+		bOriginalCameraTransformCached = false;
+		ChargeCamera.Reset();
+		return;
+	}
+
+	const float LinearAlpha = FMath::Clamp(
+		(World->GetTimeSeconds() - CameraTransitionStartTime) /
+		FMath::Max(CameraTransitionDuration, KINDA_SMALL_NUMBER),
+		0.0f,
+		1.0f);
+	FTransform BlendedTransform;
+	BlendedTransform.Blend(
+		CameraTransitionStartTransform,
+		CameraTransitionTargetTransform,
+		FMath::SmoothStep(0.0f, 1.0f, LinearAlpha));
+	Camera->SetRelativeTransform(BlendedTransform);
+
+	if (LinearAlpha >= 1.0f)
+	{
+		Camera->SetRelativeTransform(CameraTransitionTargetTransform);
+		World->GetTimerManager().ClearTimer(CameraTransitionTimer);
+		if (bCameraTransitionReturning)
+		{
+			bOriginalCameraTransformCached = false;
+			ChargeCamera.Reset();
+		}
+	}
+}
+
+void UFE_CombatComponent::StopWeaponActionPresentation(bool bPredictedByOwner)
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	if (!Pawn)
+	{
+		return;
+	}
+	if (Pawn->HasAuthority())
+	{
+		MulticastStopWeaponActionPresentation(bPredictedByOwner);
+	}
+	else
+	{
+		StopWeaponActionPresentationLocal();
+	}
+}
+
+void UFE_CombatComponent::MulticastStopWeaponActionPresentation_Implementation(bool bPredictedByOwner)
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	if (Pawn && !Pawn->HasAuthority() && Pawn->IsLocallyControlled() && bPredictedByOwner)
+	{
+		return;
+	}
+	StopWeaponActionPresentationLocal();
+}
+
+void UFE_CombatComponent::StopWeaponActionPresentationLocal()
+{
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	if (Character && ActiveAttackMontage)
+	{
+		auto StopMontage = [this](USkeletalMeshComponent* Mesh)
+		{
+			if (UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr)
+			{
+				AnimInstance->Montage_Stop(0.1f, ActiveAttackMontage);
+			}
+		};
+		StopMontage(Character->GetMesh());
+		USkeletalMeshComponent* FirstPersonMesh = IFE_CombatPresentation::FindFirstPersonMesh(Character);
+		if (FirstPersonMesh != Character->GetMesh())
+		{
+			StopMontage(FirstPersonMesh);
+		}
+	}
+	ActiveAttackMontage = nullptr;
+	if (ActiveWeaponMeshMontage)
+	{
+		const UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
+		auto StopWeaponMontage = [this](UMeshComponent* Mesh)
+		{
+			if (USkeletalMeshComponent* SkeletalMesh = Cast<USkeletalMeshComponent>(Mesh))
+			{
+				if (UAnimInstance* AnimInstance = SkeletalMesh->GetAnimInstance())
+				{
+					AnimInstance->Montage_Stop(0.1f, ActiveWeaponMeshMontage);
+				}
+			}
+		};
+		if (Equipment)
+		{
+			StopWeaponMontage(Equipment->GetEquippedWorldWeaponMesh());
+			StopWeaponMontage(Equipment->GetEquippedFirstPersonWeaponMesh());
+		}
+	}
+	ActiveWeaponMeshMontage = nullptr;
+	SetBowChargeAlpha(0.0f);
+	StopChargeProjectilePresentationLocal();
+	StopChargeCameraPresentation();
 }
 
 void UFE_CombatComponent::PlayWeaponAttackEffects(
@@ -810,6 +1104,15 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 			DamageRequest.SourceActor->GetActorLocation(),
 			HitLocation,
 			TEXT("CombatDamage"));
+
+		if (HealthAfterDamage < HealthBeforeDamage)
+		{
+			if (UFE_CharacterStatusComponent* StatusComponent =
+				TargetActor->FindComponentByClass<UFE_CharacterStatusComponent>())
+			{
+				StatusComponent->TryApplyConditionsFromDamageSource(DamageRequest.SourceActor);
+			}
+		}
 	}
 	if (Result.bDamageApplied && DamageRequest.AttackData)
 	{

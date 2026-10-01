@@ -16,6 +16,9 @@ class UNiagaraSystem;
 class UParticleSystem;
 class USoundBase;
 class AFE_CombatProjectile;
+class UCameraComponent;
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEBowChargeChanged, float);
 
 /** Reusable, server-authoritative bridge for applying GameplayEffect damage to any GAS actor. */
 UCLASS(ClassGroup=(Combat), meta=(BlueprintSpawnableComponent))
@@ -25,11 +28,13 @@ class FALLENERA_API UFE_CombatComponent : public UActorComponent
 
 public:
 	UFE_CombatComponent();
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Authority multicasts; a predicting client only plays its local presentation. */
 	void PlayAttackMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 	void PlayAttackMontageLocal(UAnimMontage* Montage);
+	void PlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 	void PlayWeaponAttackEffects(
 		USoundBase* AttackSound,
 		float SoundVolume,
@@ -52,6 +57,21 @@ public:
 		const FTransform& AttachOffset,
 		bool bPredictedByOwner);
 	void StopChargeProjectilePresentation(bool bPredictedByOwner);
+
+	/** Local-only camera presentation that survives the charging ability ending. */
+	void StartChargeCameraPresentation(
+		const FTransform& TargetRelativeTransform,
+		float BlendInDuration,
+		float BlendOutDuration);
+	void StopChargeCameraPresentation();
+
+	/** Local presentation state consumed by BowCrossHairWidget. */
+	void SetBowChargeAlpha(float NewChargeAlpha);
+	float GetBowChargeAlpha() const { return BowChargeAlpha; }
+	FOnFEBowChargeChanged& OnBowChargeChanged() { return BowChargeChangedDelegate; }
+
+	/** Cancels montage/preview presentation before equipment data is replaced. */
+	void StopWeaponActionPresentation(bool bPredictedByOwner);
 
 	/** Applies the default damage GameplayEffect; execution captures AttackPower and DefensePower. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat")
@@ -115,6 +135,9 @@ private:
 	void MulticastPlayAttackMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 
 	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner);
+
+	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayWeaponAttackEffects(
 		USoundBase* AttackSound,
 		float SoundVolume,
@@ -136,12 +159,18 @@ private:
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastStopChargeProjectilePresentation(bool bPredictedByOwner);
 
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastStopWeaponActionPresentation(bool bPredictedByOwner);
+
 	void StartChargeProjectilePresentationLocal(
 		TSubclassOf<AFE_CombatProjectile> ProjectileClass,
 		EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
 		FName AttachSocketName,
 		const FTransform& AttachOffset);
 	void StopChargeProjectilePresentationLocal();
+	void StopWeaponActionPresentationLocal();
+	void StartCameraTransition(const FTransform& TargetTransform, float Duration, bool bReturning);
+	void HandleCameraTransition();
 	void PlayWeaponAttackEffectsLocal(
 		USoundBase* AttackSound,
 		float SoundVolume,
@@ -150,6 +179,10 @@ private:
 		UParticleSystem* MuzzleParticleSystem,
 		FName MuzzleSocketName,
 		const FVector& MuzzleScale);
+	void ApplyBowChargeAlphaLocal();
+
+	UFUNCTION()
+	void OnRep_BowChargeAlpha();
 
 	bool ApplyDamageInternal(
 		AActor* TargetActor,
@@ -180,6 +213,28 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<AFE_CombatProjectile> ChargeProjectilePreview;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimMontage> ActiveAttackMontage;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimMontage> ActiveWeaponMeshMontage;
+
+	UPROPERTY(ReplicatedUsing=OnRep_BowChargeAlpha)
+	float BowChargeAlpha = 0.0f;
+	FOnFEBowChargeChanged BowChargeChangedDelegate;
+
+	TWeakObjectPtr<UCameraComponent> ChargeCamera;
+	FTransform OriginalCameraRelativeTransform;
+	FTransform CameraTransitionStartTransform;
+	FTransform CameraTransitionTargetTransform;
+	FTimerHandle CameraTransitionTimer;
+	float CameraTransitionStartTime = 0.0f;
+	float CameraTransitionDuration = 0.0f;
+	float CameraBlendOutDuration = 0.2f;
+	bool bOriginalCameraTransformCached = false;
+	bool bChargeCameraPresentationActive = false;
+	bool bCameraTransitionReturning = false;
 
 	bool bReactionStunActive = false;
 	bool bDeathMontagePlayed = false;

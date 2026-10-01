@@ -4,13 +4,11 @@
 #include "HT/Ability/ProjectileAttackAbility.h"
 #include "ChargedProjectileAttackAbility.generated.h"
 
-class UAbilityTask_WaitDelay;
 class UAbilityTask_WaitInputRelease;
 class UFE_ChargedProjectileAttackData;
-class UNiagaraComponent;
 
 /** Hold-to-charge projectile flow used by bows and throwable weapons. */
-UCLASS(Blueprintable)
+UCLASS(Abstract, Blueprintable)
 class FALLENERA_API UFE_ChargedProjectileAttackAbility : public UFE_ProjectileAttackAbility
 {
 	GENERATED_BODY()
@@ -31,12 +29,9 @@ public:
 		bool bReplicateEndAbility,
 		bool bWasCancelled) override;
 
-private:
+protected:
 	UFUNCTION()
 	void HandleInputReleased(float TimeHeld);
-
-	UFUNCTION()
-	void HandleTrajectoryUpdate();
 
 	void BeginRelease();
 	void FireChargedProjectile();
@@ -44,20 +39,17 @@ private:
 	float CalculateLaunchSpeed() const;
 	void StartLocalChargePresentation();
 	void StopLocalChargePresentation();
-	void UpdateLocalTrajectory();
-	void ScheduleTrajectoryUpdate();
+
+	/** Child-only local presentation: bow camera/reticle/AnimBP or grenade trajectory. */
+	virtual void StartSpecializedChargePresentation();
+	virtual void StopSpecializedChargePresentation();
+	virtual bool SupportsChargedAttackData(const UFE_ChargedProjectileAttackData* AttackData) const;
 
 	UPROPERTY()
 	TObjectPtr<UAbilityTask_WaitInputRelease> InputReleaseTask;
 
-	UPROPERTY()
-	TObjectPtr<UAbilityTask_WaitDelay> TrajectoryUpdateTask;
-
 	UPROPERTY(Transient)
 	TObjectPtr<UFE_ChargedProjectileAttackData> CachedChargedAttackData;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UNiagaraComponent> TrajectoryComponent;
 
 	float ChargeStartTime = 0.0f;
 	float ReleasedChargeAlpha = 0.0f;

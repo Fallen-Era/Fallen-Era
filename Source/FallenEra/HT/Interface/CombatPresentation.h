@@ -5,6 +5,7 @@
 #include "CombatPresentation.generated.h"
 
 class USkeletalMeshComponent;
+class UCameraComponent;
 class AActor;
 
 /** Optional presentation extension; ordinary characters only need their default Mesh. */
@@ -20,5 +21,7 @@ class FALLENERA_API IFE_CombatPresentation
 
 public:
 	static USkeletalMeshComponent* FindFirstPersonMesh(const AActor* Actor);
+	static UCameraComponent* FindCombatCamera(const AActor* Actor);
 	virtual USkeletalMeshComponent* GetCombatFirstPersonMesh() const = 0;
+	virtual UCameraComponent* GetCombatCamera() const = 0;
 };

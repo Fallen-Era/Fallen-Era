@@ -44,6 +44,9 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment")
 	void EquipWeaponByItemTag(FGameplayTag ItemTag);
 
+	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment")
+	void UnequipWeapon();
+
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment")
 	const UFE_WeaponItemData* GetCurrentWeaponData() const { return CurrentWeaponData; }
 
@@ -114,7 +117,11 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerCycleWeapon();
 
+	UFUNCTION(Server, Reliable)
+	void ServerUnequipWeapon();
+
 	void EquipCurrentWeapon();
+	void InterruptWeaponActions();
 	void EnsureWeaponMeshComponents(bool bUseSkeletalMesh);
 	void ClearWeaponVisuals();
 	void ApplyWeaponVisuals();

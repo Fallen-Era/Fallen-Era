@@ -1,6 +1,7 @@
 #include "HT/Component/EquipmentComponent.h"
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
+#include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Animation/AnimInstance.h"
 #include "Components/MeshComponent.h"
@@ -12,6 +13,7 @@
 #include "HT/Effect/WeaponOffenseGameplayEffect.h"
 #include "HT/Projectile/CombatProjectile.h"
 #include "HT/Weapon/WeaponItemData.h"
+#include "HT/UI/CrossHairWidget.h"
 #include "Net/UnrealNetwork.h"
 #include "NiagaraSystem.h"
 #include "Engine/AssetManager.h"
@@ -103,6 +105,7 @@ void UFE_EquipmentComponent::CycleWeapon()
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
+		InterruptWeaponActions();
 		ServerCycleWeapon();
 		return;
 	}
@@ -138,6 +141,24 @@ void UFE_EquipmentComponent::EquipWeaponByItemTag(FGameplayTag ItemTag)
 	EquipCurrentWeapon();
 }
 
+void UFE_EquipmentComponent::UnequipWeapon()
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		InterruptWeaponActions();
+		ServerUnequipWeapon();
+		return;
+	}
+
+	CurrentItemTagIndex = INDEX_NONE;
+	EquipCurrentWeapon();
+}
+
+void UFE_EquipmentComponent::ServerUnequipWeapon_Implementation()
+{
+	UnequipWeapon();
+}
+
 FGameplayTag UFE_EquipmentComponent::GetCurrentItemTag() const
 {
 	return TestItemTags.IsValidIndex(CurrentItemTagIndex) ? TestItemTags[CurrentItemTagIndex] : FGameplayTag();
@@ -155,6 +176,7 @@ void UFE_EquipmentComponent::OnRep_CurrentItemTagIndex()
 
 void UFE_EquipmentComponent::EquipCurrentWeapon()
 {
+	InterruptWeaponActions();
 	if (WeaponLoadHandle)
 	{
 		WeaponLoadHandle->CancelHandle();
@@ -205,6 +227,32 @@ void UFE_EquipmentComponent::EquipCurrentWeapon()
 	}
 
 	ApplyLoadedWeapon(PendingWeaponData);
+}
+
+void UFE_EquipmentComponent::InterruptWeaponActions()
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor)
+	{
+		return;
+	}
+
+	if (UAbilitySystemComponent* AbilitySystem = UFE_CombatComponent::FindAbilitySystemComponent(OwnerActor))
+	{
+		FGameplayTagContainer AttackAbilityTags;
+		AttackAbilityTags.AddTag(FallenEraGameplayTags::Ability_Combat_Attack);
+		AbilitySystem->CancelAbilities(&AttackAbilityTags);
+		if (UFallenEraAbilitySystemComponent* FallenEraAbilitySystem =
+			Cast<UFallenEraAbilitySystemComponent>(AbilitySystem))
+		{
+			FallenEraAbilitySystem->ClearAbilityInput();
+		}
+	}
+
+	if (UFE_CombatComponent* Combat = OwnerActor->FindComponentByClass<UFE_CombatComponent>())
+	{
+		Combat->StopWeaponActionPresentation(true);
+	}
 }
 
 void UFE_EquipmentComponent::FinishLoadingWeaponDataAssets()
@@ -308,7 +356,8 @@ void UFE_EquipmentComponent::GatherWeaponDependencyPaths(
 		AddPath(WeaponData->Mesh.ToSoftObjectPath(), WeaponData->Mesh.IsValid());
 	}
 	AddPath(WeaponData->WeaponAnimLayerClass.ToSoftObjectPath(), WeaponData->WeaponAnimLayerClass.IsValid());
-	AddPath(WeaponData->CrosshairTexture.ToSoftObjectPath(), WeaponData->CrosshairTexture.IsValid());
+	AddPath(WeaponData->WeaponMeshAnimInstanceClass.ToSoftObjectPath(), WeaponData->WeaponMeshAnimInstanceClass.IsValid());
+	AddPath(WeaponData->CrosshairWidgetClass.ToSoftObjectPath(), WeaponData->CrosshairWidgetClass.IsValid());
 	AddPath(WeaponData->AttackSound.ToSoftObjectPath(), WeaponData->AttackSound.IsValid());
 	AddPath(WeaponData->DefaultDamageEffect.ToSoftObjectPath(), WeaponData->DefaultDamageEffect.IsValid());
 	if (const UFE_RangedWeaponItemData* RangedWeaponData = Cast<UFE_RangedWeaponItemData>(WeaponData))
@@ -332,11 +381,11 @@ void UFE_EquipmentComponent::GatherWeaponDependencyPaths(
 		{
 			AddPath(ProjectileData->ProjectileClass.ToSoftObjectPath(), ProjectileData->ProjectileClass.IsValid());
 		}
-		if (const UFE_ChargedProjectileAttackData* ChargedData = Cast<UFE_ChargedProjectileAttackData>(AttackData))
+		if (const UFE_GrenadeAttackData* GrenadeData = Cast<UFE_GrenadeAttackData>(AttackData))
 		{
 			AddPath(
-				ChargedData->TrajectoryNiagaraSystem.ToSoftObjectPath(),
-				ChargedData->TrajectoryNiagaraSystem.IsValid());
+				GrenadeData->TrajectoryNiagaraSystem.ToSoftObjectPath(),
+				GrenadeData->TrajectoryNiagaraSystem.IsValid());
 		}
 	}
 }
@@ -397,6 +446,7 @@ void UFE_EquipmentComponent::ClearWeaponVisuals()
 		}
 		else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(MeshComponent))
 		{
+			SkeletalMeshComponent->SetAnimInstanceClass(nullptr);
 			SkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
 		}
 	};
@@ -429,9 +479,11 @@ void UFE_EquipmentComponent::EnsureWeaponMeshComponents(bool bUseSkeletalMesh)
 	};
 	DestroyWrongType(EquippedWorldWeaponMesh);
 	DestroyWrongType(EquippedFirstPersonWeaponMesh);
+	const bool bHasFirstPersonRepresentation =
+		IFE_CombatPresentation::FindFirstPersonMesh(CombatCharacter) != nullptr;
 
 	auto CreateMeshComponent = [CombatCharacter, bUseSkeletalMesh](
-		const TCHAR* BaseName, USceneComponent* AttachParent, bool bFirstPerson) -> UMeshComponent*
+		const TCHAR* BaseName, USceneComponent* AttachParent) -> UMeshComponent*
 	{
 		if (!AttachParent)
 		{
@@ -446,15 +498,6 @@ void UFE_EquipmentComponent::EnsureWeaponMeshComponents(bool bUseSkeletalMesh)
 		NewMeshComponent->SetupAttachment(AttachParent);
 		NewMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		NewMeshComponent->SetGenerateOverlapEvents(false);
-		if (bFirstPerson)
-		{
-			NewMeshComponent->SetOnlyOwnerSee(true);
-			NewMeshComponent->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
-		}
-		else
-		{
-			NewMeshComponent->SetOwnerNoSee(IFE_CombatPresentation::FindFirstPersonMesh(CombatCharacter) != nullptr);
-		}
 		NewMeshComponent->RegisterComponent();
 		return NewMeshComponent;
 	};
@@ -463,13 +506,35 @@ void UFE_EquipmentComponent::EnsureWeaponMeshComponents(bool bUseSkeletalMesh)
 	{
 		EquippedWorldWeaponMesh = CreateMeshComponent(
 			bUseSkeletalMesh ? TEXT("EquippedWorldWeaponSkeletalMesh") : TEXT("EquippedWorldWeaponStaticMesh"),
-			CombatCharacter->GetMesh(), false);
+			CombatCharacter->GetMesh());
 	}
 	if (!EquippedFirstPersonWeaponMesh)
 	{
 		EquippedFirstPersonWeaponMesh = CreateMeshComponent(
 			bUseSkeletalMesh ? TEXT("EquippedFirstPersonWeaponSkeletalMesh") : TEXT("EquippedFirstPersonWeaponStaticMesh"),
-			IFE_CombatPresentation::FindFirstPersonMesh(CombatCharacter), true);
+			IFE_CombatPresentation::FindFirstPersonMesh(CombatCharacter));
+	}
+
+	// Mirror the character's first-person rendering setup. The local player sees the
+	// first-person weapon, while its world-space representation supplies the VSM shadow.
+	if (EquippedWorldWeaponMesh)
+	{
+		EquippedWorldWeaponMesh->SetCastShadow(true);
+		EquippedWorldWeaponMesh->SetOnlyOwnerSee(false);
+		EquippedWorldWeaponMesh->SetOwnerNoSee(bHasFirstPersonRepresentation);
+		EquippedWorldWeaponMesh->SetCastHiddenShadow(false);
+		EquippedWorldWeaponMesh->FirstPersonPrimitiveType = bHasFirstPersonRepresentation
+			? EFirstPersonPrimitiveType::WorldSpaceRepresentation
+			: EFirstPersonPrimitiveType::None;
+		EquippedWorldWeaponMesh->MarkRenderStateDirty();
+	}
+	if (EquippedFirstPersonWeaponMesh)
+	{
+		EquippedFirstPersonWeaponMesh->SetCastShadow(true);
+		EquippedFirstPersonWeaponMesh->SetOwnerNoSee(false);
+		EquippedFirstPersonWeaponMesh->SetOnlyOwnerSee(true);
+		EquippedFirstPersonWeaponMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
+		EquippedFirstPersonWeaponMesh->MarkRenderStateDirty();
 	}
 }
 
@@ -492,6 +557,7 @@ void UFE_EquipmentComponent::ApplyWeaponVisuals()
 			if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(MeshComponent))
 			{
 				SkeletalMeshComponent->SetSkeletalMeshAsset(CurrentWeaponData->SkeletalMesh.Get());
+				SkeletalMeshComponent->SetAnimInstanceClass(CurrentWeaponData->WeaponMeshAnimInstanceClass.Get());
 			}
 		}
 		else if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(MeshComponent))

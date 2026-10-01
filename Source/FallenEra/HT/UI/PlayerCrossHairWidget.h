@@ -5,11 +5,11 @@
 #include "PlayerCrossHairWidget.generated.h"
 
 class UFE_EquipmentComponent;
-class UImage;
-class UTexture2D;
+class UFE_CrossHairWidget;
+class UOverlay;
 class UFE_WeaponItemData;
 
-/** Displays the crosshair texture configured by the currently equipped weapon. */
+/** HUD host that replaces the active weapon-specific crosshair widget. */
 UCLASS(Blueprintable)
 class FALLENERA_API UFE_PlayerCrossHairWidget : public UUserWidget
 {
@@ -23,9 +23,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Player Crosshair")
 	void RefreshFromCharacter();
 
+	UFUNCTION(BlueprintPure, Category="Player Crosshair")
+	UFE_CrossHairWidget* GetActiveCrosshairWidget() const { return ActiveCrosshairWidget; }
+
 protected:
 	UPROPERTY(meta=(BindWidget))
-	TObjectPtr<UImage> Image_CrossHair;
+	TObjectPtr<UOverlay> Overlay_CrossHairContainer;
 
 private:
 	void BindToEquipment(UFE_EquipmentComponent* Equipment);
@@ -34,5 +37,9 @@ private:
 
 	TWeakObjectPtr<UFE_EquipmentComponent> BoundEquipment;
 	TWeakObjectPtr<const UFE_WeaponItemData> CachedWeaponData;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UFE_CrossHairWidget> ActiveCrosshairWidget;
+
 	FDelegateHandle WeaponChangedHandle;
 };

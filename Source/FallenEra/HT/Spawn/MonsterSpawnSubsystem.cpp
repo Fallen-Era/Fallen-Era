@@ -4,6 +4,7 @@
 #include "Engine/AssetManager.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "HT/AI/AITargetCoordinatorSubsystem.h"
 #include "HT/AI/EnemyAIController.h"
 #include "HT/Character/EnemyCharacter.h"
 #include "HT/Spawn/MonsterEncounterDataAsset.h"
@@ -375,7 +376,7 @@ bool UFE_MonsterSpawnSubsystem::TrySpawnEncounterMonster(
 		SpawnTransform,
 		Encounter.Definition->RuntimeDistances,
 		Encounter.Handle,
-		FindNearestPlayerPawn(SpawnTransform.GetLocation(), PlayerPawns)) != nullptr;
+		FindBestEncounterTarget(SpawnTransform.GetLocation(), PlayerPawns)) != nullptr;
 }
 
 AFE_EnemyCharacter* UFE_MonsterSpawnSubsystem::SpawnManagedMonster(
@@ -682,12 +683,16 @@ float UFE_MonsterSpawnSubsystem::GetNearestPlayerDistanceSquared(
 	return NearestDistanceSquared;
 }
 
-APawn* UFE_MonsterSpawnSubsystem::FindNearestPlayerPawn(
+APawn* UFE_MonsterSpawnSubsystem::FindBestEncounterTarget(
 	const FVector& Location,
 	const TArray<TWeakObjectPtr<APawn>>& PlayerPawns) const
 {
-	APawn* NearestPlayer = nullptr;
-	float NearestDistanceSquared = TNumericLimits<float>::Max();
+	APawn* BestPlayer = nullptr;
+	int32 BestTargetLoad = TNumericLimits<int32>::Max();
+	float BestDistanceSquared = TNumericLimits<float>::Max();
+	const UFE_AITargetCoordinatorSubsystem* TargetCoordinator = GetWorld()
+		? GetWorld()->GetSubsystem<UFE_AITargetCoordinatorSubsystem>()
+		: nullptr;
 	for (const TWeakObjectPtr<APawn>& PlayerPointer : PlayerPawns)
 	{
 		APawn* PlayerPawn = PlayerPointer.Get();
@@ -695,14 +700,19 @@ APawn* UFE_MonsterSpawnSubsystem::FindNearestPlayerPawn(
 		{
 			continue;
 		}
+		const int32 TargetLoad = TargetCoordinator
+			? TargetCoordinator->GetTargetLoad(PlayerPawn)
+			: 0;
 		const float DistanceSquared = FVector::DistSquared(Location, PlayerPawn->GetActorLocation());
-		if (DistanceSquared < NearestDistanceSquared)
+		if (TargetLoad < BestTargetLoad ||
+			(TargetLoad == BestTargetLoad && DistanceSquared < BestDistanceSquared))
 		{
-			NearestDistanceSquared = DistanceSquared;
-			NearestPlayer = PlayerPawn;
+			BestTargetLoad = TargetLoad;
+			BestDistanceSquared = DistanceSquared;
+			BestPlayer = PlayerPawn;
 		}
 	}
-	return NearestPlayer;
+	return BestPlayer;
 }
 
 void UFE_MonsterSpawnSubsystem::BuildAvailableSpawnCells(

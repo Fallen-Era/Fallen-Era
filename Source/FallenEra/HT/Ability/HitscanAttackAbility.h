@@ -25,7 +25,8 @@ protected:
 	virtual ECollisionChannel GetAttackTraceChannel() const override;
 
 private:
-	void FireOnce();
+	/** Returns false when the next shot cannot pay the configured GAS cost. */
+	bool FireOnce();
 	void ScheduleNextShot();
 
 	UFUNCTION()

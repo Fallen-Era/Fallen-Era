@@ -7,6 +7,7 @@
 #include "GameplayTagContainer.h"
 #include "HT/AI/AISettings.h"
 #include "HT/Interface/Damageable.h"
+#include "HT/Interface/ConditionSource.h"
 #include "EnemyCharacter.generated.h"
 
 class UFE_CombatComponent;
@@ -24,7 +25,7 @@ class UNavigationInvokerComponent;
 /** Reusable ACharacter base for enemies with their own GAS owner and combat component. */
 UCLASS(Abstract)
 class FALLENERA_API AFE_EnemyCharacter : public ACharacter, public IAbilitySystemInterface,
-	public IFE_Damageable, public IGenericTeamAgentInterface
+	public IFE_Damageable, public IFE_ConditionSource, public IGenericTeamAgentInterface
 {
 	GENERATED_BODY()
 
@@ -35,6 +36,7 @@ public:
 	virtual FFE_CombatDamageResult ReceiveCombatDamage_Implementation(
 		const FFE_CombatDamageRequest& DamageRequest) override;
 	virtual FGenericTeamId GetGenericTeamId() const override;
+	virtual TArray<FFE_ConditionApplicationChance> GetConditionApplicationChances_Implementation() const override;
 	virtual void BeginPlay() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -81,6 +83,10 @@ public:
 	TSubclassOf<UGameplayEffect> GetCachedAttackDamageEffect() const { return CachedAttackDamageEffect; }
 	float GetPatrolMovementSpeed() const { return CachedAISettings.PatrolMovementSpeed; }
 	float GetChaseMovementSpeed() const { return CachedAISettings.ChaseMovementSpeed; }
+	const FSAITargetSelectionSettings& GetTargetSelectionSettings() const
+	{
+		return CachedAISettings.TargetSelection;
+	}
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|AI|Settings")
 	FSAISettings GetCachedAISettings() const { return CachedAISettings; }

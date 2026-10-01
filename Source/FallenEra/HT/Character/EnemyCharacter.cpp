@@ -53,6 +53,11 @@ FGenericTeamId AFE_EnemyCharacter::GetGenericTeamId() const
 	return FECombatTeams::Enemy;
 }
 
+TArray<FFE_ConditionApplicationChance> AFE_EnemyCharacter::GetConditionApplicationChances_Implementation() const
+{
+	return CachedAISettings.ConditionApplicationChances;
+}
+
 UAbilitySystemComponent* AFE_EnemyCharacter::GetAbilitySystemComponent() const
 {
 	return AbilitySystemComponent;

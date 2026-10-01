@@ -1,6 +1,7 @@
 #include "HT/Ability/PlayerAttackAbility.h"
 
 #include "AbilitySystemComponent.h"
+#include "AbilitySystem/FallenEraGameplayTags.h"
 #include "GameplayEffect.h"
 #include "GameFramework/Character.h"
 #include "HT/Component/CombatComponent.h"
@@ -21,6 +22,9 @@ UFE_PlayerAttackAbility::UFE_PlayerAttackAbility()
 {
 	ActivationPolicy = EFallenEraAbilityActivationPolicy::OnInputTriggered;
 	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::LocalPredicted;
+	FGameplayTagContainer AttackAbilityTags;
+	AttackAbilityTags.AddTag(FallenEraGameplayTags::Ability_Combat_Attack);
+	SetAssetTags(AttackAbilityTags);
 }
 
 ECollisionChannel UFE_PlayerAttackAbility::GetAttackTraceChannel() const
@@ -190,6 +194,15 @@ void UFE_PlayerAttackAbility::PlayAttackPresentation(
 	const UFE_WeaponAttackData* AttackData) const
 {
 	PlayAttackMontage(CombatCharacter, AttackData);
+	if (CombatCharacter && AttackData && AttackData->WeaponMeshAttackMontage)
+	{
+		if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
+		{
+			Combat->PlayWeaponMeshMontage(
+				AttackData->WeaponMeshAttackMontage,
+				NetExecutionPolicy == EGameplayAbilityNetExecutionPolicy::LocalPredicted);
+		}
+	}
 	PlayAttackEffects(CombatCharacter, WeaponData, AttackData);
 }
 

@@ -1,11 +1,10 @@
 #include "HT/UI/PlayerCrossHairWidget.h"
 
-#include "Components/Image.h"
-#include "Engine/Texture2D.h"
+#include "Components/Overlay.h"
 #include "GameFramework/Pawn.h"
 #include "HT/Component/EquipmentComponent.h"
+#include "HT/UI/CrossHairWidget.h"
 #include "HT/Weapon/WeaponItemData.h"
-#include "Styling/SlateBrush.h"
 
 void UFE_PlayerCrossHairWidget::NativeConstruct()
 {
@@ -16,6 +15,8 @@ void UFE_PlayerCrossHairWidget::NativeConstruct()
 void UFE_PlayerCrossHairWidget::NativeDestruct()
 {
 	UnbindFromEquipment();
+	CachedWeaponData.Reset();
+	ActiveCrosshairWidget = nullptr;
 	Super::NativeDestruct();
 }
 
@@ -68,7 +69,7 @@ void UFE_PlayerCrossHairWidget::UnbindFromEquipment()
 
 void UFE_PlayerCrossHairWidget::OnWeaponChanged(const UFE_WeaponItemData* WeaponData)
 {
-	if (!Image_CrossHair)
+	if (!Overlay_CrossHairContainer)
 	{
 		return;
 	}
@@ -79,15 +80,17 @@ void UFE_PlayerCrossHairWidget::OnWeaponChanged(const UFE_WeaponItemData* Weapon
 	}
 
 	CachedWeaponData = WeaponData;
-	UTexture2D* CrosshairTexture = WeaponData ? WeaponData->CrosshairTexture.Get() : nullptr;
-	if (CrosshairTexture)
+	Overlay_CrossHairContainer->ClearChildren();
+	ActiveCrosshairWidget = nullptr;
+	TSubclassOf<UFE_CrossHairWidget> WidgetClass = WeaponData
+		? WeaponData->CrosshairWidgetClass.Get()
+		: nullptr;
+	if (WidgetClass && GetOwningPlayer())
 	{
-		Image_CrossHair->SetBrushFromTexture(CrosshairTexture, true);
-		Image_CrossHair->SetVisibility(ESlateVisibility::Visible);
-	}
-	else
-	{
-		Image_CrossHair->SetBrush(FSlateBrush());
-		Image_CrossHair->SetVisibility(ESlateVisibility::Collapsed);
+		ActiveCrosshairWidget = CreateWidget<UFE_CrossHairWidget>(GetOwningPlayer(), WidgetClass);
+		if (ActiveCrosshairWidget)
+		{
+			Overlay_CrossHairContainer->AddChildToOverlay(ActiveCrosshairWidget);
+		}
 	}
 }

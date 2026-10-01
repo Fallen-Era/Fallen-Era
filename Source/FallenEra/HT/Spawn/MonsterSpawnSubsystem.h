@@ -123,7 +123,7 @@ private:
 	float GetNearestPlayerDistanceSquared(
 		const FVector& Location,
 		const TArray<TWeakObjectPtr<APawn>>& PlayerPawns) const;
-	APawn* FindNearestPlayerPawn(
+	APawn* FindBestEncounterTarget(
 		const FVector& Location,
 		const TArray<TWeakObjectPtr<APawn>>& PlayerPawns) const;
 	void BuildAvailableSpawnCells(
