@@ -12,7 +12,6 @@
 #include "WorldGenerator/WorldRegistrySubsystem.h"
 
 #include "WorldGenerator/GameplayTag/WorldGameplayTag.h"
-#include "WorldGenerator/Save/WorldRegistrySaveGame.h"
 
 void UMainPanelWidget::NativeConstruct()
 {
@@ -46,12 +45,7 @@ void UMainPanelWidget::HandleNewGameRequested()
 
 void UMainPanelWidget::HandleLoadGameRequested()
 {
-	UWorldRegistrySubsystem* WorldRegistrySubsystem = 
-	GetGameInstance()->GetSubsystem<UWorldRegistrySubsystem>();
-	
-	UWorldRegistrySaveGame* Registry = WorldRegistrySubsystem->GetRegistry();
-	
-	LoadGame->UpdateRegistryElements(Registry->GetWorldRegistryList());
+	LoadGame->UpdateRegistryElements();
 	
 	WidgetSwitcher->SetActiveWidget(LoadGame);
 }

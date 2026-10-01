@@ -18,8 +18,14 @@ class FALLENERA_API UWorldGeneratorSettings : public UDeveloperSettings
 	GENERATED_BODY()
 	
 public:
+	UPROPERTY(EditAnywhere, Config, Category= "Voxel|Resource")
+	TSoftObjectPtr<UWorld> InitVoxelWorld;
+
 	UPROPERTY(EditAnywhere, Config, Category= "Voxel|Graph")
 	TSoftObjectPtr<UVoxelHeightGraph> VoxelGraph; 
+	
+	UPROPERTY(EditAnywhere, Config, Category= "Widget|Class")
+	TSubclassOf<UUserWidget> WorldElementClass;
 	
 	
 };

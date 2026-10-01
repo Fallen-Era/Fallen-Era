@@ -33,7 +33,10 @@ struct FALLENERA_API FWorldCreateRequest
 	FString DisplayName;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	FIntPoint WorldSize;
+	FIntPoint WorldSize = FIntPoint::ZeroValue;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	EWorldDiffculty Diffculty = EWorldDiffculty::Normal;
 	
 };
 
@@ -68,77 +71,37 @@ struct FALLENERA_API FWorldRegistryData
 	FString DisplayName;
 	
 	UPROPERTY(VisibleAnywhere)
-	EWorldDiffculty Diffculty;
+	EWorldDiffculty Diffculty = EWorldDiffculty::Normal;
 	
 	UPROPERTY(VisibleAnywhere)
-	FIntVector2 WorldSize;
+	FIntPoint WorldSize = FIntPoint(0, 0);
 	
 	UPROPERTY(VisibleAnywhere)
 	FString ProfileSlotName;
 };
 
-USTRUCT(Blueprintable)
-struct FTerrainData
-{
-	GENERATED_BODY()
-	
-	UPROPERTY(SaveGame)
-	float VoxelSize = 100.f;
-	
-	UPROPERTY(SaveGame)
-	FIntPoint WorldSize = FIntPoint::ZeroValue;
-	
-	UPROPERTY(SaveGame)
-	FVector2D Origin = FVector2D::ZeroVector;
-	
-	UPROPERTY(SaveGame)
-	float MinHeightCm = 0.f;
-	
-	UPROPERTY(SaveGame)
-	float MaxHeightCm = 0.f;
-	
-	UPROPERTY(SaveGame)
-	FFloatRange HeightRange = FFloatRange(-5000.f, 5000.f);
-	
-	// 16-bit grayscale PNG
-	UPROPERTY(SaveGame)
-	TArray<uint8> CompressedHeightPng;
-	
-	// Nan? / void 영역을 쓴다면 별도 저장
-	UPROPERTY(SaveGame)
-	TArray<uint8> ValidityMask;
-};
-
 USTRUCT(BlueprintType)
-struct FALLENERA_API FWorldProfileData
+struct FALLENERA_API FWorldDefinitionData
 {
 	GENERATED_BODY()
+	
+	UPROPERTY()
+	int32 SchemaVersion = 1;
 	
 	UPROPERTY()
 	FGuid WorldId;
 	
 	UPROPERTY()
-	int32 SchemaVersion = 1;
-	
-	// Seed
+	FString DisplayName;
 	
 	UPROPERTY()
-	FIntPoint WorldSize;
+	int64 WorldSeed;
 	
-	// GeneratorVersion
+	UPROPERTY()
+	FIntPoint WorldSize = FIntPoint::ZeroValue;
 	
-	// GenerationOptions
-	
-};
-
-
-
-USTRUCT(BlueprintType)
-struct FALLENERA_API FWorldGenerateRequest
-{
-	GENERATED_BODY()
-	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	FIntVector2 WorldSize = FIntVector2(0,0);
+	UPROPERTY()
+	EWorldDiffculty Diffculty = EWorldDiffculty::Normal;
 	
 };
+

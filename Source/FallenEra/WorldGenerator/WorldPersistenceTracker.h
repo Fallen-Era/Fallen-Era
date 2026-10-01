@@ -17,22 +17,38 @@ class FALLENERA_API UWorldPersistenceTracker : public UObject
 	GENERATED_BODY()
 	
 public:
-	void MarkDirty(){ ++CurrentRevision; }
+	void BeginSession()
+	{
+		SessionId = FGuid::NewGuid();
+		CurrentRevision = 0;
+		SavedRevision = 0;
+	}
+	
+	void MarkDirty() { ++CurrentRevision; }
 	
 	bool IsDirty() const { return CurrentRevision != SavedRevision; }
 	
-	void AcknowledgeSaved(uint64 Revision){ SavedRevision = FMath::Max(SavedRevision, Revision); }
-	
+	uint64 GetCurrentRevision() const { return CurrentRevision; }
 	FGuid GetWorldId() { return RegistryData.WorldId; }
 	FString& GetSlotName() {return RegistryData.ProfileSlotName; }
 	FGuid GetSessionId() { return SessionId; }
+	
+	void AcknowledgeSaved(uint64 Revision)
+	{
+		if (Revision <= CurrentRevision)
+		{
+			SavedRevision = FMath::Max(SavedRevision, Revision);
+		}
+	}
+	
+	
 	
 protected:
 	void SetWorldId(FGuid NewWorldId) { RegistryData.WorldId = NewWorldId; }
 	void SetSessionId(FGuid NewSessionId) { SessionId = NewSessionId; }
 	void SetSlotName(FString NewSlotName) { RegistryData.ProfileSlotName = NewSlotName; }
 	
-
+	FWorldRegistryData& GetRegistryData() { return RegistryData; }
 	
 	
 	friend class UWorldRegistrySubsystem;

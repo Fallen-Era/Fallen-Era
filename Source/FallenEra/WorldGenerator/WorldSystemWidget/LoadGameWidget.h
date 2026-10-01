@@ -12,7 +12,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLoadGameExitCliked);
 
 class UButton;
 class UVerticalBox;
-class UWorldElement;
+class UWorldRegistryElement;
 
 /**
  * 
@@ -25,10 +25,16 @@ class FALLENERA_API ULoadGameWidget : public UUserWidget
 	
 public:
 	UFUNCTION()
-	void UpdateRegistryElements(TArray<FWorldRegistryData>& Worlds);
+	void UpdateRegistryElements();
 	
 
 protected:
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UButton> Btn_Load;
+	
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UButton> Btn_Delete;
+	
 	
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UButton> Btn_Exit;
@@ -36,11 +42,13 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UVerticalBox> VB_ElementList;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	TSubclassOf<UWorldElement> WorldElementClass;
+	
 	
 	UFUNCTION()
 	void ClearElementsList();
+	
+	
+	void SetFocus(UUserWidget* Sender);
 	
 	
 	
@@ -54,13 +62,21 @@ public:
 	FOnLoadGameExitCliked OnLoadGameExitCliked;
 	
 private:
-	UPROPERTY(Transient)
-	TArray<UWorldElement*> WorldElements;
+	TSubclassOf<UWorldRegistryElement> WorldElementClass;
 	
 	UPROPERTY(Transient)
-	TObjectPtr<UWorldElement> FocusElement;
+	TArray<UWorldRegistryElement*> WorldElements;
+	
+	UPROPERTY(Transient)
+	TObjectPtr<UWorldRegistryElement> FocusElement;
 	
 	
 	UFUNCTION()
 	void OnEixtClicked();
+	
+	UFUNCTION()
+	void OnLoadClicked();
+	
+	UFUNCTION()
+	void OnDeleteClicked();
 };

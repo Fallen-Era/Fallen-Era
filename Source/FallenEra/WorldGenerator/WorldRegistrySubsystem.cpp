@@ -24,6 +24,7 @@
 #include "VoxelGraphPositionParameter.h"
 #include "VoxelNodeEvaluator.h"
 #include "WorldPersistenceTracker.h"
+#include "EntitySystem/MovieSceneEntitySystemRunner.h"
 
 #include "Graphs/VoxelHeightGraph.h"
 #include "Graphs/VoxelHeightGraphStampRef.h"
@@ -31,11 +32,110 @@
 #include "Settings/WorldGeneratorSettings.h"
 #include "Heightmap/VoxelHeightmapStamp.h"
 #include "Kismet/GameplayStatics.h"
-#include "Save/WorldProfileSaveGame.h"
+#include "Save/WorldSaveGame.h"
 #include "Save/WorldRegistrySaveGame.h"
 
 
 const FString UWorldRegistrySubsystem::RegistrySlotName = TEXT("WorldRegistry");
+
+void UWorldRegistrySubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
+{
+	if (!PendingWorldSave ||
+		!IsValid(LoadedWorld) ||
+		!LoadedWorld->IsGameWorld() ||
+		LoadedWorld->GetGameInstance() != GetGameInstance())
+	{
+		return;
+	}
+	
+	const FString LoadedMapPackage = UWorld::RemovePIEPrefix(
+		LoadedWorld->GetOutermost()->GetName());
+	
+	if (LoadedMapPackage != PendingMapPackage)
+	{
+		return;
+	}
+	
+	AVoxelWorld* VoxelWorld = Cast<AVoxelWorld>(UGameplayStatics::GetActorOfClass(LoadedWorld, AVoxelWorld::StaticClass()));
+		
+	if (!IsValid(VoxelWorld))
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : The destination map has no VoxelWorld."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		ClearPendingLoad();
+		return;
+	}
+	
+	for (TActorIterator<AVoxelStampActor> It(LoadedWorld); It; ++It)
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : The destination map must have no Stamp Actors."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return;
+	}
+	
+	VoxelWorld->DestroyRuntime();
+	
+	UWorldSaveGame* Save = PendingWorldSave.Get();
+	VoxelWorld->LayerStack = Save->LayerStack;
+	
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	
+	TArray<AVoxelStampActor*> SpawnActors;
+	
+	for (const FWorldStampSnapshot& Snapshot : Save->StampSnapshots)
+	{
+		AVoxelStampActor* Actor = LoadedWorld->SpawnActor<AVoxelStampActor>(
+			AVoxelStampActor::StaticClass(),
+			Snapshot.WorldTransform,
+			Params);
+		
+		if (!IsValid(Actor))
+		{
+			for (AVoxelStampActor* SpawnActor : SpawnActors)
+			{
+				SpawnActor->Destroy();
+			}
+			
+			FVoxelStampManager::Get(LoadedWorld)->FlushUpdates();
+
+			UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to restore world stmaps."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+			
+			ClearPendingLoad();
+			return;
+		}
+		
+		Actor->SetStamp(Snapshot.Stamp);
+		SpawnActors.Add(Actor);
+	}
+	
+	FVoxelStampManager::Get(LoadedWorld)->FlushUpdates();
+	
+	ActiveTracker = NewObject<UWorldPersistenceTracker>(this);
+	ActiveTracker->SetWorldId(Save->Definition.WorldId);
+	ActiveTracker->SetSlotName(PendingSlotName);
+	ActiveTracker->SetSessionId(FGuid::NewGuid());
+
+	UE_LOG(LogTemp, Log, TEXT("%s::%s : World restored : %s, %d stamps"), *GetClass()->GetName(), TEXT(__FUNCTION__),
+		*PendingSlotName,
+		SpawnActors.Num());
+	
+	ClearPendingLoad();
+	
+	VoxelWorld->CreateRuntime();
+	
+	VoxelWorld->OnNextStateRendered(
+		FSimpleDelegate::CreateWeakLambda(this, []
+		{
+			UE_LOG(LogTemp, Log, TEXT("OnNextStateRendered|FSimpleDelegate::CreateWeakLambda : Restored voxel terrain rendered."));
+		}));
+	
+}
+
+void UWorldRegistrySubsystem::ClearPendingLoad()
+{
+	PendingWorldSave = nullptr;
+	PendingSlotName.Reset();
+	PendingMapPackage.Reset();
+}
 
 
 void UWorldRegistrySubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -54,6 +154,31 @@ void UWorldRegistrySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		&ThisClass::CreateWorld);
 	
 	ActiveTracker = NewObject<UWorldPersistenceTracker>();
+	
+	PostLoadMapHandle = 
+		FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &ThisClass::HandlePostLoadMap);
+	
+	if (GEngine)
+	{
+		TravelFailureHandle = GEngine->OnTravelFailure().AddLambda(
+			[this](
+				UWorld* FailedWorld,
+				ETravelFailure::Type FailureType,
+				const FString& Error)
+			{
+				if (!PendingWorldSave ||
+					!FailedWorld ||
+					FailedWorld->GetGameInstance() != GetGameInstance())
+				{
+					return;
+				}
+
+				UE_LOG(LogTemp, Error, TEXT("%s::%s : World travel failed: %s"), *GetClass()->GetName(), TEXT(__FUNCTION__), *Error);
+				
+				ClearPendingLoad();
+			});
+	}
+	
 	LoadRegistry();
 }
 
@@ -63,7 +188,14 @@ void UWorldRegistrySubsystem::Deinitialize()
 	
 	SaveRegistry();
 	
+	FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(PostLoadMapHandle);
 	
+	if (GEngine)
+	{
+		GEngine->OnTravelFailure().Remove(TravelFailureHandle);
+	}
+	
+	ClearPendingLoad();
 	
 	Super::Deinitialize();
 }
@@ -141,7 +273,13 @@ FAutoConsoleCommandWithWorld LogTerrainAmplitudeCommand(
 void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCreateRequest& Request)
 {
 	
-	if (WorldRegistry->Find(Request.DisplayName))
+	if (!WorldRegistry)
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : World registry is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return;
+	}
+
+	if (WorldRegistry->Find(Request.DisplayName) != INDEX_NONE)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("%s::%s : A world with the same name already exists."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 		// 오류 반환
@@ -158,6 +296,7 @@ void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCrea
 		
 		return;
 	}
+	
 	
 	const FIntPoint WorldSize = Request.WorldSize;
 	
@@ -216,7 +355,8 @@ void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCrea
 	
 	
 	// World Size 지정
-	FBox2D Bounds = FBox2D(-WorldSize, WorldSize);
+	FIntPoint HalfWorldSize = WorldSize / 2;
+	FBox2D Bounds = FBox2D(-HalfWorldSize, HalfWorldSize);
 	
 	if (!Stamp->SetParameter(TEXT("Bounds"), Bounds, &Error))
 	{
@@ -345,11 +485,14 @@ bool UWorldRegistrySubsystem::SaveWorld()
 		ReadLayer(Layer);
 	}
 	
-	FGuid WorldId = ActiveTracker->GetWorldId();
+	FWorldRegistryData& MetaData = ActiveTracker->GetRegistryData();
 	
-	UWorldProfileSaveGame* Save = NewObject<UWorldProfileSaveGame>();
+	UWorldSaveGame* Save = NewObject<UWorldSaveGame>();
 	
-	Save->Profile.WorldId = WorldId;
+	
+	
+	Save->Definition.WorldId = MetaData.WorldId;
+	Save->Definition.WorldSize = MetaData.WorldSize;
 	
 	Save->LayerStack = Stack;
 	
@@ -381,80 +524,103 @@ bool UWorldRegistrySubsystem::SaveWorld()
 	}
 	
 	const bool bSaved = UGameplayStatics::SaveGameToSlot(Save, ActiveTracker->GetSlotName(), 0);
-	return true;
+	return bSaved;
 	
+}
+
+void UWorldRegistrySubsystem::OpenInitWorld()
+{
+	const UWorldGeneratorSettings* Settings = GetDefault<UWorldGeneratorSettings>();
+	
+	if (!Settings || Settings->InitVoxelWorld.IsNull())
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : InitVoxelWorld is not assigned"), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return;
+	}
+	
+	UGameplayStatics::OpenLevelBySoftObjectPtr(this, Settings->InitVoxelWorld);
 }
 
 void UWorldRegistrySubsystem::LoadWorld(const FString SlotName)
 {
-	UWorld* World = GetWorld();
-	if (!IsValid(World))
+	if (!GetWorld() || SlotName.IsEmpty())
 	{
 		return;
 	}
 	
-	
-	UWorldProfileSaveGame* Save = Cast<UWorldProfileSaveGame>(UGameplayStatics::LoadGameFromSlot((SlotName), 0));
-	
-	if (!Save)
+	if (PendingWorldSave)
 	{
-		UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to laod VoxelStampTest"), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Warning, TEXT("%s::%s : A world load is already in progress."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 		return;
 	}
 	
-	for (TActorIterator<AVoxelStampActor> It(World); It; ++It)
+	
+	
+	UWorldSaveGame* Save = Cast<UWorldSaveGame>(UGameplayStatics::LoadGameFromSlot(SlotName, 0));
+	
+	if (!Save ||
+		!Save->Definition.WorldId.IsValid() ||
+		!IsValid(Save->LayerStack.Get()) ||
+		Save->StampSnapshots.IsEmpty())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("%s::%s : Load Test requires a map with no Stamp Actors"), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : Invalid world save : %s"), *GetClass()->GetName(), TEXT(__FUNCTION__), *SlotName);
 		return;
 	}
-	
-	FActorSpawnParameters Params;
-	Params.SpawnCollisionHandlingOverride = 
-		ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	
-	int32 LoadedCount = 0;
 	
 	for (const FWorldStampSnapshot& Snapshot : Save->StampSnapshots)
 	{
-		if (!Snapshot.Stamp.IsValid() || 
+		if (!Snapshot.Stamp.IsValid() ||
 			!IsValid(Snapshot.Stamp->GetAsset()))
 		{
-			UE_LOG(LogTemp, Error, TEXT("%s::%s : Invalid stamp or missing asset"), *GetClass()->GetName(), TEXT(__FUNCTION__));
-			continue;
+			UE_LOG(LogTemp, Error, TEXT("%s::%s : Invalid stamp or missing asset in %s."), *GetClass()->GetName(), TEXT(__FUNCTION__), *SlotName);
+			return;
 		}
-		
-		AVoxelStampActor* Actor = World->SpawnActor<AVoxelStampActor>(
-			AVoxelStampActor::StaticClass(),
-			Snapshot.WorldTransform,
-			Params);
-		
-		if (!Actor)
-		{
-			UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to spawn Stamp Actor"), *GetClass()->GetName(), TEXT(__FUNCTION__));
-			continue;
-		}
-		
-		Actor->SetStamp(Snapshot.Stamp);
-		++LoadedCount;
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("%s::%s : Stamp restore: %d / %d"), *GetClass()->GetName(), TEXT(__FUNCTION__), LoadedCount, Save->StampSnapshots.Num());
+	
+	const UWorldGeneratorSettings* Settings = GetDefault<UWorldGeneratorSettings>();
+	
+	if (!Settings || Settings->InitVoxelWorld.IsNull())
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : InitVoxelWorld is not assigned"), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return;
+	}
+	
+	PendingWorldSave = Save;
+	PendingSlotName = SlotName;
+	PendingMapPackage = Settings->InitVoxelWorld.ToSoftObjectPath().GetLongPackageName();
+	
+	OpenInitWorld();
+	
 }
 
 void UWorldRegistrySubsystem::AddRegistry(FWorldRegistryData& NewEntry)
 {
 	WorldRegistry->AddRegistry(NewEntry);
+	SaveRegistry();
 }
 
 void UWorldRegistrySubsystem::RemoveRegistry(FWorldRegistryData& ExistEntry)
 {
-	if (WorldRegistry->Find(ExistEntry.DisplayName))
+	
+	if (!WorldRegistry)
 	{
-		WorldRegistry->RemoveRegistry(ExistEntry);
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : World registry is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return;
+	}
+
+	const int32 Index = WorldRegistry->Find(ExistEntry.WorldId);
+	if (Index != INDEX_NONE)
+	{
+		const FWorldRegistryData RemovedEntry = WorldRegistry->GetWorldRegistryList()[Index];
+		WorldRegistry->RemoveRegistry(Index);
+		UE_LOG(LogTemp, Log, TEXT("%s::%s : Removed registry '%s' at index %d (WorldId=%s)."),
+			*GetClass()->GetName(), TEXT(__FUNCTION__), *RemovedEntry.DisplayName, Index, *RemovedEntry.WorldId.ToString());
+		SaveRegistry();
 	}
 	else
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s::%s : Entry is not exist."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Warning, TEXT("%s::%s : Registry entry not found: '%s' (WorldId=%s)."),
+			*GetClass()->GetName(), TEXT(__FUNCTION__), *ExistEntry.DisplayName, *ExistEntry.WorldId.ToString());
 		return;
 	}
 }
@@ -487,7 +653,20 @@ void UWorldRegistrySubsystem::LoadRegistry()
 	}
 	else
 	{
-		UE_LOG(LogTemp, Log, TEXT("%s::%s : Loaded World Registry."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Log, TEXT("%s::%s : Loaded World Registry (%d entries)."),
+			*GetClass()->GetName(), TEXT(__FUNCTION__), WorldRegistry->GetWorldRegistryList().Num());
+	}
+
+	for (const FWorldRegistryData& Entry : WorldRegistry->GetWorldRegistryList())
+	{
+		if (Entry.WorldSize.X <= 0 || Entry.WorldSize.Y <= 0 ||
+			static_cast<uint8>(Entry.Diffculty) > static_cast<uint8>(EWorldDiffculty::InTheHell))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("%s::%s : Invalid saved metadata for '%s': WorldId=%s, Size=%d x %d, Difficulty=%d, Slot='%s'."),
+				*GetClass()->GetName(), TEXT(__FUNCTION__), *Entry.DisplayName, *Entry.WorldId.ToString(),
+				Entry.WorldSize.X, Entry.WorldSize.Y, static_cast<uint8>(Entry.Diffculty), *Entry.ProfileSlotName);
+		}
 	}
 	
 }
@@ -496,7 +675,12 @@ void UWorldRegistrySubsystem::SaveRegistry()
 {
 	if (WorldRegistry)
 	{
-		UGameplayStatics::SaveGameToSlot(WorldRegistry, RegistrySlotName, RegistryUserIndex);
+		if (!UGameplayStatics::SaveGameToSlot(WorldRegistry, RegistrySlotName, RegistryUserIndex))
+		{
+			UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to save registry slot '%s'."),
+				*GetClass()->GetName(), TEXT(__FUNCTION__), *RegistrySlotName);
+			return;
+		}
 		UE_LOG(LogTemp, Log, TEXT("%s::%s : Saved Registry."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 	}
 	else
