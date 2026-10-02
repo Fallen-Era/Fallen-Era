@@ -27,7 +27,8 @@ public class FallenEra : ModuleRules
 			"Slate",
 			"SlateCore",
 			"PhysicsCore"
-			
+			"ModelViewViewModel",
+			"DeveloperSettings"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] 
@@ -40,6 +41,8 @@ public class FallenEra : ModuleRules
 			"FallenEra/AbilitySystem",
 			"FallenEra/AbilitySystem/Abilities",
 			"FallenEra/AbilitySystem/Attributes",
+			"FallenEra/Building",
+			"FallenEra/Interaction",
 		});
 
 		// Uncomment if you are using Slate UI
