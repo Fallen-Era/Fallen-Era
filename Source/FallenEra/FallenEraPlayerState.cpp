@@ -4,6 +4,7 @@
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
+#include "Net/UnrealNetwork.h"
 
 AFallenEraPlayerState::AFallenEraPlayerState()
 {
@@ -18,6 +19,12 @@ AFallenEraPlayerState::AFallenEraPlayerState()
 UAbilitySystemComponent* AFallenEraPlayerState::GetAbilitySystemComponent() const
 {
 	return AbilitySystemComponent;
+}
+
+void AFallenEraPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AFallenEraPlayerState, StablePlayerId);
 }
 
 void AFallenEraPlayerState::InitializeAbilitySystem(AActor* AvatarActor)

@@ -11,7 +11,7 @@
 	GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
 	GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
 
-/** Core player attributes. Damage and Healing are transient meta attributes consumed by effects. */
+/** Core combat attributes used by the damage execution calculation. */
 UCLASS()
 class FALLENERA_API UFallenEraAttributeSet : public UAttributeSet
 {
@@ -40,9 +40,19 @@ public:
 	FGameplayAttributeData MaxStamina;
 	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, MaxStamina)
 
-	UPROPERTY(BlueprintReadOnly, Category="Attributes|Meta")
-	FGameplayAttributeData Damage;
-	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, Damage)
+	/** Persistent attack power, including the currently equipped weapon's Offense bonus. */
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_AttackPower, Category="Attributes|Combat")
+	FGameplayAttributeData AttackPower;
+	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, AttackPower)
+
+	/** Persistent defense value captured from the damage target. */
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_DefensePower, Category="Attributes|Combat")
+	FGameplayAttributeData DefensePower;
+	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, DefensePower)
+
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_KnockbackResistance, Category="Attributes|Combat")
+	FGameplayAttributeData KnockbackResistance;
+	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, KnockbackResistance)
 
 	UPROPERTY(BlueprintReadOnly, Category="Attributes|Meta")
 	FGameplayAttributeData Healing;
@@ -60,6 +70,15 @@ protected:
 
 	UFUNCTION()
 	void OnRep_MaxStamina(const FGameplayAttributeData& OldValue);
+
+	UFUNCTION()
+	void OnRep_AttackPower(const FGameplayAttributeData& OldValue);
+
+	UFUNCTION()
+	void OnRep_DefensePower(const FGameplayAttributeData& OldValue);
+
+	UFUNCTION()
+	void OnRep_KnockbackResistance(const FGameplayAttributeData& OldValue);
 
 private:
 	void UpdateDeadStateTag();
