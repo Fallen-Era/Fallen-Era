@@ -23,6 +23,10 @@ public class FallenEra : ModuleRules
 			"StateTreeModule",
 			"Slate",
 			"UMG"
+			"ModelViewViewModel",
+			"Slate",
+			"SlateCore",
+			"DeveloperSettings"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
@@ -34,6 +38,8 @@ public class FallenEra : ModuleRules
 			"FallenEra/AbilitySystem/Attributes",
 			"FallenEra/GameplayTag",
 			"FallenEra/ItemDatas",
+			"FallenEra/Building",
+			"FallenEra/Interaction",
 		});
 
 		// Uncomment if you are using Slate UI
