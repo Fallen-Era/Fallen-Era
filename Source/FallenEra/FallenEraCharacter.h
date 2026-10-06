@@ -6,6 +6,9 @@
 #include "AbilitySystemInterface.h"
 #include "VoxelCharacter.h"
 #include "GameplayTagContainer.h"
+#include "GenericTeamAgentInterface.h"
+#include "Combat/Interface/FECombatPresentation.h"
+#include "Combat/Interface/FEDamageable.h"
 #include "Logging/LogMacros.h"
 #include "FallenEraCharacter.generated.h"
 
@@ -13,8 +16,15 @@ class UInputComponent;
 class USkeletalMeshComponent;
 class UCameraComponent;
 class UInputAction;
+class UInputMappingContext;
 class UAbilitySystemComponent;
+class UAnimMontage;
 class UFallenEraAbilitySystemComponent;
+class UFE_CombatComponent;
+class UFE_EquipmentComponent;
+class UFE_CharacterStatusComponent;
+class UNavigationInvokerComponent;
+class UAIPerceptionStimuliSourceComponent;
 struct FInputActionValue;
 
 
@@ -35,8 +45,10 @@ struct FALLENERA_API FFallenEraAbilityInputBinding
 /**
  *  A basic first person character
  */
-UCLASS(abstract)
-class AFallenEraCharacter : public AVoxelCharacter, public IAbilitySystemInterface
+
+UCLASS(Abstract)
+class AFallenEraCharacter : public AVoxelCharacter, public IAbilitySystemInterface,
+	public IFE_CombatPresentation, public IFE_Damageable, public IGenericTeamAgentInterface
 {
 	GENERATED_BODY()
 
@@ -75,10 +87,63 @@ AFallenEraCharacter();
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UFallenEraAbilitySystemComponent* GetFallenEraAbilitySystemComponent() const;
+	virtual USkeletalMeshComponent* GetCombatFirstPersonMesh() const override { return GetFirstPersonMesh(); }
+	virtual UCameraComponent* GetCombatCamera() const override { return GetFirstPersonCameraComponent(); }
+	virtual FFE_CombatDamageResult ReceiveCombatDamage_Implementation(
+		const FFE_CombatDamageRequest& DamageRequest) override;
+	virtual FGenericTeamId GetGenericTeamId() const override;
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat")
+	UFE_CombatComponent* GetCombatComponent() const { return CombatComponent; }
+
+	virtual void BeginPlay() override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_PlayerState() override;
 
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Equipment")
+	UFE_EquipmentComponent* GetEquipmentComponent() const { return EquipmentComponent; }
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Status")
+	UFE_CharacterStatusComponent* GetCharacterStatusComponent() const { return CharacterStatusComponent; }
+
+	/** Plays an attack montage on the character's world and first-person meshes. */
+	void PlayAttackMontage(UAnimMontage* Montage);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayAttackMontage(UAnimMontage* Montage);
+
+	/** Shared damage/effect entry point used by player abilities and weapons. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UFE_CombatComponent> CombatComponent;
+
 protected:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
+	TObjectPtr<UInputMappingContext> CombatMappingContext;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
+	int32 CombatMappingPriority = 20;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
+	TObjectPtr<UInputAction> CombatLeftClickAction;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
+	TObjectPtr<UInputAction> CombatRightClickAction;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
+	TObjectPtr<UInputAction> CombatSwapAction;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Equipment", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UFE_EquipmentComponent> EquipmentComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Status", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UFE_CharacterStatusComponent> CharacterStatusComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UAIPerceptionStimuliSourceComponent> PerceptionStimuliSourceComponent;
+
+	/** Generates navigation around the moving player in invoker-based open worlds. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI|Navigation", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UNavigationInvokerComponent> NavigationInvokerComponent;
 
 	/** Called from Input Actions for movement input */
 	void MoveInput(const FInputActionValue& Value);
@@ -88,6 +153,15 @@ protected:
 
 	void AbilityInputPressed(const FInputActionValue& Value, FGameplayTag InputTag);
 	void AbilityInputReleased(const FInputActionValue& Value, FGameplayTag InputTag);
+	void HandleCombatLeftClickStarted(const FInputActionValue& Value);
+	void HandleCombatLeftClickReleased(const FInputActionValue& Value);
+	void HandleCombatRightClickStarted(const FInputActionValue& Value);
+	void HandleCombatRightClickReleased(const FInputActionValue& Value);
+	void HandleCombatSwap(const FInputActionValue& Value);
+
+	void SetCombatInputEnabled(bool bEnabled);
+	void PressCombatAbility(const FGameplayTag& InputTag);
+	void ReleaseCombatAbility(const FGameplayTag& InputTag);
 
 	/** Handles aim inputs from either controls or UI interfaces */
 	UFUNCTION(BlueprintCallable, Category="Input")

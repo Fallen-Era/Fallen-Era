@@ -49,4 +49,12 @@ protected:
 	/** Granted once on the server and retained across pawn respawns. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Abilities")
 	TArray<TObjectPtr<UFallenEraAbilitySet>> DefaultAbilitySets;
+
+//건축 저장용 playerID	
+public:
+	UPROPERTY(Replicated, BlueprintReadOnly, Category="Player")
+    FString StablePlayerId;
+    
+    UFUNCTION(BlueprintPure, Category="Player")
+    const FString& GetStablePlayerId() const { return StablePlayerId; }
 };

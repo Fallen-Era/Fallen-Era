@@ -18,8 +18,11 @@ public class FallenEra : ModuleRules
 			"GameplayTags",
 			"GameplayTasks",
 			"AIModule",
+			"NavigationSystem",
+			"DeveloperSettings",
 			"StateTreeModule",
 			"GameplayStateTreeModule",
+			"Niagara",
 			"UMG",
 			"Voxel",
 			"VoxelGraph",
@@ -27,6 +30,7 @@ public class FallenEra : ModuleRules
 			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",
+			"PhysicsCore"
 			"DeveloperSettings"
 		});
 
