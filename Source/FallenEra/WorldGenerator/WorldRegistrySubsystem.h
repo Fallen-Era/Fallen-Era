@@ -101,7 +101,7 @@ private:
 	void HandlePostOpenMap(UWorld* OpenedWorld);
 	void PostWorldCreate(UWorld* OpenWorld);
 	void PostWorldLoad(UWorld* OpenWorld);
-	void ClearPendingLoad();
+	void ClearPending();
 	
 	UPROPERTY(Transient)
 	TObjectPtr<UWorldSaveGame> PendingWorldSave;
