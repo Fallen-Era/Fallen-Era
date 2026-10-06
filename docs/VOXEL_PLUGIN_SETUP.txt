@@ -1,0 +1,28 @@
+Voxel Plugin private dependency
+
+Plugins/Voxel is a Git submodule pointing to the private repository:
+https://github.com/Fallen-Era/Voxel-Plugin-Private
+
+After obtaining access to the private repository, run from the project root:
+
+    git submodule sync --recursive
+    git submodule update --init --recursive
+
+The main repository stores only .gitmodules and a pinned plugin commit.
+Keep licensed plugin source, shaders, and bundled assets in the private repository.
+Do not copy them into another main-repository directory. Project-owned
+WorldGenerator code and assets remain in the main repository.
+
+After changing the plugin in its private repository, push its commit there first
+and then commit the Plugins/Voxel pointer update in the main repository.
+
+The history of 8-feat-voxel-based-terrain-generator was rewritten to remove
+licensed plugin files. main, Dev, and other contributors' branches are unchanged.
+For a clean working copy of the rewritten branch, fetch origin and reset that
+branch to origin/8-feat-voxel-based-terrain-generator only after backing up all
+uncommitted changes and any local commits. Do not merge the old version of this
+branch into the cleaned history; reapply only your project-owned changes.
+
+Older pull request references and cached commits may remain on GitHub after
+rewriting a branch. Repository administrators must request server-side cleanup
+from GitHub Support if those old objects remain accessible.

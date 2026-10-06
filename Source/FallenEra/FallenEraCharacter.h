@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "AbilitySystemInterface.h"
-#include "GameFramework/Character.h"
+#include "VoxelCharacter.h"
 #include "GameplayTagContainer.h"
 #include "GenericTeamAgentInterface.h"
 #include "Combat/Interface/FECombatPresentation.h"
@@ -27,6 +27,7 @@ class UNavigationInvokerComponent;
 class UAIPerceptionStimuliSourceComponent;
 struct FInputActionValue;
 
+
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
 
 USTRUCT(BlueprintType)
@@ -45,7 +46,8 @@ struct FALLENERA_API FFallenEraAbilityInputBinding
  *  A basic first person character
  */
 UCLASS(Abstract)
-class AFallenEraCharacter : public ACharacter, public IAbilitySystemInterface,
+class AFallenEraCharacter : public AVoxelCharacter, public IAbilitySystemInterface,
+
 	public IFE_CombatPresentation, public IFE_Damageable, public IGenericTeamAgentInterface
 {
 	GENERATED_BODY()
@@ -81,7 +83,7 @@ protected:
 	TArray<FFallenEraAbilityInputBinding> AbilityInputBindings;
 	
 public:
-	AFallenEraCharacter();
+AFallenEraCharacter();
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UFallenEraAbilitySystemComponent* GetFallenEraAbilitySystemComponent() const;
