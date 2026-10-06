@@ -45,9 +45,9 @@ struct FALLENERA_API FFallenEraAbilityInputBinding
 /**
  *  A basic first person character
  */
-
 UCLASS(Abstract)
 class AFallenEraCharacter : public AVoxelCharacter, public IAbilitySystemInterface,
+
 	public IFE_CombatPresentation, public IFE_Damageable, public IGenericTeamAgentInterface
 {
 	GENERATED_BODY()

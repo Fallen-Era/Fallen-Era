@@ -24,6 +24,7 @@ public class FallenEra : ModuleRules
 			"GameplayStateTreeModule",
 			"Niagara",
 			"UMG",
+
 			"Voxel",
 			"VoxelGraph",
 			"VoxelCore",
@@ -37,7 +38,6 @@ public class FallenEra : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] 
 		{
 			"GameplayMessageRuntime",
-
 		});
 
 		PublicIncludePaths.AddRange(new string[] {
