@@ -209,6 +209,11 @@ void AFE_EnemyCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 bool AFE_EnemyCharacter::GatherAISettingsAssetPaths(TArray<FSoftObjectPath>& OutPaths, bool bGameplayDependencies) const
 {
+	// Include in both preparation stages so the spawner also verifies readiness before spawning.
+	if (CombatComponent)
+	{
+		CombatComponent->GatherHitZoneAssetPaths(OutPaths);
+	}
 	for (int32 Index = 0; Index < AISettingsDataAssets.Num(); ++Index)
 	{
 		if (!bRandomizeAISettings && Index != SelectedAISettingsIndex) { continue; }

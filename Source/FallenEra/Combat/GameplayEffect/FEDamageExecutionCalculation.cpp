@@ -1,7 +1,10 @@
 #include "Combat/GameplayEffect/FEDamageExecutionCalculation.h"
 
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
+#include "AbilitySystemComponent.h"
+#include "Combat/FECombatGameplayTags.h"
 #include "GameplayEffect.h"
+#include "GameFramework/Actor.h"
 
 namespace
 {
@@ -36,6 +39,13 @@ void UFE_DamageExecutionCalculation::Execute_Implementation(
 	const FGameplayEffectCustomExecutionParameters& ExecutionParams,
 	FGameplayEffectCustomExecutionOutput& OutExecutionOutput) const
 {
+	// [Server Only] Clients observe replicated Health, never roll their own damage.
+	const UAbilitySystemComponent* TargetASC = ExecutionParams.GetTargetAbilitySystemComponent();
+	if (!TargetASC || !TargetASC->IsOwnerActorAuthoritative())
+	{
+		return;
+	}
+
 	const FGameplayEffectSpec& Spec = ExecutionParams.GetOwningSpec();
 	FAggregatorEvaluateParameters EvaluationParameters;
 	EvaluationParameters.SourceTags = Spec.CapturedSourceTags.GetAggregatedTags();
@@ -60,9 +70,11 @@ void UFE_DamageExecutionCalculation::Execute_Implementation(
 		return;
 	}
 
-	const float FinalDamage = FMath::Max(
-		FMath::Max(SourceAttackPower, 0.0f) - FMath::Max(TargetDefensePower, 0.0f),
-		0.0f);
+	const float RequestedMultiplier = Spec.GetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_HitRegionMultiplier, false, 1.0f);
+	// Two uniform samples form a triangular distribution: ordinary hits are more common than extremes.
+	const float CenteredRoll = DamageVarianceRatio > 0.0f ? FMath::FRand() + FMath::FRand() - 1.0f : 0.0f;
+	const float FinalDamage = CalculateDamage(SourceAttackPower, TargetDefensePower, RequestedMultiplier, CenteredRoll);
 
 	if (FinalDamage > 0.0f)
 	{
@@ -71,4 +83,20 @@ void UFE_DamageExecutionCalculation::Execute_Implementation(
 			EGameplayModOp::Additive,
 			-FinalDamage));
 	}
+}
+
+float UFE_DamageExecutionCalculation::CalculateDamage(
+	float AttackPower, float DefensePower, float HitRegionMultiplier, float CenteredRoll) const
+{
+	if (!FMath::IsFinite(AttackPower) || !FMath::IsFinite(DefensePower))
+	{
+		return 0.0f;
+	}
+	const float Variance = FMath::IsFinite(DamageVarianceRatio) ? FMath::Clamp(DamageVarianceRatio, 0.0f, 1.0f) : 0.0f;
+	const float Roll = FMath::IsFinite(CenteredRoll) ? FMath::Clamp(CenteredRoll, -1.0f, 1.0f) : 0.0f;
+	const float RegionMultiplier = FMath::IsFinite(HitRegionMultiplier) ? FMath::Max(0.0f, HitRegionMultiplier) : 1.0f;
+	const float RolledAttackPower = FMath::Max(AttackPower, 0.0f) * (1.0f + Variance * Roll);
+	// Defense still precedes the hit-region multiplier; Area hits supply x1.
+	const float Damage = FMath::Max(RolledAttackPower - FMath::Max(DefensePower, 0.0f), 0.0f) * RegionMultiplier;
+	return FMath::IsFinite(Damage) ? Damage : 0.0f;
 }

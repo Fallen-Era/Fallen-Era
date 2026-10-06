@@ -245,9 +245,10 @@ void UFE_EnemyMeleeAttackAbility::ExecuteTrace()
 		}
 
 		const TSubclassOf<UGameplayEffect> DamageEffect = CachedEnemyCharacter->GetCachedAttackDamageEffect();
+		const FHitResult BodyHit = UFE_CombatComponent::RefineDirectDamageHit(Hit, ActiveAttackSettings.TraceRadius);
 		const bool bApplied = DamageEffect
-			? CombatComponent->ApplyDamageWithEffectFromHit(TargetActor, DamageEffect, Hit, nullptr)
-			: CombatComponent->ApplyDamageFromHit(TargetActor, Hit, nullptr);
+			? CombatComponent->ApplyDamageWithEffectFromHit(TargetActor, DamageEffect, BodyHit, nullptr)
+			: CombatComponent->ApplyDamageFromHit(TargetActor, BodyHit, nullptr);
 		if (!bApplied)
 		{
 			continue;

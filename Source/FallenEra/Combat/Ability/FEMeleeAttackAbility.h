@@ -32,6 +32,7 @@ public:
 		bool bWasCancelled) override;
 
 protected:
+	virtual ECollisionChannel GetAttackTraceChannel() const override;
 	virtual void ExecuteAttack(const ACharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const override;
 
 private:
@@ -90,7 +91,7 @@ private:
 	bool bMeleeTraceActive = false;
 	bool bInputReleased = false;
 
-	/** Prevents applying the same melee attack to the same actor every trace frame. */
-	mutable TSet<AActor*> DamagedActorsThisAttack;
+	/** Locks each target to its first hit region, including optional repeated damage ticks. */
+	mutable TMap<TWeakObjectPtr<AActor>, FHitResult> FirstHitsThisAttack;
 	mutable TMap<TWeakObjectPtr<AActor>, float> NextRepeatedHitTimes;
 };

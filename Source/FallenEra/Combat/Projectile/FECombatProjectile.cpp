@@ -269,7 +269,7 @@ void AFE_CombatProjectile::ProcessProjectileHit(AActor* OtherActor, const FHitRe
 	ReturnToPool();
 }
 
-bool AFE_CombatProjectile::ApplyProjectileDamage(AActor* TargetActor, const FHitResult& Hit)
+bool AFE_CombatProjectile::ApplyProjectileDamage(AActor* TargetActor, const FHitResult& Hit, EFE_DamageHitType HitType)
 {
 	if (!HasAuthority() || !DamageSource || !TargetActor || TargetActor == DamageSource)
 	{
@@ -279,8 +279,8 @@ bool AFE_CombatProjectile::ApplyProjectileDamage(AActor* TargetActor, const FHit
 	if (UFE_CombatComponent* SourceCombat = DamageSource->FindComponentByClass<UFE_CombatComponent>())
 	{
 		return DamageEffectClass
-			? SourceCombat->ApplyDamageWithEffectFromHit(TargetActor, DamageEffectClass, Hit, AttackData)
-			: SourceCombat->ApplyDamageFromHit(TargetActor, Hit, AttackData);
+			? SourceCombat->ApplyDamageWithEffectFromHit(TargetActor, DamageEffectClass, Hit, AttackData, HitType)
+			: SourceCombat->ApplyDamageFromHit(TargetActor, Hit, AttackData, HitType);
 	}
 
 	return false;

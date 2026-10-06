@@ -17,6 +17,9 @@ class UParticleSystem;
 class USoundBase;
 class AFE_CombatProjectile;
 class UCameraComponent;
+class UFE_HitZoneMappingData;
+class UFE_HitZoneMultiplierData;
+class USkeletalMeshComponent;
 struct FStreamableHandle;
 
 /** Persistent presentation state: no per-frame alpha replication or multicast history. */
@@ -97,12 +100,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat")
 	bool ApplyDamage(AActor* TargetActor);
 
-	/** Applies damage and carries the trace hit plus weapon attack data into the effect context.
-	 * If TargetActor has no ASC, only the replicated impact cue is emitted. */
+	/** Routes a direct or area hit through Damageable; context retains hit and attack data for cues. */
 	bool ApplyDamageFromHit(
 		AActor* TargetActor,
 		const FHitResult& HitResult,
-		const UFE_WeaponAttackData* AttackData);
+		const UFE_WeaponAttackData* AttackData,
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct);
 
 	/** Applies a custom damage GameplayEffect; damage is calculated from attributes by the effect. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat")
@@ -113,10 +116,31 @@ public:
 		AActor* TargetActor,
 		TSubclassOf<UGameplayEffect> DamageEffectClass,
 		const FHitResult& HitResult,
-		const UFE_WeaponAttackData* AttackData);
+		const UFE_WeaponAttackData* AttackData,
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct);
 
 	/** GAS receiver implementation used by Damageable actors that own an ASC. */
 	FFE_CombatDamageResult ApplyGameplayEffectDamage(const FFE_CombatDamageRequest& DamageRequest);
+
+	/** Skeleton-specific bone -> zone rules on the receiving character. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	TSoftObjectPtr<UFE_HitZoneMappingData> HitZoneMappingData;
+
+	/** Monster-specific zone -> multiplier rules; independent of skeleton mapping. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	TSoftObjectPtr<UFE_HitZoneMultiplierData> HitZoneMultiplierData;
+
+	/** Prepares changed rules asynchronously. Never called from the damage path. */
+	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat|Damage")
+	void RefreshHitZoneData();
+	bool IsHitZoneDataReady() const;
+	void GatherHitZoneAssetPaths(TArray<FSoftObjectPath>& OutPaths) const;
+	const UFE_HitZoneMappingData* GetLoadedHitZoneMappingData() const { return CachedHitZoneMappingData; }
+	const UFE_HitZoneMultiplierData* GetLoadedHitZoneMultiplierData() const { return CachedHitZoneMultiplierData; }
+
+	float ResolveHitRegionMultiplier(FName BoneName, EFE_DamageHitType HitType, FName& OutRegionName) const;
+	/** Capsule broad-phase hits carry no bone. Refine only that target's physics bodies on the same path. */
+	static FHitResult RefineDirectDamageHit(const FHitResult& Hit, float SweepRadius = 0.0f);
 
 	/** Applies knockback, stun state, and a hit-reaction montage to this component's owner. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat|Reaction")
@@ -182,6 +206,12 @@ private:
 	FDelegateHandle WeaponChangedHandle;
 	TSharedPtr<FStreamableHandle> CombatAssetLoadHandle;
 	TSharedPtr<FStreamableHandle> ChargeAssetLoadHandle;
+	TSharedPtr<FStreamableHandle> HitZoneLoadHandle;
+	void FinishLoadingHitZoneData();
+	void PrepareHitZoneHierarchy();
+	TWeakObjectPtr<USkeletalMeshComponent> HitZoneMeshComponent;
+	UPROPERTY(Transient) TObjectPtr<UFE_HitZoneMappingData> CachedHitZoneMappingData;
+	UPROPERTY(Transient) TObjectPtr<UFE_HitZoneMultiplierData> CachedHitZoneMultiplierData;
 	UPROPERTY(Transient) TSubclassOf<UGameplayEffect> CachedDamageEffectClass;
 
 	void StartChargeProjectilePresentationLocal(
@@ -206,7 +236,12 @@ private:
 		AActor* TargetActor,
 		TSubclassOf<UGameplayEffect> EffectClass,
 		const FHitResult* HitResult = nullptr,
-		const UFE_WeaponAttackData* AttackData = nullptr);
+		const UFE_WeaponAttackData* AttackData = nullptr,
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct);
+	/** Debug-only, server confirmed message sent to the attacking player's owning client. */
+	UFUNCTION(Client, Unreliable)
+	void ClientShowHitDamageDebug(const FString& Message);
+	void ShowHitDamageDebug(const FFE_CombatDamageRequest& Request, const FFE_CombatDamageResult& Result);
 	void ExecuteImpactCue(
 		UAbilitySystemComponent* SourceAbilitySystem,
 		AActor* SourceActor,

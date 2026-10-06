@@ -1,0 +1,114 @@
+부위별 데미지 설정
+==================
+
+1. 콘텐츠 브라우저에서 우클릭 > Miscellaneous > Data Asset으로 두 종류의 에셋을 만든다.
+   FE_HitZoneMappingData: 스켈레톤별 본 이름 -> 부위 Enum (BoneZones).
+   FE_HitZoneMultiplierData: 몬스터별 부위 Enum -> 데미지 배율 (ZoneMultipliers).
+   예: DA_HitZones_HumanoidMapping / DA_HitZones_ZombieMultipliers.
+
+   예시 (실제 Skeleton / PhysicsAsset의 본 이름과 일치해야 함):
+   neck_01 -> neck_02 -> head 구조라면 BoneZones: neck_01 -> Head 하나만 등록한다.
+   BoneZones: spine_01 -> Torso, upperarm_l -> Arms, thigh_l/thigh_r 각각 -> Legs.
+   ZoneMultipliers: Head -> 2.0, Torso -> 1.0, Arms -> 0.8, Legs -> 0.75.
+   Enum의 에디터 표시: Default=기본, Head=머리, Torso=몸통, Arms=팔, Legs=다리.
+   목 본 2개와 머리 본의 배율은 Head 값 한 곳만 수정하면 된다.
+
+   해당 본의 명시적인 설정이 우선이며, 없으면 가장 가까운 등록된 부모 본의 부위를 상속한다.
+   예: neck_01=Head이면 neck_02/head 및 그 자손도 Head이다.
+   head를 따로 다른 부위로 지정하면 head와 그 자손은 해당 설정을 우선 사용한다.
+   부모의 모든 자손에 적용되므로, 팔까지 연결된 spine을 Head로 지정하지 않는다.
+   본 이름 문자열의 접두어나 유사성이 아닌, 대상 캐릭터 Mesh의 실제 본 계층을 사용한다.
+   맵은 같은 본 이름을 중복 등록하지 않는다.
+   자신/부모 모두 설정되지 않은 본, None, HitResult 없는 피해, 누락된 Zone 배율은 1이다.
+   매핑되지 않은 본은 ZoneMultipliers에 Default 값이 있어도 배율 1이다.
+   배율 0은 해당 부위 HP 피해를 막는다. 넉백/경직은 기존 로직을 유지한다.
+   에디터의 Validate Assets는 빈 본 이름, 잘못된 Enum, 음수/비정상 배율을 오류로 검사한다.
+
+   공격받는 캐릭터 BP의 CombatComponent를 선택한다.
+   FallenEra > Combat > Damage > Hit Zone Mapping Data와 Hit Zone Multiplier Data에 각각 지정한다.
+   같은 스켈레톤의 몬스터들은 Mapping 에셋을 공유하고 배율 에셋만 다르게 지정할 수 있다.
+   매핑/배율 에셋 중 하나만 지정하면 없는 쪽의 규칙은 배율 1로 처리한다.
+   플레이어 캐릭터도 동일한 방식으로 에셋을 지정할 수 있다.
+
+   이전 FName 부위 이름과 배율을 함께 저장하던 데이터 타입 및 호환 프로퍼티는 제거했다.
+   Mapping / Multiplier 두 에셋만 사용한다. 부위 식별은 EFE_HitZone Enum으로 통일한다.
+   BoneZones의 Key인 FName은 실제 Skeleton 본 이름을 지정하기 위해 유지한다.
+   현재 DA_Enemy1_HitZone와 DA_MultiplierData는 새 타입이므로 그대로 사용한다.
+
+   규칙은 런타임에 수정하지 않는다. 공유 에셋을 수정하면 해당 에셋을 사용하는 모든 개체에 영향을 준다.
+   컴포넌트는 맵을 복사하지 않고, 로드된 에셋을 GC에 등록된 참조로 유지한다.
+   본별 최종 부위는 초기화 시 한 번 계산하며 같은 Mapping + SkeletalMesh끼리 공유 캐시를 사용한다.
+   피격 때는 캐시 조회만 한다. 매 프레임/피격마다 부모를 탐색하지 않는다.
+   캐시의 Mesh 키는 약한 참조이므로 사용하지 않는 Mesh를 메모리에 붙잡지 않는다.
+   캐릭터는 ACharacter의 기본 Mesh를 사용한다 (FirstPersonMesh/무기 Mesh는 사용하지 않는다).
+   일반 액터는 첫 번째 SkeletalMeshComponent를 사용한다. Mesh가 없으면 정확한 이름 매칭만 가능하다.
+   에셋 미지정은 기존 배율 1로 처리한다.
+   에셋 지정 시 BeginPlay에서 비동기로 준비하며 피해 처리 도중 동기 로딩하지 않는다.
+   몬스터 스포너는 두 에셋 모두 준비한 후 스폰하므로 초기 피격 시 로딩 공백을 줄인다.
+   직접 배치된 개체 등에서 준비 전 들어온 직접 타격은 거절하며 나중에 재적용하지 않는다.
+   이때 디버그에 Region=NotReady, rejected가 표시된다. Area 및 위치 없는 피해는 그대로 처리한다.
+   런타임에 프로필 또는 캐릭터 Mesh를 교체할 때는 RefreshHitZoneData를 호출한다 (BP에서도 호출 가능).
+   에디터에서 Mapping 값을 수정하면 캐시가 무효화된다. PIE 도중 수정했다면 사용 개체를 Refresh한다.
+   피격 HitResult의 원래 BoneName은 변경하지 않으며, 부위/배율만 부모 설정을 상속한다.
+
+2. 데미지 GE의 Executions에 FE_DamageExecutionCalculation을 사용한다.
+   기존에 이 Execution을 사용하는 GE는 변경 없이 적용된다.
+   Health를 직접 감소시키는 별도 Modifier/Execution만 쓰는 GE는 새 배율을 소비하지 않는다.
+   Execution과 중복되는 Health 감소 Modifier를 추가하지 않는다.
+
+   최종 계산: max(AttackPower * (1 + DamageVarianceRatio * (U1 + U2 - 1)) - DefensePower, 0) * HitRegionMultiplier
+   U1/U2는 서버에서 생성하는 0~1 난수다. 기본 변동 폭은 공격력의 +/-10%이다.
+   예: 공격력 20, 방어력 5, 머리 배율 2 => 26~34 데미지, 평균 30 (0 제한이 없는 경우).
+   설정 및 설계 근거: docs/Combat/DamageVarianceDesign.md.
+   SetByCaller.Damage.HitRegionMultiplier는 피해 수신 서버가 설정한다.
+   AttackData SourceObject / HitResult 전달과 Impact GameplayCue는 유지한다.
+
+3. 본 판정에는 SkeletalMesh의 PhysicsAsset과 부위별 Physics Body가 필요하다.
+   머리에 head Body가 없으면 head 이름을 등록해도 판정되지 않는다.
+   Mesh의 Query Collision을 활성화하고 PhysicsAsset 기반 충돌을 사용한다.
+   캡슐에 먼저 맞아 본이 없다면 그 액터의 Mesh에 같은 경로로 상세 검사를 한다.
+   근접은 같은 Sphere Sweep 반지름으로 상세 검사한다.
+   상세 검사가 실패해도 기존 캡슐 타격은 유지하며 배율 1을 사용한다.
+   현재 위치에서 가까운 본을 임의로 골라 헤드샷으로 만들지 않는다.
+   완전히 정확한 Mesh-only 판정이 필요하면 전용 공격 채널에서 Capsule을 Ignore,
+   대상 Mesh를 Block/Overlap으로 설정한다. 이동용 World 충돌은 유지한다.
+   PlayerHitscanTrace(총기), EnemyTrace(적 공격), 현재 근접 공격 채널 응답을 확인한다.
+   현재 투사체는 Enemy 오브젝트 타입과 충돌하므로 대상 Mesh/투사체 상호 응답도 확인한다.
+   화면 밖/전용 서버에서도 필요한 타격 대상의 물리 본 위치가 최신인지 PIE에서 검증한다.
+
+4. 근접 공격은 대상별 최초 HitResult를 저장한다.
+   동일 공격 내 반복 타격/Trace 구간에서도 최초 부위를 사용한다.
+   다음 공격/콤보 또는 Ability 종료 시 캐시를 초기화한다.
+
+5. 수류탄은 EFE_DamageHitType::Area로 피해를 전달한다.
+   SphereCollision이라는 모양만 보고 범위 피해를 추측하지 않는다.
+   Area는 본 이름이 들어 있어도 배율 1이며 공통 공격력 변동/방어력 공식으로 피해를 계산한다.
+   향후 폭발 공격도 ApplyDamageFromHit / ApplyDamageWithEffectFromHit의 HitType을 Area로 전달한다.
+
+6. 서버 콘솔에서 fe.Combat.DebugHitDamage 1을 실행한다 (0은 끄기).
+   공격자 플레이어 화면에 대상 / Bone / Region / 배율 / 실제 HP 감소량을 3초 표시한다.
+   원격 공격자에게도 서버 확정 결과를 Unreliable Client RPC로 전달한다.
+   범위 공격은 Bone=N/A, Region=Area, 배율=1이다.
+   HP 10인 대상에 계산 피해 30을 주면 실제 감소량 Damage=10으로 표시한다.
+   거절된 GE는 rejected로 표시한다. Shipping/Test 빌드에서는 표시/전송하지 않는다.
+
+검증용 자동화 테스트: FallenEra.Combat.Damage.HitRegions
+본별 배율, 방어력, 범위 피해 예외, 기본 배율, 0/음수 배율, 실제 HP 감소량,
+공유 에셋 참조, 에셋 미지정/로딩 중 예외 및 프로필 복원, 두 에셋의 사전 로딩,
+목/머리의 같은 Enum 매핑, 배율 일괄 수정 및 같은 스켈레톤의 서로 다른 배율을 검사한다.
+부모 상속, 가장 가까운 규칙 우선, 자식의 명시적 재정의, 공유 캐시 재사용,
+다른 Mesh의 별도 계층 처리 및 Mesh 교체 후 캐시 준비도 함께 검사한다.
+실제 PhysicsAsset/몽타주/멀티플레이 타격 정확성은 사용하는 캐릭터 BP로 별도 PIE 검증한다.
+
+기존 검증 결과 (2026-10-06, 이전 타입 제거 전):
+FallenEraEditor Win64 Development 전체 컴파일 및 DLL 링크 성공.
+UnrealEditor-Cmd / NullRHI에서 FallenEra.Combat 자동화 테스트 5개 모두 통과.
+두 에셋 분리 테스트 로그: Saved/Logs/SplitHitZoneAutomation_Verified.log
+부모 본 상속/캐시 변경 후에도 전체 빌드 및 전투 테스트 5개 모두 통과.
+부모 본 상속 테스트 로그: Saved/Logs/InheritedHitZoneAutomation_Verified.log
+
+이전 타입 제거 후 검증 (2026-10-06):
+FallenEraEditor Win64 Development -NoLink C++ 컴파일 성공.
+소스 및 Content 바이너리 검색에서 이전 타입/구조체/프로퍼티 참조를 발견하지 못했다.
+전체 빌드의 DLL 링크는 실행 중인 에디터의 파일 잠금(LNK1104)으로 완료하지 못했다.
+이전 타입 제거 후 새 DLL 기반 자동화 재실행은 미검증이다. 에디터 종료 후 전체 빌드와 테스트를 다시 실행한다.

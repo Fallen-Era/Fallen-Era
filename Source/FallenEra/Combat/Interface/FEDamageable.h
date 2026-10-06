@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/HitResult.h"
+#include "Combat/Damage/FEHitRegionDamage.h"
 #include "UObject/Interface.h"
 #include "FEDamageable.generated.h"
 
@@ -32,6 +33,10 @@ struct FALLENERA_API FFE_CombatDamageRequest
 	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
 	float SourceAttackPower = 0.0f;
 
+	/** Area damage never selects a skeletal hit region, even if it carries a hit result for FX. */
+	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	EFE_DamageHitType HitType = EFE_DamageHitType::Direct;
+
 	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
 	bool bHasHitResult = false;
 };
@@ -51,6 +56,16 @@ struct FALLENERA_API FFE_CombatDamageResult
 	/** True when a successfully applied GameplayEffect already owns the impact cue. */
 	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
 	bool bImpactCueHandled = false;
+
+	/** Actual health lost, capped by the receiver's remaining health. */
+	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	float AppliedDamage = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	FName HitRegion = TEXT("Default");
+
+	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	float HitRegionMultiplier = 1.0f;
 };
 
 /** Common damage entry point. Each receiver chooses GAS, local health, or another damage model. */

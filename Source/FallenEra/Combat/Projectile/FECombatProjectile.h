@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Combat/Damage/FEHitRegionDamage.h"
 #include "FECombatProjectile.generated.h"
 
 class UShapeComponent;
@@ -51,7 +52,8 @@ protected:
 	virtual void ProcessProjectileHit(AActor* OtherActor, const FHitResult& Hit);
 
 	/** Applies this projectile's configured damage GE and reaction to one target. */
-	bool ApplyProjectileDamage(AActor* TargetActor, const FHitResult& Hit);
+	bool ApplyProjectileDamage(AActor* TargetActor, const FHitResult& Hit,
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct);
 	virtual void OnActivatedFromPool();
 	virtual void OnReturnedToPool();
 

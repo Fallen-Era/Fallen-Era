@@ -16,6 +16,7 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Impact, "GameplayCue.Impact");
 
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_AttackPower, "SetByCaller.AttackPower");
+	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Damage_HitRegionMultiplier, "SetByCaller.Damage.HitRegionMultiplier");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Condition_HealthLoss, "SetByCaller.Condition.HealthLoss");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_DefensePower, "SetByCaller.DefensePower");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_KnockbackResistance, "SetByCaller.KnockbackResistance");

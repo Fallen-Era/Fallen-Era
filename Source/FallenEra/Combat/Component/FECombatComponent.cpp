@@ -3,6 +3,8 @@
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
 #include "Combat/FECombatGameplayTags.h"
+#include "Combat/Damage/FEHitZoneMappingData.h"
+#include "Combat/Damage/FEHitZoneMultiplierData.h"
 #include "Combat/Animation/FEBowAnimInstance.h"
 #include "AbilitySystemInterface.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
@@ -39,6 +41,15 @@
 #include "Perception/AISense_Hearing.h"
 #include "Sound/SoundBase.h"
 #include "TimerManager.h"
+#include "Engine/Engine.h"
+#include "HAL/IConsoleManager.h"
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+static TAutoConsoleVariable<int32> CVarFEHitDamageDebug(
+	TEXT("fe.Combat.DebugHitDamage"), 0,
+	TEXT("Show server-confirmed bone, region multiplier and actual HP loss to the attacking player. 0=off, 1=on."),
+	ECVF_Cheat);
+#endif
 
 UFE_CombatComponent::UFE_CombatComponent()
 {
@@ -50,6 +61,7 @@ UFE_CombatComponent::UFE_CombatComponent()
 void UFE_CombatComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	RefreshHitZoneData();
 	RefreshAbilitySystem();
 	if (UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>())
 	{
@@ -166,6 +178,10 @@ void UFE_CombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 	if (CombatAssetLoadHandle) { CombatAssetLoadHandle->CancelHandle(); CombatAssetLoadHandle.Reset(); }
 	if (ChargeAssetLoadHandle) { ChargeAssetLoadHandle->CancelHandle(); ChargeAssetLoadHandle.Reset(); }
+	if (HitZoneLoadHandle) { HitZoneLoadHandle->CancelHandle(); HitZoneLoadHandle.Reset(); }
+	CachedHitZoneMappingData = nullptr;
+	CachedHitZoneMultiplierData = nullptr;
+	HitZoneMeshComponent.Reset();
 	StopChargeProjectilePresentationLocal();
 	if (UWorld* World = GetWorld())
 	{
@@ -213,9 +229,10 @@ bool UFE_CombatComponent::ApplyDamage(AActor* TargetActor)
 bool UFE_CombatComponent::ApplyDamageFromHit(
 	AActor* TargetActor,
 	const FHitResult& HitResult,
-	const UFE_WeaponAttackData* AttackData)
+	const UFE_WeaponAttackData* AttackData,
+	EFE_DamageHitType HitType)
 {
-	return ApplyDamageInternal(TargetActor, CachedDamageEffectClass, &HitResult, AttackData);
+	return ApplyDamageInternal(TargetActor, CachedDamageEffectClass, &HitResult, AttackData, HitType);
 }
 
 bool UFE_CombatComponent::ApplyDamageWithEffect(AActor* TargetActor, TSubclassOf<UGameplayEffect> DamageEffectClassOverride)
@@ -227,13 +244,110 @@ bool UFE_CombatComponent::ApplyDamageWithEffectFromHit(
 	AActor* TargetActor,
 	TSubclassOf<UGameplayEffect> DamageEffectClassOverride,
 	const FHitResult& HitResult,
-	const UFE_WeaponAttackData* AttackData)
+	const UFE_WeaponAttackData* AttackData,
+	EFE_DamageHitType HitType)
 {
 	return ApplyDamageInternal(
 		TargetActor,
 		DamageEffectClassOverride,
 		&HitResult,
-		AttackData);
+		AttackData,
+		HitType);
+}
+
+void UFE_CombatComponent::RefreshHitZoneData()
+{
+	if (HitZoneLoadHandle) { HitZoneLoadHandle->CancelHandle(); HitZoneLoadHandle.Reset(); }
+	CachedHitZoneMappingData = HitZoneMappingData.Get();
+	CachedHitZoneMultiplierData = HitZoneMultiplierData.Get();
+	PrepareHitZoneHierarchy();
+	if (IsHitZoneDataReady()) { return; }
+	TArray<FSoftObjectPath> Paths;
+	GatherHitZoneAssetPaths(Paths);
+	HitZoneLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+		Paths, FStreamableDelegate::CreateUObject(this, &ThisClass::FinishLoadingHitZoneData));
+}
+
+void UFE_CombatComponent::FinishLoadingHitZoneData()
+{
+	CachedHitZoneMappingData = HitZoneMappingData.Get();
+	CachedHitZoneMultiplierData = HitZoneMultiplierData.Get();
+	PrepareHitZoneHierarchy();
+	if (!IsHitZoneDataReady())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s could not load its hit-zone assets. Direct hit damage is rejected until its rules are ready."),
+			*GetNameSafe(GetOwner()));
+	}
+	HitZoneLoadHandle.Reset(); // Cached UPROPERTY references keep the shared assets alive.
+}
+
+void UFE_CombatComponent::PrepareHitZoneHierarchy()
+{
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	HitZoneMeshComponent = Character ? Character->GetMesh()
+		: (GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr);
+	if (CachedHitZoneMappingData && HitZoneMeshComponent.IsValid())
+	{
+		CachedHitZoneMappingData->PrepareForMesh(HitZoneMeshComponent->GetSkeletalMeshAsset());
+	}
+}
+
+bool UFE_CombatComponent::IsHitZoneDataReady() const
+{
+	USkeletalMesh* Mesh = HitZoneMeshComponent.IsValid() ? HitZoneMeshComponent->GetSkeletalMeshAsset() : nullptr;
+	return (HitZoneMappingData.IsNull() || (CachedHitZoneMappingData && CachedHitZoneMappingData == HitZoneMappingData.Get() &&
+		CachedHitZoneMappingData->IsPreparedForMesh(Mesh))) &&
+		(HitZoneMultiplierData.IsNull() || (CachedHitZoneMultiplierData && CachedHitZoneMultiplierData == HitZoneMultiplierData.Get()));
+}
+
+void UFE_CombatComponent::GatherHitZoneAssetPaths(TArray<FSoftObjectPath>& OutPaths) const
+{
+	if (!HitZoneMappingData.IsNull()) { OutPaths.AddUnique(HitZoneMappingData.ToSoftObjectPath()); }
+	if (!HitZoneMultiplierData.IsNull()) { OutPaths.AddUnique(HitZoneMultiplierData.ToSoftObjectPath()); }
+}
+
+float UFE_CombatComponent::ResolveHitRegionMultiplier(
+	FName BoneName, EFE_DamageHitType HitType, FName& OutRegionName) const
+{
+	OutRegionName = HitType == EFE_DamageHitType::Area ? FName(TEXT("Area")) : FName(TEXT("Default"));
+	if (HitType == EFE_DamageHitType::Area || BoneName.IsNone() || !IsHitZoneDataReady())
+	{
+		return 1.0f;
+	}
+	if (CachedHitZoneMappingData && !HitZoneMappingData.IsNull())
+	{
+		USkeletalMesh* Mesh = HitZoneMeshComponent.IsValid() ? HitZoneMeshComponent->GetSkeletalMeshAsset() : nullptr;
+		if (const EFE_HitZone* Zone = CachedHitZoneMappingData->FindHitZone(BoneName, Mesh))
+		{
+			OutRegionName = UFE_HitZoneMappingData::GetZoneName(*Zone);
+			return CachedHitZoneMultiplierData && !HitZoneMultiplierData.IsNull()
+				? CachedHitZoneMultiplierData->GetDamageMultiplier(*Zone) : 1.0f;
+		}
+	}
+	return 1.0f;
+}
+
+FHitResult UFE_CombatComponent::RefineDirectDamageHit(const FHitResult& Hit, float SweepRadius)
+{
+	AActor* Target = Hit.GetActor();
+	if (!Target || !Hit.BoneName.IsNone()) { return Hit; }
+	const ACharacter* Character = Cast<ACharacter>(Target);
+	USkeletalMeshComponent* Mesh = Character ? Character->GetMesh() : Target->FindComponentByClass<USkeletalMeshComponent>();
+	if (!Mesh || !Mesh->GetPhysicsAsset()) { return Hit; }
+	FHitResult BodyHit;
+	bool bHitBody = false;
+	if (SweepRadius > 0.0f)
+	{
+		bHitBody = Mesh->SweepComponent(BodyHit, Hit.TraceStart, Hit.TraceEnd, FQuat::Identity,
+			FCollisionShape::MakeSphere(SweepRadius));
+	}
+	else if (!Hit.TraceStart.Equals(Hit.TraceEnd))
+	{
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(FE_HitRegionRefinement), false);
+		Params.bReturnPhysicalMaterial = true;
+		bHitBody = Mesh->LineTraceComponent(BodyHit, Hit.TraceStart, Hit.TraceEnd, Params);
+	}
+	return bHitBody && !BodyHit.BoneName.IsNone() ? BodyHit : Hit;
 }
 
 float UFE_CombatComponent::CalculateReceivedKnockback(float IncomingKnockback) const
@@ -493,7 +607,8 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	AActor* TargetActor,
 	TSubclassOf<UGameplayEffect> EffectClass,
 	const FHitResult* HitResult,
-	const UFE_WeaponAttackData* AttackData)
+	const UFE_WeaponAttackData* AttackData,
+	EFE_DamageHitType HitType)
 {
 	AActor* SourceActor = GetOwner();
 	if (!IsActorAlive(SourceActor) || SourceActor == TargetActor ||
@@ -518,10 +633,12 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	DamageRequest.TargetActor = TargetActor;
 	DamageRequest.AttackData = const_cast<UFE_WeaponAttackData*>(AttackData);
 	DamageRequest.DamageEffectClass = EffectClass;
+	DamageRequest.HitType = HitType;
 	DamageRequest.bHasHitResult = HitResult != nullptr;
 	if (HitResult)
 	{
-		DamageRequest.HitResult = *HitResult;
+		DamageRequest.HitResult = HitType == EFE_DamageHitType::Direct
+			? RefineDirectDamageHit(*HitResult) : *HitResult;
 	}
 	if (SourceAbilitySystem && SourceAbilitySystem->HasAttributeSetForAttribute(
 		UFallenEraAttributeSet::GetAttackPowerAttribute()))
@@ -535,14 +652,18 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	{
 		DamageResult = IFE_Damageable::Execute_ReceiveCombatDamage(TargetActor, DamageRequest);
 	}
+	if (DamageResult.bHandled)
+	{
+		ShowHitDamageDebug(DamageRequest, DamageResult);
+	}
 
 	if (HitResult && AttackData && !DamageResult.bImpactCueHandled && SourceAbilitySystem)
 	{
 		FGameplayEffectContextHandle EffectContext = SourceAbilitySystem->MakeEffectContext();
 		EffectContext.AddSourceObject(const_cast<UFE_WeaponAttackData*>(AttackData));
 		EffectContext.AddInstigator(SourceActor, SourceActor);
-		EffectContext.AddHitResult(*HitResult, true);
-		ExecuteImpactCue(SourceAbilitySystem, SourceActor, EffectContext, *HitResult, AttackData);
+		EffectContext.AddHitResult(DamageRequest.HitResult, true);
+		ExecuteImpactCue(SourceAbilitySystem, SourceActor, EffectContext, DamageRequest.HitResult, AttackData);
 	}
 	return DamageResult.bDamageApplied;
 }
@@ -561,6 +682,13 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 	}
 
 	UAbilitySystemComponent* SourceAbilitySystem = FindAbilitySystemComponent(DamageRequest.SourceActor);
+	if (DamageRequest.HitType == EFE_DamageHitType::Direct && DamageRequest.bHasHitResult && !IsHitZoneDataReady())
+	{
+		// Loading must not silently turn an intended headshot into x1. Area/non-positional damage is independent.
+		Result.bHandled = true;
+		Result.HitRegion = TEXT("NotReady");
+		return Result;
+	}
 	UAbilitySystemComponent* TargetAbilitySystem = FindAbilitySystemComponent(TargetActor);
 	if (!SourceAbilitySystem || !TargetAbilitySystem)
 	{
@@ -585,6 +713,11 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 	{
 		return Result;
 	}
+	Result.HitRegionMultiplier = ResolveHitRegionMultiplier(
+		DamageRequest.bHasHitResult ? DamageRequest.HitResult.BoneName : NAME_None,
+		DamageRequest.HitType, Result.HitRegion);
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_HitRegionMultiplier, Result.HitRegionMultiplier);
 
 	const float HealthBeforeDamage = TargetAbilitySystem->HasAttributeSetForAttribute(
 		UFallenEraAttributeSet::GetHealthAttribute())
@@ -604,11 +737,12 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 		const FVector HitLocation = DamageRequest.bHasHitResult
 			? FVector(DamageRequest.HitResult.ImpactPoint)
 			: TargetActor->GetActorLocation();
+		Result.AppliedDamage = FMath::Max(0.0f, HealthBeforeDamage - HealthAfterDamage);
 		UAISense_Damage::ReportDamageEvent(
 			TargetActor,
 			TargetActor,
 			DamageRequest.SourceActor,
-			FMath::Max(0.0f, HealthBeforeDamage - HealthAfterDamage),
+			Result.AppliedDamage,
 			DamageRequest.SourceActor->GetActorLocation(),
 			HitLocation,
 			TEXT("CombatDamage"));
@@ -627,6 +761,38 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 		ApplyDamageReaction(DamageRequest.SourceActor, DamageRequest.AttackData->AttackReactionData);
 	}
 	return Result;
+}
+
+void UFE_CombatComponent::ShowHitDamageDebug(
+	const FFE_CombatDamageRequest& Request, const FFE_CombatDamageResult& Result)
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (!CVarFEHitDamageDebug.GetValueOnGameThread()) { return; }
+	const FString Bone = Request.HitType == EFE_DamageHitType::Area ? TEXT("N/A")
+		: (Request.bHasHitResult ? Request.HitResult.BoneName.ToString() : TEXT("None"));
+	const FString Message = FString::Printf(TEXT("Hit: %s | Bone: %s | Region: %s | x%.2f | Damage: %.2f%s"),
+		*GetNameSafe(Request.TargetActor), *Bone, *Result.HitRegion.ToString(), Result.HitRegionMultiplier,
+		Result.AppliedDamage, Result.bDamageApplied ? TEXT("") : TEXT(" (rejected)"));
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	if (Pawn && Pawn->IsPlayerControlled() && !Pawn->IsLocallyControlled())
+	{
+		ClientShowHitDamageDebug(Message);
+	}
+	else
+	{
+		ClientShowHitDamageDebug_Implementation(Message);
+	}
+#endif
+}
+
+void UFE_CombatComponent::ClientShowHitDamageDebug_Implementation(const FString& Message)
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (GEngine && GetNetMode() != NM_DedicatedServer)
+	{
+		GEngine->AddOnScreenDebugMessage(INDEX_NONE, 3.0f, FColor::Yellow, Message);
+	}
+#endif
 }
 
 void UFE_CombatComponent::ExecuteImpactCue(

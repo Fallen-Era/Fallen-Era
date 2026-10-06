@@ -9,6 +9,13 @@
 #include "Combat/Ability/Tasks/FEMeleeTraceTask.h"
 #include "GameFramework/Character.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
+#include "Combat/Component/FECombatComponent.h"
+#include "Combat/Collision/FECollisionChannels.h"
+
+ECollisionChannel UFE_MeleeAttackAbility::GetAttackTraceChannel() const
+{
+	return FECollisionChannels::PlayerHitscanTrace;
+}
 
 void UFE_MeleeAttackAbility::ActivateAbility(
 	const FGameplayAbilitySpecHandle Handle,
@@ -27,7 +34,7 @@ void UFE_MeleeAttackAbility::ActivateAbility(
 	bAttackAutomatic = false;
 	bAttackInProgress = false;
 	bMeleeTraceActive = false;
-	DamagedActorsThisAttack.Reset();
+	FirstHitsThisAttack.Reset();
 	NextRepeatedHitTimes.Reset();
 	CachedComboAttacks.Reset();
 
@@ -101,6 +108,8 @@ void UFE_MeleeAttackAbility::EndAbility(
 		FallbackIntervalTask = nullptr;
 	}
 	StopMeleeTrace();
+	FirstHitsThisAttack.Reset();
+	NextRepeatedHitTimes.Reset();
 	bAttackInProgress = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
@@ -127,8 +136,9 @@ void UFE_MeleeAttackAbility::ExecuteAttack(
 	QueryParams.bReturnPhysicalMaterial = true;
 	TArray<FHitResult> Hits;
 	const FCollisionShape TraceShape = FCollisionShape::MakeSphere(FMath::Max(0.0f, MeleeAttackData->TraceRadius));
-	if (!CombatCharacter->GetWorld()->SweepMultiByChannel(
-		Hits, Start, End, FQuat::Identity, GetAttackTraceChannel(), TraceShape, QueryParams))
+	CombatCharacter->GetWorld()->SweepMultiByChannel(
+		Hits, Start, End, FQuat::Identity, GetAttackTraceChannel(), TraceShape, QueryParams);
+	if (Hits.IsEmpty())
 	{
 		return;
 	}
@@ -153,19 +163,19 @@ void UFE_MeleeAttackAbility::ExecuteAttack(
 		}
 		HitActorsThisFrame.Add(TargetActor);
 
-		const bool bAlreadyDamaged = DamagedActorsThisAttack.Contains(TargetActor);
+		const TWeakObjectPtr<AActor> TargetKey(TargetActor);
+		const bool bAlreadyDamaged = FirstHitsThisAttack.Contains(TargetKey);
 		if (!MeleeAttackData->bAllowMultipleHits && bAlreadyDamaged)
 		{
 			continue;
 		}
 		if (!bAlreadyDamaged && MeleeAttackData->MaxHitCount > 0 &&
-			DamagedActorsThisAttack.Num() >= MeleeAttackData->MaxHitCount)
+			FirstHitsThisAttack.Num() >= MeleeAttackData->MaxHitCount)
 		{
 			continue;
 		}
 		if (MeleeAttackData->bAllowMultipleHits && bAlreadyDamaged)
 		{
-			const TWeakObjectPtr<AActor> TargetKey(TargetActor);
 			const float* NextHitTime = NextRepeatedHitTimes.Find(TargetKey);
 			if (NextHitTime && CurrentTime < *NextHitTime)
 			{
@@ -173,8 +183,9 @@ void UFE_MeleeAttackAbility::ExecuteAttack(
 			}
 		}
 
-		ApplyDamage(CombatCharacter, WeaponData, MeleeAttackData, TargetActor, Hit);
-		DamagedActorsThisAttack.Add(TargetActor);
+		const FHitResult& FirstHit = bAlreadyDamaged ? FirstHitsThisAttack.FindChecked(TargetKey)
+			: FirstHitsThisAttack.Add(TargetKey, UFE_CombatComponent::RefineDirectDamageHit(Hit, MeleeAttackData->TraceRadius));
+		ApplyDamage(CombatCharacter, WeaponData, MeleeAttackData, TargetActor, FirstHit);
 		if (MeleeAttackData->bAllowMultipleHits)
 		{
 			NextRepeatedHitTimes.Add(
@@ -182,7 +193,7 @@ void UFE_MeleeAttackAbility::ExecuteAttack(
 				CurrentTime + FMath::Max(0.01f, MeleeAttackData->RepeatedHitInterval));
 		}
 		else if (MeleeAttackData->MaxHitCount > 0 &&
-			DamagedActorsThisAttack.Num() >= MeleeAttackData->MaxHitCount)
+			FirstHitsThisAttack.Num() >= MeleeAttackData->MaxHitCount)
 		{
 			break;
 		}
@@ -202,6 +213,8 @@ void UFE_MeleeAttackAbility::PerformCurrentAttack()
 	}
 
 	bAttackInProgress = true;
+	FirstHitsThisAttack.Reset();
+	NextRepeatedHitTimes.Reset();
 	CacheAttackContext(WeaponData, AttackData);
 	WaitForAttackEvents();
 	PlayAttackPresentation(CombatCharacter, WeaponData, AttackData);
@@ -214,8 +227,6 @@ void UFE_MeleeAttackAbility::StartMeleeTrace()
 		return;
 	}
 
-	DamagedActorsThisAttack.Reset();
-	NextRepeatedHitTimes.Reset();
 	bMeleeTraceActive = true;
 	MeleeTraceTask = UFE_MeleeTraceTask::StartMeleeTrace(this);
 	MeleeTraceTask->OnTraceTick.AddDynamic(this, &UFE_MeleeAttackAbility::ExecuteCurrentTrace);
@@ -231,8 +242,6 @@ void UFE_MeleeAttackAbility::StopMeleeTrace()
 	}
 
 	bMeleeTraceActive = false;
-	DamagedActorsThisAttack.Reset();
-	NextRepeatedHitTimes.Reset();
 }
 
 void UFE_MeleeAttackAbility::ExecuteCurrentTrace()
