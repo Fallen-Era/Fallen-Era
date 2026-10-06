@@ -23,6 +23,7 @@ class UFallenEraAbilitySystemComponent;
 class UFE_CombatComponent;
 class UFE_EquipmentComponent;
 class UFE_CharacterStatusComponent;
+class UFE_PlayerMovementStatsComponent;
 class UNavigationInvokerComponent;
 class UAIPerceptionStimuliSourceComponent;
 struct FInputActionValue;
@@ -104,6 +105,9 @@ public:
 	UFUNCTION(BlueprintPure, Category="FallenEra|Status")
 	UFE_CharacterStatusComponent* GetCharacterStatusComponent() const { return CharacterStatusComponent; }
 
+	UFUNCTION(BlueprintPure, Category="FallenEra|Movement")
+	UFE_PlayerMovementStatsComponent* GetPlayerMovementStatsComponent() const { return PlayerMovementStatsComponent; }
+
 	/** Plays an attack montage on the character's world and first-person meshes. */
 	void PlayAttackMontage(UAnimMontage* Montage);
 
@@ -130,11 +134,18 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
 	TObjectPtr<UInputAction> CombatSwapAction;
 
+	/** Sprint Input Action assigned by the Character Blueprint and mapped by IMC_Default. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Movement|Input")
+	TObjectPtr<UInputAction> SprintAction;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Equipment", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UFE_EquipmentComponent> EquipmentComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Status", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UFE_CharacterStatusComponent> CharacterStatusComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Movement", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UFE_PlayerMovementStatsComponent> PlayerMovementStatsComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UAIPerceptionStimuliSourceComponent> PerceptionStimuliSourceComponent;
@@ -156,6 +167,8 @@ protected:
 	void HandleCombatRightClickStarted(const FInputActionValue& Value);
 	void HandleCombatRightClickReleased(const FInputActionValue& Value);
 	void HandleCombatSwap(const FInputActionValue& Value);
+	void HandleSprintStarted(const FInputActionValue& Value);
+	void HandleSprintReleased(const FInputActionValue& Value);
 
 	void SetCombatInputEnabled(bool bEnabled);
 	void PressCombatAbility(const FGameplayTag& InputTag);

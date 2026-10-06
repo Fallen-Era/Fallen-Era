@@ -4,7 +4,7 @@
 #include "Animation/AnimInstance.h"
 #include "FEBowAnimInstance.generated.h"
 
-/** AnimBP base for a skeletal bow. ChargeAlpha drives a 0..1 draw BlendSpace. */
+/** AnimBP base for a skeletal bow. ChargeAlpha receives the character animation's 0..1 BowDrawAlpha curve. */
 UCLASS(Blueprintable, BlueprintType)
 class FALLENERA_API UFEBowAnimInstance : public UAnimInstance
 {

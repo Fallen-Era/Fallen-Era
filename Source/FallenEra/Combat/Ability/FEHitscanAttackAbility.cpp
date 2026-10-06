@@ -3,6 +3,7 @@
 #include "Abilities/Tasks/AbilityTask_WaitDelay.h"
 #include "Abilities/Tasks/AbilityTask_WaitInputRelease.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Character.h"
@@ -89,6 +90,7 @@ bool UFE_HitscanAttackAbility::FireOnce()
 	PlayAttackPresentation(CombatCharacter, WeaponData, AttackData);
 	if (!CombatCharacter->HasAuthority())
 	{
+		ApplyLocalRecoil(CombatCharacter, AttackData->RecoilSettings);
 		return true;
 	}
 
@@ -110,19 +112,20 @@ bool UFE_HitscanAttackAbility::FireOnce()
 	const int32 PelletCount = FMath::Max(1, AttackData->PelletCount);
 	const int32 MaxTargetsPerPellet = FMath::Max(1, AttackData->PenetrationCount + 1);
 	const float TraceRange = FMath::Max(0.0f, AttackData->TraceRange);
+	const float FinalSpreadAngle = CalculateSpreadAngle(
+		CombatCharacter,
+		AttackData,
+		AttackData->SpreadAngle,
+		AttackData->AccuracySettings);
 
 	for (int32 PelletIndex = 0; PelletIndex < PelletCount; ++PelletIndex)
 	{
 		// De-duplicate one actor within a pellet's penetration path, but allow
 		// separate pellets to contribute damage to the same target.
 		TSet<AActor*> DamagedActors;
-		FVector AimDirection = ViewRotation.Vector();
-		if (AttackData->SpreadAngle > 0.0f)
-		{
-			// Use a fresh random sample for every pellet. The previous fixed-seed stream
-			// repeated the exact same spread pattern on every shot.
-			AimDirection = FMath::VRandCone(AimDirection, FMath::DegreesToRadians(AttackData->SpreadAngle));
-		}
+		// Every pellet gets an independent, uniform cone sample. Intrinsic shotgun
+		// spread stays active even when the Accuracy attribute is 1.
+		const FVector AimDirection = ApplySpreadToDirection(ViewRotation.Vector(), FinalSpreadAngle);
 
 		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_PlayerHitscanAttack), true, CombatCharacter);
 		QueryParams.bReturnPhysicalMaterial = true;
@@ -144,6 +147,35 @@ bool UFE_HitscanAttackAbility::FireOnce()
 		TArray<FHitResult> Hits;
 		CombatCharacter->GetWorld()->LineTraceMultiByChannel(
 			Hits, TraceStart, End, HitscanTraceChannel, QueryParams);
+
+#if ENABLE_DRAW_DEBUG
+		if (AttackData->bDrawDebugTrace)
+		{
+			const FHitResult* BlockingHit = Hits.FindByPredicate(
+				[](const FHitResult& Hit) { return Hit.bBlockingHit; });
+			const FVector DebugEnd = BlockingHit ? BlockingHit->ImpactPoint : End;
+			const bool bHitAnything = !Hits.IsEmpty();
+			DrawDebugLine(
+				CombatCharacter->GetWorld(),
+				TraceStart,
+				DebugEnd,
+				bHitAnything ? FColor::Red : FColor::Green,
+				false,
+				FMath::Max(0.0f, AttackData->DebugTraceDuration),
+				0,
+				FMath::Max(0.0f, AttackData->DebugTraceThickness));
+			for (const FHitResult& DebugHit : Hits)
+			{
+				DrawDebugPoint(
+					CombatCharacter->GetWorld(),
+					DebugHit.ImpactPoint,
+					8.0f,
+					FColor::Yellow,
+					false,
+					FMath::Max(0.0f, AttackData->DebugTraceDuration));
+			}
+		}
+#endif
 
 		int32 AppliedTargetCount = 0;
 		for (const FHitResult& Hit : Hits)
@@ -171,6 +203,8 @@ bool UFE_HitscanAttackAbility::FireOnce()
 			}
 		}
 	}
+	CommitSpreadShot(CombatCharacter, AttackData, AttackData->AccuracySettings);
+	ApplyLocalRecoil(CombatCharacter, AttackData->RecoilSettings);
 	return true;
 }
 

@@ -13,6 +13,8 @@ UFallenEraAttributeSet::UFallenEraAttributeSet()
 	, AttackPower(0.0f)
 	, DefensePower(0.0f)
 	, KnockbackResistance(0.0f)
+	, Accuracy(1.0f)
+	, RecoilControl(1.0f)
 	, Healing(0.0f)
 {
 }
@@ -28,6 +30,10 @@ void UFallenEraAttributeSet::PreAttributeChange(const FGameplayAttribute& Attrib
 	else if (Attribute == GetAttackPowerAttribute() || Attribute == GetDefensePowerAttribute() || Attribute == GetKnockbackResistanceAttribute())
 	{
 		NewValue = FMath::Max(NewValue, 0.0f);
+	}
+	else if (Attribute == GetAccuracyAttribute() || Attribute == GetRecoilControlAttribute())
+	{
+		NewValue = FMath::Clamp(NewValue, 0.0f, 1.0f);
 	}
 	else if (Attribute == GetHealthAttribute())
 	{
@@ -82,6 +88,14 @@ void UFallenEraAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModC
 	{
 		SetDefensePower(FMath::Max(GetDefensePower(), 0.0f));
 	}
+	else if (Data.EvaluatedData.Attribute == GetAccuracyAttribute())
+	{
+		SetAccuracy(FMath::Clamp(GetAccuracy(), 0.0f, 1.0f));
+	}
+	else if (Data.EvaluatedData.Attribute == GetRecoilControlAttribute())
+	{
+		SetRecoilControl(FMath::Clamp(GetRecoilControl(), 0.0f, 1.0f));
+	}
 	
 	else if (Data.EvaluatedData.Attribute == GetStaminaAttribute() || Data.EvaluatedData.Attribute == GetMaxStaminaAttribute())
 	{
@@ -133,6 +147,8 @@ void UFallenEraAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, AttackPower, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, DefensePower, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, KnockbackResistance, COND_None, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, Accuracy, COND_OwnerOnly, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, RecoilControl, COND_OwnerOnly, REPNOTIFY_Always);
 }
 
 void UFallenEraAttributeSet::OnRep_Health(const FGameplayAttributeData& OldValue)
@@ -168,4 +184,14 @@ void UFallenEraAttributeSet::OnRep_DefensePower(const FGameplayAttributeData& Ol
 void UFallenEraAttributeSet::OnRep_KnockbackResistance(const FGameplayAttributeData& OldValue)
 {
 	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, KnockbackResistance, OldValue);
+}
+
+void UFallenEraAttributeSet::OnRep_Accuracy(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, Accuracy, OldValue);
+}
+
+void UFallenEraAttributeSet::OnRep_RecoilControl(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, RecoilControl, OldValue);
 }

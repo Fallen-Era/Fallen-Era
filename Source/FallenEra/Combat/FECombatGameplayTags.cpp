@@ -10,6 +10,8 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(State_Condition_Bleeding, "State.Condition.Bleeding");
 	UE_DEFINE_GAMEPLAY_TAG(State_Condition_Infection, "State.Condition.Infection");
 	UE_DEFINE_GAMEPLAY_TAG(State_Immune_Knockback, "State.Immune.Knockback");
+	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Walking, "State.Movement.Walking");
+	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Sprinting, "State.Movement.Sprinting");
 
 	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Impact, "GameplayCue.Impact");
 
@@ -17,4 +19,6 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Condition_HealthLoss, "SetByCaller.Condition.HealthLoss");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_DefensePower, "SetByCaller.DefensePower");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_KnockbackResistance, "SetByCaller.KnockbackResistance");
+	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Accuracy, "SetByCaller.Accuracy");
+	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_RecoilControl, "SetByCaller.RecoilControl");
 }

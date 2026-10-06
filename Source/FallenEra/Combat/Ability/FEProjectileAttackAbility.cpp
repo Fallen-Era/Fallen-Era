@@ -2,10 +2,12 @@
 
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/MeshComponent.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/Controller.h"
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/Projectile/FECombatProjectile.h"
 #include "Combat/ObjectPool/FEProjectilePoolSubsystem.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
@@ -43,6 +45,7 @@ void UFE_ProjectileAttackAbility::ActivateAbility(
 	{
 		ExecuteAttack(CombatCharacter, WeaponData, AttackData);
 	}
+	ApplyLocalRecoil(CombatCharacter, AttackData->RecoilSettings);
 
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 }
@@ -158,6 +161,11 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 
 	OutLocation = CombatCharacter->GetActorLocation();
 	FRotator LaunchRotation = CombatCharacter->GetActorRotation();
+	FVector CameraTraceStart = FVector::ZeroVector;
+	FVector CameraTraceEnd = FVector::ZeroVector;
+	FVector ResolvedAimPoint = FVector::ZeroVector;
+	bool bHasCameraAimDebugData = false;
+	bool bCameraAimHit = false;
 	const UFE_ChargedProjectileAttackData* ChargedAttackData =
 		Cast<UFE_ChargedProjectileAttackData>(AttackData);
 	const bool bUseFixedThrowOrigin = ChargedAttackData &&
@@ -198,25 +206,86 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 		}
 	}
 
-	if (AttackData->bUseAimDirection)
+	// Resolve a point on the camera-center ray, then converge on it from the actual
+	// projectile socket. A missed trace still produces a valid far aim point.
+	const bool bUseCameraAim = AttackData->bUseAimDirection || AttackData->IsA<UFE_BowAttackData>();
+	if (bUseCameraAim)
 	{
 		if (const AController* Controller = CombatCharacter->GetController())
 		{
 			FVector ViewLocation;
 			FRotator ViewRotation;
 			Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
-			FVector AimPoint = ViewLocation + ViewRotation.Vector() * FMath::Max(0.0f, AttackData->AimTraceRange);
-			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_ProjectileAim), true, CombatCharacter);
-			FHitResult AimHit;
-			if (CombatCharacter->GetWorld() && CombatCharacter->GetWorld()->LineTraceSingleByChannel(
-				AimHit, ViewLocation, AimPoint, GetAttackTraceChannel(), QueryParams))
+
+			FVector AimPoint = ViewLocation
+				+ ViewRotation.Vector() * FMath::Max(0.0f, AttackData->AimTraceRange);
+			CameraTraceStart = ViewLocation;
+			CameraTraceEnd = AimPoint;
+			bHasCameraAimDebugData = true;
+			if (const UWorld* World = CombatCharacter->GetWorld())
 			{
-				AimPoint = AimHit.ImpactPoint;
+				FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_ProjectileAim), true, CombatCharacter);
+				TArray<FHitResult> AimHits;
+				World->LineTraceMultiByChannel(
+					AimHits,
+					ViewLocation,
+					AimPoint,
+					FECollisionChannels::PlayerHitscanTrace,
+					QueryParams);
+
+				// Multi trace also returns overlap responses, which is required because
+				// Enemy collision can overlap the player hitscan channel.
+				if (!AimHits.IsEmpty())
+				{
+					AimPoint = AimHits[0].ImpactPoint;
+					bCameraAimHit = true;
+				}
 			}
-			LaunchRotation = (AimPoint - OutLocation).Rotation();
+			ResolvedAimPoint = AimPoint;
+
+			const FVector SocketToAim = AimPoint - OutLocation;
+			LaunchRotation = SocketToAim.IsNearlyZero()
+				? ViewRotation
+				: SocketToAim.Rotation();
 		}
 	}
 
 	OutDirection = LaunchRotation.Vector().GetSafeNormal();
+	const FVector UnspreadDirection = OutDirection;
+	if (LaunchContext == EFE_ProjectileLaunchContext::Authority)
+	{
+		const float FinalSpreadAngle = CalculateSpreadAngle(
+			CombatCharacter,
+			AttackData,
+			AttackData->SpreadAngle,
+			AttackData->AccuracySettings);
+		OutDirection = ApplySpreadToDirection(OutDirection, FinalSpreadAngle);
+		CommitSpreadShot(CombatCharacter, AttackData, AttackData->AccuracySettings);
+	}
+
+	if (LaunchContext == EFE_ProjectileLaunchContext::Authority &&
+		AttackData->bDrawDebugAim && bHasCameraAimDebugData)
+	{
+		if (UWorld* World = CombatCharacter->GetWorld())
+		{
+			const float Duration = FMath::Max(0.0f, AttackData->DebugAimDuration);
+			const float Thickness = FMath::Max(0.0f, AttackData->DebugAimThickness);
+			const float DirectionLength = FMath::Max(
+				100.0f, FVector::Distance(OutLocation, ResolvedAimPoint));
+			DrawDebugLine(
+				World, CameraTraceStart, CameraTraceEnd,
+				FColor::Blue, false, Duration, 0, Thickness);
+			DrawDebugLine(
+				World, OutLocation, OutLocation + UnspreadDirection * DirectionLength,
+				FColor::Green, false, Duration, 0, Thickness * 2.0f);
+			DrawDebugLine(
+				World, OutLocation, OutLocation + OutDirection * DirectionLength,
+				FColor::Red, false, Duration, 0, Thickness);
+			DrawDebugPoint(
+				World, ResolvedAimPoint, 12.0f,
+				bCameraAimHit ? FColor::Yellow : FColor::White,
+				false, Duration);
+		}
+	}
 	return !OutDirection.IsNearlyZero();
 }

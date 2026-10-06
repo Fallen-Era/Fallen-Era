@@ -14,6 +14,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/PlayerController.h"
 #include "Combat/Interface/FECombatPresentation.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -47,6 +48,7 @@ void UFE_CombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(CameraTransitionTimer);
+		World->GetTimerManager().ClearTimer(RecoilRecoveryTimer);
 	}
 	if (UCameraComponent* Camera = ChargeCamera.Get(); Camera && bOriginalCameraTransformCached)
 	{
@@ -61,7 +63,6 @@ void UFE_CombatComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(UFE_CombatComponent, bDeathCollisionDisabled);
-	DOREPLIFETIME(UFE_CombatComponent, BowChargeAlpha);
 }
 
 UAbilitySystemComponent* UFE_CombatComponent::FindAbilitySystemComponent(AActor* Actor)
@@ -188,28 +189,22 @@ void UFE_CombatComponent::SetBowChargeAlpha(float NewChargeAlpha)
 		return;
 	}
 	BowChargeAlpha = ClampedAlpha;
-	ApplyBowChargeAlphaLocal();
 	BowChargeChangedDelegate.Broadcast(BowChargeAlpha);
 }
 
-void UFE_CombatComponent::OnRep_BowChargeAlpha()
+void UFE_CombatComponent::SetBowVisualAlpha(float NewVisualAlpha)
 {
-	ApplyBowChargeAlphaLocal();
-	BowChargeChangedDelegate.Broadcast(BowChargeAlpha);
-}
-
-void UFE_CombatComponent::ApplyBowChargeAlphaLocal()
-{
+	const float ClampedAlpha = FMath::Clamp(NewVisualAlpha, 0.0f, 1.0f);
 	const UFE_EquipmentComponent* Equipment = GetOwner()
 		? GetOwner()->FindComponentByClass<UFE_EquipmentComponent>()
 		: nullptr;
-	auto ApplyToMesh = [this](UMeshComponent* Mesh)
+	auto ApplyToMesh = [ClampedAlpha](UMeshComponent* Mesh)
 	{
 		if (USkeletalMeshComponent* SkeletalMesh = Cast<USkeletalMeshComponent>(Mesh))
 		{
 			if (UFEBowAnimInstance* BowAnim = Cast<UFEBowAnimInstance>(SkeletalMesh->GetAnimInstance()))
 			{
-				BowAnim->SetChargeAlpha(BowChargeAlpha);
+				BowAnim->SetChargeAlpha(ClampedAlpha);
 			}
 		}
 	};
@@ -217,6 +212,99 @@ void UFE_CombatComponent::ApplyBowChargeAlphaLocal()
 	{
 		ApplyToMesh(Equipment->GetEquippedWorldWeaponMesh());
 		ApplyToMesh(Equipment->GetEquippedFirstPersonWeaponMesh());
+	}
+}
+
+void UFE_CombatComponent::ApplyLocalWeaponRecoil(
+	const FFE_RecoilSettings& RecoilSettings,
+	float RecoilControl)
+{
+	APawn* Pawn = Cast<APawn>(GetOwner());
+	APlayerController* PlayerController = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
+	UWorld* World = GetWorld();
+	if (!Pawn || !Pawn->IsLocallyControlled() || !PlayerController || !World)
+	{
+		return;
+	}
+
+	const float RecoilScale = 1.0f - FMath::Clamp(RecoilControl, 0.0f, 1.0f);
+	if (RecoilScale <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const float MinPitch = FMath::Min(RecoilSettings.MinPitch, RecoilSettings.MaxPitch);
+	const float MaxPitch = FMath::Max(RecoilSettings.MinPitch, RecoilSettings.MaxPitch);
+	const float MinYaw = FMath::Min(RecoilSettings.MinYaw, RecoilSettings.MaxYaw);
+	const float MaxYaw = FMath::Max(RecoilSettings.MinYaw, RecoilSettings.MaxYaw);
+	const FRotator Kick(
+		FMath::FRandRange(MinPitch, MaxPitch) * RecoilScale,
+		FMath::FRandRange(MinYaw, MaxYaw) * RecoilScale,
+		0.0f);
+	if (Kick.IsNearlyZero())
+	{
+		return;
+	}
+
+	PlayerController->SetControlRotation((PlayerController->GetControlRotation() + Kick).GetNormalized());
+	PendingRecoilRecovery += FRotator(-Kick.Pitch, -Kick.Yaw, 0.0);
+
+	const float RecoveryDuration = FMath::Max(0.01f, RecoilSettings.RecoveryDuration);
+	RecoilPitchRecoverySpeed = FMath::Max(
+		RecoilPitchRecoverySpeed,
+		FMath::Abs(PendingRecoilRecovery.Pitch) / RecoveryDuration);
+	RecoilYawRecoverySpeed = FMath::Max(
+		RecoilYawRecoverySpeed,
+		FMath::Abs(PendingRecoilRecovery.Yaw) / RecoveryDuration);
+	LastRecoilRecoveryTime = World->GetTimeSeconds();
+	if (!World->GetTimerManager().IsTimerActive(RecoilRecoveryTimer))
+	{
+		World->GetTimerManager().SetTimer(
+			RecoilRecoveryTimer,
+			this,
+			&UFE_CombatComponent::HandleRecoilRecovery,
+			1.0f / 60.0f,
+			true);
+	}
+}
+
+void UFE_CombatComponent::HandleRecoilRecovery()
+{
+	APawn* Pawn = Cast<APawn>(GetOwner());
+	APlayerController* PlayerController = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
+	UWorld* World = GetWorld();
+	if (!Pawn || !Pawn->IsLocallyControlled() || !PlayerController || !World)
+	{
+		if (World)
+		{
+			World->GetTimerManager().ClearTimer(RecoilRecoveryTimer);
+		}
+		PendingRecoilRecovery = FRotator::ZeroRotator;
+		return;
+	}
+
+	const float CurrentTime = World->GetTimeSeconds();
+	const float DeltaTime = FMath::Max(0.0f, CurrentTime - LastRecoilRecoveryTime);
+	LastRecoilRecoveryTime = CurrentTime;
+	const auto ConsumeAxis = [DeltaTime](double& Remaining, double Speed)
+	{
+		const double Step = FMath::Min(FMath::Abs(Remaining), Speed * DeltaTime);
+		const double Applied = FMath::Sign(Remaining) * Step;
+		Remaining -= Applied;
+		return Applied;
+	};
+
+	const double PitchStep = ConsumeAxis(PendingRecoilRecovery.Pitch, RecoilPitchRecoverySpeed);
+	const double YawStep = ConsumeAxis(PendingRecoilRecovery.Yaw, RecoilYawRecoverySpeed);
+	PlayerController->SetControlRotation(
+		(PlayerController->GetControlRotation() + FRotator(PitchStep, YawStep, 0.0f)).GetNormalized());
+
+	if (PendingRecoilRecovery.IsNearlyZero(0.001f))
+	{
+		PendingRecoilRecovery = FRotator::ZeroRotator;
+		RecoilPitchRecoverySpeed = 0.0f;
+		RecoilYawRecoverySpeed = 0.0f;
+		World->GetTimerManager().ClearTimer(RecoilRecoveryTimer);
 	}
 }
 
@@ -404,6 +492,7 @@ void UFE_CombatComponent::StopWeaponActionPresentationLocal()
 	}
 	ActiveWeaponMeshMontage = nullptr;
 	SetBowChargeAlpha(0.0f);
+	SetBowVisualAlpha(0.0f);
 	StopChargeProjectilePresentationLocal();
 	StopChargeCameraPresentation();
 }

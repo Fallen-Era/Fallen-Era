@@ -1,6 +1,7 @@
 #include "Combat/Ability/FEPlayerAttackAbility.h"
 
 #include "AbilitySystemComponent.h"
+#include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
 #include "Combat/FECombatGameplayTags.h"
 #include "GameplayEffect.h"
 #include "GameFramework/Character.h"
@@ -268,5 +269,94 @@ void UFE_PlayerAttackAbility::ApplyDamage(
 			TargetActor,
 			HitResult,
 			AttackData);
+	}
+}
+
+float UFE_PlayerAttackAbility::CalculateSpreadAngle(
+	const ACharacter* CombatCharacter,
+	const UFE_WeaponAttackData* AttackData,
+	float IntrinsicSpreadAngle,
+	const FFE_AccuracySettings& AccuracySettings) const
+{
+	const UWorld* World = CombatCharacter ? CombatCharacter->GetWorld() : nullptr;
+	if (!World || !AttackData)
+	{
+		return FMath::Max(0.0f, IntrinsicSpreadAngle);
+	}
+
+	const float CurrentTime = World->GetTimeSeconds();
+	if (SpreadAttackData.Get() != AttackData)
+	{
+		SpreadAttackData = const_cast<UFE_WeaponAttackData*>(AttackData);
+		CurrentSpreadBloom = 0.0f;
+		LastSpreadUpdateTime = CurrentTime;
+	}
+	else
+	{
+		const float Elapsed = FMath::Max(0.0f, CurrentTime - LastSpreadUpdateTime);
+		CurrentSpreadBloom = FMath::Max(
+			0.0f,
+			CurrentSpreadBloom - FMath::Max(0.0f, AccuracySettings.SpreadRecoveryPerSecond) * Elapsed);
+		LastSpreadUpdateTime = CurrentTime;
+	}
+
+	float Accuracy = 1.0f;
+	if (const UAbilitySystemComponent* AbilitySystem = GetAbilitySystemComponentFromActorInfo();
+		AbilitySystem && AbilitySystem->HasAttributeSetForAttribute(UFallenEraAttributeSet::GetAccuracyAttribute()))
+	{
+		Accuracy = FMath::Clamp(
+			AbilitySystem->GetNumericAttribute(UFallenEraAttributeSet::GetAccuracyAttribute()),
+			0.0f,
+			1.0f);
+	}
+
+	return FMath::Max(0.0f, IntrinsicSpreadAngle) +
+		FMath::Max(0.0f, AccuracySettings.MaxAccuracyPenaltyAngle) * (1.0f - Accuracy) +
+		CurrentSpreadBloom;
+}
+
+FVector UFE_PlayerAttackAbility::ApplySpreadToDirection(
+	const FVector& Direction,
+	float SpreadAngle) const
+{
+	const FVector NormalizedDirection = Direction.GetSafeNormal();
+	return SpreadAngle > KINDA_SMALL_NUMBER
+		? FMath::VRandCone(NormalizedDirection, FMath::DegreesToRadians(SpreadAngle))
+		: NormalizedDirection;
+}
+
+void UFE_PlayerAttackAbility::CommitSpreadShot(
+	const ACharacter* CombatCharacter,
+	const UFE_WeaponAttackData* AttackData,
+	const FFE_AccuracySettings& AccuracySettings) const
+{
+	// First update recovery at the exact shot time, then add one shot of bloom.
+	CalculateSpreadAngle(CombatCharacter, AttackData, 0.0f, AccuracySettings);
+	CurrentSpreadBloom = FMath::Clamp(
+		CurrentSpreadBloom + FMath::Max(0.0f, AccuracySettings.SpreadBloomPerShot),
+		0.0f,
+		FMath::Max(0.0f, AccuracySettings.MaxSpreadBloom));
+}
+
+void UFE_PlayerAttackAbility::ApplyLocalRecoil(
+	const ACharacter* CombatCharacter,
+	const FFE_RecoilSettings& RecoilSettings) const
+{
+	if (!CombatCharacter || !CombatCharacter->IsLocallyControlled())
+	{
+		return;
+	}
+
+	float RecoilControl = 1.0f;
+	if (const UAbilitySystemComponent* AbilitySystem = GetAbilitySystemComponentFromActorInfo();
+		AbilitySystem && AbilitySystem->HasAttributeSetForAttribute(UFallenEraAttributeSet::GetRecoilControlAttribute()))
+	{
+		RecoilControl = AbilitySystem->GetNumericAttribute(
+			UFallenEraAttributeSet::GetRecoilControlAttribute());
+	}
+
+	if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
+	{
+		Combat->ApplyLocalWeaponRecoil(RecoilSettings, RecoilControl);
 	}
 }

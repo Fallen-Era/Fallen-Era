@@ -404,12 +404,8 @@ void UFE_EquipmentComponent::ApplyEquippedWeaponOffense()
 	}
 	WeaponAbilitySystem = AbilitySystem;
 
-	const float WeaponOffense = CurrentWeaponData->WeaponStat.Offense;
-
-	if (WeaponOffense <= 0.0f)
-	{
-		return;
-	}
+	const FFE_WeaponStat& WeaponStats = CurrentWeaponData->WeaponStat;
+	const float WeaponOffense = FMath::Max(WeaponStats.Offense, 0.0f);
 
 	const FGameplayEffectContextHandle EffectContext = AbilitySystem->MakeEffectContext();
 	const FGameplayEffectSpecHandle EffectSpec = AbilitySystem->MakeOutgoingSpec(
@@ -420,6 +416,14 @@ void UFE_EquipmentComponent::ApplyEquippedWeaponOffense()
 	}
 
 	EffectSpec.Data->SetSetByCallerMagnitude(FallenEraCombatGameplayTags::SetByCaller_AttackPower, WeaponOffense);
+	// Attribute defaults are 1. Add only the equipped weapon's deviation so later
+	// attachment/aim/trait GameplayEffects can continue to stack additively.
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Accuracy,
+		FMath::Clamp(WeaponStats.Accuracy, 0.0f, 1.0f) - 1.0f);
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_RecoilControl,
+		FMath::Clamp(WeaponStats.RecoilControl, 0.0f, 1.0f) - 1.0f);
 	EquippedWeaponOffenseEffectHandle = AbilitySystem->ApplyGameplayEffectSpecToSelf(*EffectSpec.Data.Get());
 }
 

@@ -30,9 +30,10 @@ void UFE_BowAttackAbility::StartSpecializedChargePresentation()
 				BowData->ChargeCameraBlendOutTime);
 		}
 		Combat->SetBowChargeAlpha(0.0f);
+		Combat->SetBowVisualAlpha(0.0f);
 	}
 
-	if (Character->HasAuthority() || Character->IsLocallyControlled())
+	if (Character->IsLocallyControlled())
 	{
 		UpdateChargePresentation();
 		ScheduleChargePresentationUpdate();
@@ -51,6 +52,7 @@ void UFE_BowAttackAbility::StopSpecializedChargePresentation()
 		if (UFE_CombatComponent* Combat = Character->FindComponentByClass<UFE_CombatComponent>())
 		{
 			Combat->SetBowChargeAlpha(0.0f);
+			Combat->SetBowVisualAlpha(0.0f);
 			if (Character->IsLocallyControlled())
 			{
 				Combat->StopChargeCameraPresentation();

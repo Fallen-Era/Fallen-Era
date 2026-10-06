@@ -1,9 +1,9 @@
 #include "Combat/Projectile/FECombatProjectile.h"
 
+#include "Components/ShapeComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "GameplayEffect.h"
-#include "Components/CapsuleComponent.h"
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/ObjectPool/FEProjectilePoolSubsystem.h"
@@ -15,22 +15,15 @@ AFE_CombatProjectile::AFE_CombatProjectile()
 	bReplicates = true;
 	SetReplicateMovement(true);
 
-	UCapsuleComponent* DefaultCollisionComponent = CreateDefaultSubobject<UCapsuleComponent>(TEXT("CollisionComponent"));
-	DefaultCollisionComponent->InitCapsuleSize(5.0f, 10.0f);
-	SetRootComponent(DefaultCollisionComponent);
-
 	ProjectileMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ProjectileMesh"));
-	ProjectileMesh->SetupAttachment(DefaultCollisionComponent);
+	SetRootComponent(ProjectileMesh);
 	ProjectileMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
-	ProjectileMovement->UpdatedComponent = DefaultCollisionComponent;
 	ProjectileMovement->bRotationFollowsVelocity = true;
 	ProjectileMovement->bShouldBounce = false;
 	ProjectileMovement->bForceSubStepping = true;
 	ProjectileMovement->SetIsReplicated(true);
-
-	SetActiveCollisionComponent(DefaultCollisionComponent);
 }
 
 void AFE_CombatProjectile::SetActiveCollisionComponent(UShapeComponent* NewCollisionComponent)

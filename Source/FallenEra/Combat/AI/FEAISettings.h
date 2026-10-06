@@ -51,6 +51,10 @@ struct FALLENERA_API FSAITargetSelectionSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Target Selection", meta=(ClampMin="0.0"))
 	float TargetMemoryDuration = 8.0f;
 
+	/** Other remembered players must be inside this radius before they can replace the current target. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Target Selection", meta=(ClampMin="0.0"))
+	float TargetEvaluationRadius = 3000.0f;
+
 	/** Small stable per-enemy preference that breaks equal-score ties without random retargeting. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Target Selection", meta=(ClampMin="0.0"))
 	float PreferenceVariance = 8.0f;

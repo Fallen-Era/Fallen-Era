@@ -20,6 +20,7 @@ struct FFE_AITargetMemory
 	float LastSeenTime = -1.0f;
 	float LastDamageTime = -1.0f;
 	float AccumulatedDamage = 0.0f;
+	bool bReceivedDamageFromActor = false;
 };
 
 /** Event-driven sight with a staggered low-frequency decision loop for open-world enemies. */
@@ -56,7 +57,7 @@ private:
 	void UpdatePatrol(AFE_EnemyCharacter& EnemyCharacter);
 	void UpdateInvestigation(AFE_EnemyCharacter& EnemyCharacter);
 	void UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AActor& TargetActor);
-	void EvaluateBestCombatTarget(bool bIgnoreMinimumLockTime = false);
+	void EvaluateBestCombatTarget();
 	void SelectCombatTarget(AActor* TargetActor);
 	void ClearTarget();
 	void SetInvestigationLocation(const FVector& Location);
@@ -67,8 +68,11 @@ private:
 	void SetDecisionTimerRate(float Interval, float InitialDelay = -1.0f);
 	void ScheduleNextPatrolRequest();
 	void ApplyPerceptionSettings();
+	void SetCombatSightMode(bool bEnabled);
 	bool IsPlayerTarget(const AActor* Actor) const;
 	bool HasActiveSightStimulus(const AActor& Actor) const;
+	bool IsPersistentDamageTarget(const AActor& Actor) const;
+	bool IsWithinTargetEvaluationRadius(const AActor& Actor) const;
 	FFE_AITargetMemory& FindOrAddTargetMemory(AActor& Actor);
 	const FFE_AITargetMemory* FindTargetMemory(const AActor& Actor) const;
 	void RecordSightStimulus(AActor& Actor, const FAIStimulus& Stimulus);
@@ -100,6 +104,10 @@ private:
 
 	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Perception|Sight", meta=(ClampMin="0.0", ClampMax="180.0"))
 	float PeripheralVisionAngleDegrees = 70.0f;
+
+	/** Unreal stores the half-angle; 180 degrees gives full 360-degree combat awareness. */
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Perception|Sight", meta=(ClampMin="0.0", ClampMax="180.0"))
+	float CombatPeripheralVisionAngleDegrees = 180.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Perception|Sight", meta=(ClampMin="0.0"))
 	float SightMaxAge = 2.0f;
@@ -152,5 +160,8 @@ private:
 	bool bUsesManagedSimulation = false;
 	bool bCurrentTargetVisible = false;
 	bool bEncounterTargetPendingSight = false;
+	/** Encounter-spawned enemies keep pursuing their current valid target without sight timeout. */
+	bool bEncounterPursuitActive = false;
 	bool bHasInvestigationLocation = false;
+	bool bCombatSightMode = false;
 };

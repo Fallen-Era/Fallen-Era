@@ -22,6 +22,7 @@
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Component/FECharacterStatusComponent.h"
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Component/FEPlayerMovementStatsComponent.h"
 #include "NavigationInvokerComponent.h"
 #include "Perception/AIPerceptionStimuliSourceComponent.h"
 #include "Perception/AISense_Sight.h"
@@ -58,10 +59,13 @@ AFallenEraCharacter::AFallenEraCharacter()
 	// Configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+	GetCharacterMovement()->MaxWalkSpeed = 300.0f;
 
 	CombatComponent = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("CombatComponent"));
 	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
 	CharacterStatusComponent = CreateDefaultSubobject<UFE_CharacterStatusComponent>(TEXT("CharacterStatusComponent"));
+	PlayerMovementStatsComponent =
+		CreateDefaultSubobject<UFE_PlayerMovementStatsComponent>(TEXT("PlayerMovementStatsComponent"));
 	PerceptionStimuliSourceComponent =
 		CreateDefaultSubobject<UAIPerceptionStimuliSourceComponent>(TEXT("PerceptionStimuliSourceComponent"));
 	NavigationInvokerComponent = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvokerComponent"));
@@ -69,7 +73,6 @@ AFallenEraCharacter::AFallenEraCharacter()
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("Player"));
 	bReplicates = true;
 }
-
 UAbilitySystemComponent* AFallenEraCharacter::GetAbilitySystemComponent() const
 {
 	return GetFallenEraAbilitySystemComponent();
@@ -102,6 +105,10 @@ void AFallenEraCharacter::BeginPlay()
 		PerceptionStimuliSourceComponent->RegisterForSense(UAISense_Sight::StaticClass());
 	}
 	SetCombatInputEnabled(true);
+	if (PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->RefreshMovementState();
+	}
 }
 
 void AFallenEraCharacter::PossessedBy(AController* NewController)
@@ -116,6 +123,10 @@ void AFallenEraCharacter::PossessedBy(AController* NewController)
 	{
 		EquipmentComponent->RefreshEquipment();
 	}
+	if (PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->RefreshMovementState();
+	}
 }
 
 void AFallenEraCharacter::OnRep_PlayerState()
@@ -129,6 +140,10 @@ void AFallenEraCharacter::OnRep_PlayerState()
 	if (EquipmentComponent)
 	{
 		EquipmentComponent->RefreshEquipment();
+	}
+	if (PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->RefreshMovementState();
 	}
 }
 
@@ -189,6 +204,19 @@ void AFallenEraCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 			EnhancedInputComponent->BindAction(
 				CombatSwapAction, ETriggerEvent::Started,
 				this, &AFallenEraCharacter::HandleCombatSwap);
+		}
+
+		if (SprintAction)
+		{
+			EnhancedInputComponent->BindAction(
+				SprintAction, ETriggerEvent::Started,
+				this, &AFallenEraCharacter::HandleSprintStarted);
+			EnhancedInputComponent->BindAction(
+				SprintAction, ETriggerEvent::Completed,
+				this, &AFallenEraCharacter::HandleSprintReleased);
+			EnhancedInputComponent->BindAction(
+				SprintAction, ETriggerEvent::Canceled,
+				this, &AFallenEraCharacter::HandleSprintReleased);
 		}
 	}
 	else
@@ -336,6 +364,23 @@ void AFallenEraCharacter::HandleCombatSwap(const FInputActionValue& Value)
 	if (Value.Get<bool>() && EquipmentComponent)
 	{
 		EquipmentComponent->CycleWeapon();
+	}
+}
+
+void AFallenEraCharacter::HandleSprintStarted(const FInputActionValue& Value)
+{
+	if (Value.Get<bool>() && PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->SetSprinting(true);
+	}
+}
+
+void AFallenEraCharacter::HandleSprintReleased(const FInputActionValue& Value)
+{
+	(void)Value;
+	if (PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->SetSprinting(false);
 	}
 }
 

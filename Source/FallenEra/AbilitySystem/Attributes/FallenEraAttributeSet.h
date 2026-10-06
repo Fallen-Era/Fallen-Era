@@ -54,6 +54,16 @@ public:
 	FGameplayAttributeData KnockbackResistance;
 	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, KnockbackResistance)
 
+	/** Normalized aim accuracy. 1 is perfect; lower values add weapon-configured spread. */
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_Accuracy, Category="Attributes|Combat")
+	FGameplayAttributeData Accuracy;
+	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, Accuracy)
+
+	/** Normalized recoil control. 1 removes camera recoil; lower values increase it. */
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_RecoilControl, Category="Attributes|Combat")
+	FGameplayAttributeData RecoilControl;
+	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, RecoilControl)
+
 	UPROPERTY(BlueprintReadOnly, Category="Attributes|Meta")
 	FGameplayAttributeData Healing;
 	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, Healing)
@@ -79,6 +89,12 @@ protected:
 
 	UFUNCTION()
 	void OnRep_KnockbackResistance(const FGameplayAttributeData& OldValue);
+
+	UFUNCTION()
+	void OnRep_Accuracy(const FGameplayAttributeData& OldValue);
+
+	UFUNCTION()
+	void OnRep_RecoilControl(const FGameplayAttributeData& OldValue);
 
 private:
 	void UpdateDeadStateTag();

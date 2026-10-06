@@ -4,7 +4,6 @@
 #include "GameFramework/Actor.h"
 #include "FECombatProjectile.generated.h"
 
-class UCapsuleComponent;
 class UShapeComponent;
 class UStaticMeshComponent;
 class UProjectileMovementComponent;
@@ -13,8 +12,8 @@ class UFE_WeaponItemData;
 class UFE_WeaponAttackData;
 class UFE_ProjectilePoolSubsystem;
 
-/** Server-authoritative projectile that routes impact damage through CombatComponent. */
-UCLASS(Blueprintable)
+/** Server-authoritative projectile base. Concrete subclasses must provide the active collision shape. */
+UCLASS(Abstract, Blueprintable)
 class FALLENERA_API AFE_CombatProjectile : public AActor
 {
 	GENERATED_BODY()

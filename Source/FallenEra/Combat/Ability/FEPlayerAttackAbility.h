@@ -8,6 +8,8 @@ class ACharacter;
 class UAnimMontage;
 class UFE_WeaponAttackData;
 class UFE_WeaponItemData;
+struct FFE_AccuracySettings;
+struct FFE_RecoilSettings;
 
 /** Reusable attack ability that executes the attack data owned by the equipped weapon. */
 UCLASS(Abstract, Blueprintable)
@@ -64,6 +66,21 @@ protected:
 		AActor* TargetActor,
 		const FHitResult& HitResult) const;
 
+	/** Resolves intrinsic + attribute penalty + recovered bloom without advancing bloom. */
+	float CalculateSpreadAngle(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponAttackData* AttackData,
+		float IntrinsicSpreadAngle,
+		const FFE_AccuracySettings& AccuracySettings) const;
+	FVector ApplySpreadToDirection(const FVector& Direction, float SpreadAngle) const;
+	void CommitSpreadShot(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponAttackData* AttackData,
+		const FFE_AccuracySettings& AccuracySettings) const;
+	void ApplyLocalRecoil(
+		const ACharacter* CombatCharacter,
+		const FFE_RecoilSettings& RecoilSettings) const;
+
 	virtual void ExecuteAttack(const ACharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const;
 
 	UPROPERTY(Transient)
@@ -74,4 +91,8 @@ protected:
 
 	UPROPERTY(Transient)
 	TSubclassOf<UGameplayEffect> CachedDamageEffectClass;
+
+	mutable TWeakObjectPtr<UFE_WeaponAttackData> SpreadAttackData;
+	mutable float CurrentSpreadBloom = 0.0f;
+	mutable float LastSpreadUpdateTime = 0.0f;
 };

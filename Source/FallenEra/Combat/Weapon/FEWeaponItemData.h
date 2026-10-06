@@ -41,6 +41,58 @@ struct FALLENERA_API FFE_WeaponStat
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon Stat", meta=(ClampMin="0.0"))
 	float Offense = 0.0f;
+
+	/** Equipped baseline. 1 is perfect accuracy; temporary GAS effects may lower it. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon Stat", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float Accuracy = 1.0f;
+
+	/** Equipped baseline. 1 removes recoil; temporary GAS effects may lower it. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon Stat", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float RecoilControl = 1.0f;
+};
+
+/** Accuracy penalty and lazy, shot-driven bloom. Intrinsic weapon spread remains separate. */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FFE_AccuracySettings
+{
+	GENERATED_BODY()
+
+	/** Extra cone half-angle at Accuracy 0. Accuracy 1 contributes zero penalty. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Accuracy", meta=(ClampMin="0.0", Units="deg"))
+	float MaxAccuracyPenaltyAngle = 0.0f;
+
+	/** Cone angle added after every shot. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Accuracy", meta=(ClampMin="0.0", Units="deg"))
+	float SpreadBloomPerShot = 0.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Accuracy", meta=(ClampMin="0.0", Units="deg"))
+	float MaxSpreadBloom = 0.0f;
+
+	/** Bloom recovered per second. Recovery is evaluated only when another shot is fired. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Accuracy", meta=(ClampMin="0.0", Units="deg/s"))
+	float SpreadRecoveryPerSecond = 0.0f;
+};
+
+/** Owning-client camera recoil. Actual hit/projectile direction stays server authoritative. */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FFE_RecoilSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(ClampMin="0.0", Units="deg"))
+	float MinPitch = 0.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(ClampMin="0.0", Units="deg"))
+	float MaxPitch = 0.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(Units="deg"))
+	float MinYaw = 0.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(Units="deg"))
+	float MaxYaw = 0.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(ClampMin="0.01", Units="s"))
+	float RecoveryDuration = 0.15f;
 };
 
 /** Reaction values applied after a damage execution succeeds. */
@@ -160,6 +212,12 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan", meta=(ClampMin="0.0"))
 	float SpreadAngle = 0.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan|Accuracy")
+	FFE_AccuracySettings AccuracySettings;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan|Recoil")
+	FFE_RecoilSettings RecoilSettings;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan", meta=(ClampMin="1"))
 	int32 PelletCount = 1;
 
@@ -173,6 +231,18 @@ public:
 	/** When true, the Ability remains active and fires while the input is held. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan|Weapon")
 	bool bAutomatic = true;
+
+	/** Draws the authoritative pellet trace. Red means blocking hit; green means no hit. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan|Debug")
+	bool bDrawDebugTrace = true;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan|Debug",
+		meta=(EditCondition="bDrawDebugTrace", ClampMin="0.0", Units="s"))
+	float DebugTraceDuration = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan|Debug",
+		meta=(EditCondition="bDrawDebugTrace", ClampMin="0.0"))
+	float DebugTraceThickness = 1.5f;
 };
 
 /** Parameters shared by every projectile attack, regardless of how launch speed is resolved. */
@@ -194,12 +264,31 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile")
 	bool bUseAimDirection = true;
 
-	/** Camera trace distance used to resolve a world-space aim point before firing from the muzzle. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile", meta=(ClampMin="0.0"))
+	/** Maximum camera-center trace distance. A miss uses the trace end as the aim point. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Aim", meta=(ClampMin="0.0", Units="cm"))
 	float AimTraceRange = 10000.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Timing", meta=(ClampMin="0.01"))
 	float FireInterval = 0.1f;
+
+	/** Intrinsic projectile cone half-angle, independent of the Accuracy attribute. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Accuracy", meta=(ClampMin="0.0", Units="deg"))
+	float SpreadAngle = 0.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Accuracy")
+	FFE_AccuracySettings AccuracySettings;
+
+	/** Draws camera aim, socket convergence, and final spread direction on authority. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Debug")
+	bool bDrawDebugAim = true;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Debug",
+		meta=(EditCondition="bDrawDebugAim", ClampMin="0.0", Units="s"))
+	float DebugAimDuration = 2.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Debug",
+		meta=(EditCondition="bDrawDebugAim", ClampMin="0.0"))
+	float DebugAimThickness = 1.5f;
 };
 
 /** Immediate projectile parameters. Launch speed is fixed per attack. */
@@ -211,6 +300,9 @@ class FALLENERA_API UFE_ProjectileAttackData : public UFE_ProjectileAttackDataBa
 public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Launch", meta=(ClampMin="0.0"))
 	float InitialSpeed = 3000.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Recoil")
+	FFE_RecoilSettings RecoilSettings;
 };
 
 /** Hold-to-charge projectile parameters shared by bows and throwable weapons. */

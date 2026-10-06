@@ -4,7 +4,7 @@
 #include "GameplayEffect.h"
 #include "FEWeaponOffenseGameplayEffect.generated.h"
 
-/** Infinite effect used to add the equipped weapon's Offense to AttackPower. */
+/** Infinite effect used to apply equipped weapon offense and normalized handling stats. */
 UCLASS()
 class FALLENERA_API UFE_WeaponOffenseGameplayEffect : public UGameplayEffect
 {

@@ -65,10 +65,16 @@ public:
 		float BlendOutDuration);
 	void StopChargeCameraPresentation();
 
-	/** Local presentation state consumed by BowCrossHairWidget. */
+	/** Owning-client presentation state consumed by BowCrossHairWidget. */
 	void SetBowChargeAlpha(float NewChargeAlpha);
 	float GetBowChargeAlpha() const { return BowChargeAlpha; }
 	FOnFEBowChargeChanged& OnBowChargeChanged() { return BowChargeChangedDelegate; }
+
+	/** Applies an animation-curve value to both equipped bow meshes without replication. */
+	void SetBowVisualAlpha(float NewVisualAlpha);
+
+	/** Applies and smoothly recovers owning-player control rotation. Never replicated or multicast. */
+	void ApplyLocalWeaponRecoil(const FFE_RecoilSettings& RecoilSettings, float RecoilControl);
 
 	/** Cancels montage/preview presentation before equipment data is replaced. */
 	void StopWeaponActionPresentation(bool bPredictedByOwner);
@@ -171,6 +177,7 @@ private:
 	void StopWeaponActionPresentationLocal();
 	void StartCameraTransition(const FTransform& TargetTransform, float Duration, bool bReturning);
 	void HandleCameraTransition();
+	void HandleRecoilRecovery();
 	void PlayWeaponAttackEffectsLocal(
 		USoundBase* AttackSound,
 		float SoundVolume,
@@ -179,11 +186,6 @@ private:
 		UParticleSystem* MuzzleParticleSystem,
 		FName MuzzleSocketName,
 		const FVector& MuzzleScale);
-	void ApplyBowChargeAlphaLocal();
-
-	UFUNCTION()
-	void OnRep_BowChargeAlpha();
-
 	bool ApplyDamageInternal(
 		AActor* TargetActor,
 		TSubclassOf<UGameplayEffect> EffectClass,
@@ -220,7 +222,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> ActiveWeaponMeshMontage;
 
-	UPROPERTY(ReplicatedUsing=OnRep_BowChargeAlpha)
+	UPROPERTY(Transient)
 	float BowChargeAlpha = 0.0f;
 	FOnFEBowChargeChanged BowChargeChangedDelegate;
 
@@ -229,12 +231,17 @@ private:
 	FTransform CameraTransitionStartTransform;
 	FTransform CameraTransitionTargetTransform;
 	FTimerHandle CameraTransitionTimer;
+	FTimerHandle RecoilRecoveryTimer;
 	float CameraTransitionStartTime = 0.0f;
 	float CameraTransitionDuration = 0.0f;
 	float CameraBlendOutDuration = 0.2f;
 	bool bOriginalCameraTransformCached = false;
 	bool bChargeCameraPresentationActive = false;
 	bool bCameraTransitionReturning = false;
+	FRotator PendingRecoilRecovery = FRotator::ZeroRotator;
+	float RecoilPitchRecoverySpeed = 0.0f;
+	float RecoilYawRecoverySpeed = 0.0f;
+	float LastRecoilRecoveryTime = 0.0f;
 
 	bool bReactionStunActive = false;
 	bool bDeathMontagePlayed = false;

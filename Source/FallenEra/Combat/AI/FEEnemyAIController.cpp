@@ -120,6 +120,7 @@ bool AFE_EnemyAIController::SetEncounterCombatTarget(AActor* TargetActor)
 	SelectCombatTarget(TargetActor);
 	bCurrentTargetVisible = HasActiveSightStimulus(*TargetActor);
 	bEncounterTargetPendingSight = !bCurrentTargetVisible;
+	bEncounterPursuitActive = true;
 	TargetLostTime = -1.0f;
 	return true;
 }
@@ -199,9 +200,15 @@ void AFE_EnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStim
 		else if (bDamageStimulus)
 		{
 			RecordDamageStimulus(*Actor, Stimulus);
+			// Damage is an authoritative aggro event. Select the instigator immediately;
+			// the regular score pass may rebalance to nearby players after the lock time.
+			SelectCombatTarget(Actor);
 		}
 
-		EvaluateBestCombatTarget(bDamageStimulus);
+		if (!bDamageStimulus)
+		{
+			EvaluateBestCombatTarget();
+		}
 		if (CurrentTarget.Get() == Actor && HasActiveSightStimulus(*Actor))
 		{
 			bCurrentTargetVisible = true;
@@ -215,8 +222,11 @@ void AFE_EnemyAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStim
 		// Hearing and damage stimuli have short MaxAge values. Their expiration must not
 		// discard a target that sight is still tracking.
 		bCurrentTargetVisible = false;
-		TargetLostTime = GetWorld()->GetTimeSeconds();
-		StopMovement();
+		TargetLostTime = bEncounterPursuitActive ? -1.0f : GetWorld()->GetTimeSeconds();
+		if (!bEncounterPursuitActive)
+		{
+			StopMovement();
+		}
 	}
 }
 
@@ -261,6 +271,8 @@ void AFE_EnemyAIController::UpdateDecision()
 	}
 
 	AActor* TargetActor = CurrentTarget.Get();
+	const bool bPersistentDamageTarget = TargetActor && IsPersistentDamageTarget(*TargetActor);
+	const bool bPersistentTarget = bEncounterPursuitActive || bPersistentDamageTarget;
 	if (TargetActor && HasActiveSightStimulus(*TargetActor))
 	{
 		bCurrentTargetVisible = true;
@@ -270,17 +282,20 @@ void AFE_EnemyAIController::UpdateDecision()
 	else if (TargetActor && bCurrentTargetVisible)
 	{
 		bCurrentTargetVisible = false;
-		TargetLostTime = GetWorld()->GetTimeSeconds();
-		StopMovement();
+		TargetLostTime = bPersistentTarget ? -1.0f : GetWorld()->GetTimeSeconds();
+		if (!bPersistentTarget)
+		{
+			StopMovement();
+		}
 	}
-	else if (TargetActor && !bEncounterTargetPendingSight && TargetLostTime < 0.0f)
+	else if (TargetActor && !bPersistentTarget &&
+		!bEncounterTargetPendingSight && TargetLostTime < 0.0f)
 	{
-		// Perception MaxAge and combat memory are separate. Damage may stay in the
-		// perception cache longer, but non-visible combat pursuit still times out here.
+		// Sight-only combat uses a short grace period after the target leaves view.
 		TargetLostTime = GetWorld()->GetTimeSeconds();
 	}
 	if (TargetActor && (!IsValidTarget(TargetActor) ||
-		(TargetLostTime >= 0.0f &&
+		(!bPersistentTarget && TargetLostTime >= 0.0f &&
 			GetWorld()->GetTimeSeconds() - TargetLostTime > FMath::Max(0.0f, TargetForgetDelay))))
 	{
 		ClearTarget();
@@ -364,7 +379,8 @@ void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AAc
 {
 	SetMovementSpeed(EnemyCharacter, EnemyCharacter.GetChaseMovementSpeed());
 	const float AttackRange = FMath::Max(0.0f, EnemyCharacter.GetAttackRange());
-	const bool bCanTrackActor = HasActiveSightStimulus(TargetActor) || bEncounterTargetPendingSight;
+	const bool bCanTrackActor = HasActiveSightStimulus(TargetActor) ||
+		bEncounterPursuitActive || IsPersistentDamageTarget(TargetActor);
 	if (!bCanTrackActor)
 	{
 		const FVector LastKnownLocation = GetLastKnownTargetLocation(TargetActor);
@@ -405,7 +421,7 @@ void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AAc
 	}
 }
 
-void AFE_EnemyAIController::EvaluateBestCombatTarget(bool bIgnoreMinimumLockTime)
+void AFE_EnemyAIController::EvaluateBestCombatTarget()
 {
 	if (!GetPawn() || !GetWorld())
 	{
@@ -426,7 +442,8 @@ void AFE_EnemyAIController::EvaluateBestCombatTarget(bool bIgnoreMinimumLockTime
 	for (const FFE_AITargetMemory& Memory : TargetMemories)
 	{
 		AActor* Candidate = Memory.Actor.Get();
-		if (!IsValidTarget(Candidate))
+		if (!IsValidTarget(Candidate) ||
+			(Candidate != CurrentActor && !IsWithinTargetEvaluationRadius(*Candidate)))
 		{
 			continue;
 		}
@@ -459,8 +476,7 @@ void AFE_EnemyAIController::EvaluateBestCombatTarget(bool bIgnoreMinimumLockTime
 
 	const FSAITargetSelectionSettings& Settings = GetTargetSelectionSettings();
 	const float TimeSinceAcquired = GetWorld()->GetTimeSeconds() - CurrentTargetAcquiredTime;
-	if (!bIgnoreMinimumLockTime &&
-		TimeSinceAcquired < FMath::Max(0.0f, Settings.MinimumTargetLockTime))
+	if (TimeSinceAcquired < FMath::Max(0.0f, Settings.MinimumTargetLockTime))
 	{
 		return;
 	}
@@ -473,8 +489,17 @@ void AFE_EnemyAIController::EvaluateBestCombatTarget(bool bIgnoreMinimumLockTime
 
 void AFE_EnemyAIController::SelectCombatTarget(AActor* TargetActor)
 {
-	if (!IsValidTarget(TargetActor) || CurrentTarget.Get() == TargetActor || !GetWorld())
+	if (!IsValidTarget(TargetActor) || !GetWorld())
 	{
+		return;
+	}
+	if (CurrentTarget.Get() == TargetActor)
+	{
+		SetCombatSightMode(true);
+		if (IsPersistentDamageTarget(*TargetActor))
+		{
+			TargetLostTime = -1.0f;
+		}
 		return;
 	}
 
@@ -487,6 +512,7 @@ void AFE_EnemyAIController::SelectCombatTarget(AActor* TargetActor)
 	}
 
 	CurrentTarget = TargetActor;
+	SetCombatSightMode(true);
 	CurrentTargetAcquiredTime = GetWorld()->GetTimeSeconds();
 	bCurrentTargetVisible = HasActiveSightStimulus(*TargetActor);
 	bEncounterTargetPendingSight = false;
@@ -548,6 +574,7 @@ void AFE_EnemyAIController::RecordDamageStimulus(AActor& Actor, const FAIStimulu
 	Memory.LastDamageTime = CurrentTime;
 	Memory.LastStimulusTime = CurrentTime;
 	Memory.LastKnownLocation = Actor.GetActorLocation();
+	Memory.bReceivedDamageFromActor = true;
 }
 
 void AFE_EnemyAIController::RefreshVisibleTargetMemories()
@@ -592,7 +619,8 @@ void AFE_EnemyAIController::PruneTargetMemories()
 			{
 				return true;
 			}
-			if (CurrentTarget.Get() == Actor || HasActiveSightStimulus(*Actor))
+			if (Memory.bReceivedDamageFromActor ||
+				CurrentTarget.Get() == Actor || HasActiveSightStimulus(*Actor))
 			{
 				return false;
 			}
@@ -614,7 +642,8 @@ float AFE_EnemyAIController::CalculateTargetScore(
 
 	const FSAITargetSelectionSettings& Settings = GetTargetSelectionSettings();
 	const float CurrentTime = World->GetTimeSeconds();
-	const float EvaluationRadius = FMath::Max(1.0f, LoseSightRadius);
+	const float EvaluationRadius = FMath::Max(
+		1.0f, Settings.TargetEvaluationRadius);
 	const float Distance = FVector::Dist(ControlledPawn->GetActorLocation(), Actor.GetActorLocation());
 	float Score = FMath::Max(0.0f, Settings.ProximityScore) *
 		(1.0f - FMath::Clamp(Distance / EvaluationRadius, 0.0f, 1.0f));
@@ -689,6 +718,7 @@ void AFE_EnemyAIController::ClearTarget()
 		Coordinator->ClearAssignedTarget(this);
 	}
 	CurrentTarget.Reset();
+	SetCombatSightMode(false);
 	CurrentTargetAcquiredTime = -1.0f;
 	if (PreviousTarget)
 	{
@@ -701,6 +731,7 @@ void AFE_EnemyAIController::ClearTarget()
 	TargetLostTime = -1.0f;
 	bCurrentTargetVisible = false;
 	bEncounterTargetPendingSight = false;
+	bEncounterPursuitActive = false;
 	ClearInvestigation();
 	ClearFocus(EAIFocusPriority::Gameplay);
 }
@@ -719,9 +750,11 @@ void AFE_EnemyAIController::SetInvestigationLocation(const FVector& Location)
 		Coordinator->ClearAssignedTarget(this);
 	}
 	CurrentTarget.Reset();
+	SetCombatSightMode(false);
 	CurrentTargetAcquiredTime = -1.0f;
 	bCurrentTargetVisible = false;
 	bEncounterTargetPendingSight = false;
+	bEncounterPursuitActive = false;
 	TargetLostTime = -1.0f;
 	InvestigationLocation = Location;
 	bHasInvestigationLocation = true;
@@ -829,7 +862,10 @@ void AFE_EnemyAIController::ApplyPerceptionSettings()
 
 	SightConfig->SightRadius = FMath::Max(0.0f, SightRadius);
 	SightConfig->LoseSightRadius = FMath::Max(SightConfig->SightRadius, LoseSightRadius);
-	SightConfig->PeripheralVisionAngleDegrees = FMath::Clamp(PeripheralVisionAngleDegrees, 0.0f, 180.0f);
+	SightConfig->PeripheralVisionAngleDegrees = FMath::Clamp(
+		bCombatSightMode ? CombatPeripheralVisionAngleDegrees : PeripheralVisionAngleDegrees,
+		0.0f,
+		180.0f);
 	SightConfig->SetMaxAge(FMath::Max(0.0f, SightMaxAge));
 	SightConfig->DetectionByAffiliation.bDetectEnemies = true;
 	SightConfig->DetectionByAffiliation.bDetectFriendlies = false;
@@ -847,6 +883,22 @@ void AFE_EnemyAIController::ApplyPerceptionSettings()
 	EnemyPerceptionComponent->ConfigureSense(*HearingConfig);
 	EnemyPerceptionComponent->ConfigureSense(*DamageConfig);
 	EnemyPerceptionComponent->SetDominantSense(UAISense_Sight::StaticClass());
+}
+
+void AFE_EnemyAIController::SetCombatSightMode(bool bEnabled)
+{
+	if (bCombatSightMode == bEnabled || !SightConfig || !EnemyPerceptionComponent)
+	{
+		return;
+	}
+
+	bCombatSightMode = bEnabled;
+	SightConfig->PeripheralVisionAngleDegrees = FMath::Clamp(
+		bCombatSightMode ? CombatPeripheralVisionAngleDegrees : PeripheralVisionAngleDegrees,
+		0.0f,
+		180.0f);
+	EnemyPerceptionComponent->ConfigureSense(*SightConfig);
+	EnemyPerceptionComponent->RequestStimuliListenerUpdate();
 }
 
 bool AFE_EnemyAIController::IsPlayerTarget(const AActor* Actor) const
@@ -867,6 +919,27 @@ bool AFE_EnemyAIController::HasActiveSightStimulus(const AActor& Actor) const
 {
 	return EnemyPerceptionComponent && EnemyPerceptionComponent->HasActiveStimulus(
 		Actor, UAISense::GetSenseID<UAISense_Sight>());
+}
+
+bool AFE_EnemyAIController::IsPersistentDamageTarget(const AActor& Actor) const
+{
+	const FFE_AITargetMemory* Memory = FindTargetMemory(Actor);
+	return Memory && Memory->bReceivedDamageFromActor;
+}
+
+bool AFE_EnemyAIController::IsWithinTargetEvaluationRadius(const AActor& Actor) const
+{
+	const APawn* ControlledPawn = GetPawn();
+	if (!ControlledPawn)
+	{
+		return false;
+	}
+
+	const float EvaluationRadius = FMath::Max(
+		0.0f, GetTargetSelectionSettings().TargetEvaluationRadius);
+	return EvaluationRadius > 0.0f &&
+		FVector::DistSquared(ControlledPawn->GetActorLocation(), Actor.GetActorLocation()) <=
+		FMath::Square(EvaluationRadius);
 }
 
 void AFE_EnemyAIController::SetMovementSpeed(
