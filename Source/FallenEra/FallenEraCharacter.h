@@ -111,8 +111,6 @@ public:
 	/** Plays an attack montage on the character's world and first-person meshes. */
 	void PlayAttackMontage(UAnimMontage* Montage);
 
-	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayAttackMontage(UAnimMontage* Montage);
 
 	/** Shared damage/effect entry point used by player abilities and weapons. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta=(AllowPrivateAccess="true"))

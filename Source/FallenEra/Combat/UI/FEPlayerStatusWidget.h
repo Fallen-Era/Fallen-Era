@@ -5,6 +5,7 @@
 #include "GameplayTagContainer.h"
 #include "FEPlayerStatusWidget.generated.h"
 
+class UFE_PlayerStatusViewModel;
 class UProgressBar;
 class UTextBlock;
 class UVerticalBox;
@@ -25,11 +26,13 @@ public:
 
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
-	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 	/** Rebinds the widget to the owning PlayerState's ASC when possession/replication finishes. */
 	UFUNCTION(BlueprintCallable, Category="Player Status")
 	void RefreshFromPlayerState();
+
+	UPROPERTY(Transient, BlueprintReadOnly, Category="Player Status")
+	TObjectPtr<UFE_PlayerStatusViewModel> StatusViewModel;
 
 protected:
 	UPROPERTY(meta=(BindWidget))
@@ -53,29 +56,13 @@ protected:
 	TSubclassOf<UFE_ConditionSlotWidget> ConditionSlotWidgetClass;
 
 private:
-	void BindToAbilitySystem(UAbilitySystemComponent* AbilitySystemComponent, const UFallenEraAttributeSet* AttributeSet);
-	void UnbindFromAbilitySystem();
-	void RefreshAllValues(const UFallenEraAttributeSet* AttributeSet) const;
+	void RefreshValues();
 	void RefreshHealth(float Health, float MaxHealth) const;
 	void RefreshStamina(float Stamina, float MaxStamina) const;
-
-	void OnHealthChanged(const FOnAttributeChangeData& ChangeData);
-	void OnMaxHealthChanged(const FOnAttributeChangeData& ChangeData);
-	void OnStaminaChanged(const FOnAttributeChangeData& ChangeData);
-	void OnMaxStaminaChanged(const FOnAttributeChangeData& ChangeData);
-	void BindToCharacterStatus(UFE_CharacterStatusComponent* StatusComponent);
-	void UnbindFromCharacterStatus();
 	void RebuildConditionSlots();
-
-	TWeakObjectPtr<UAbilitySystemComponent> BoundAbilitySystemComponent;
-	TWeakObjectPtr<const UFallenEraAttributeSet> BoundAttributeSet;
-	FDelegateHandle HealthChangedHandle;
-	FDelegateHandle MaxHealthChangedHandle;
-	FDelegateHandle StaminaChangedHandle;
-	FDelegateHandle MaxStaminaChangedHandle;
-	TWeakObjectPtr<UFE_CharacterStatusComponent> BoundCharacterStatusComponent;
-	FDelegateHandle ActiveConditionsChangedHandle;
-
+	FDelegateHandle ValuesChangedHandle;
+	FDelegateHandle ConditionsChangedHandle;
+	TMap<FGameplayTag, double> ConditionEndTimes;
 	UPROPERTY(Transient)
 	TMap<FGameplayTag, TObjectPtr<UFE_ConditionSlotWidget>> ConditionSlots;
 };

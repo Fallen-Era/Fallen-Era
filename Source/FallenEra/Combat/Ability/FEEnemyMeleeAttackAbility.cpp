@@ -10,12 +10,16 @@
 #include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/FECombatTeams.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/FECombatGameplayTags.h"
 
 UFE_EnemyMeleeAttackAbility::UFE_EnemyMeleeAttackAbility()
 {
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
 	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::ServerOnly;
 	ActivationPolicy = EFallenEraAbilityActivationPolicy::OnInputTriggered;
+	FGameplayTagContainer Tags = GetAssetTags();
+	Tags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Attack);
+	SetAssetTags(Tags);
 }
 
 bool UFE_EnemyMeleeAttackAbility::CanActivateAbility(
@@ -168,7 +172,6 @@ void UFE_EnemyMeleeAttackAbility::StartTrace()
 	{
 		return;
 	}
-	DamagedActors.Reset();
 	bTraceActive = true;
 	TraceTickTask = UFE_MeleeTraceTask::StartMeleeTrace(this);
 	TraceTickTask->OnTraceTick.AddDynamic(this, &UFE_EnemyMeleeAttackAbility::ExecuteTrace);
@@ -189,6 +192,13 @@ void UFE_EnemyMeleeAttackAbility::ExecuteTrace()
 {
 	if (!bTraceActive || !CachedEnemyCharacter || !CachedEnemyCharacter->HasAuthority())
 	{
+		return;
+	}
+	const int32 MaxTargets = FMath::Max(1, ActiveAttackSettings.MaxHitTargets);
+	if (DamagedActors.Num() >= MaxTargets ||
+		!UFE_CombatComponent::CanActorAttack(CachedEnemyCharacter))
+	{
+		StopTrace();
 		return;
 	}
 
@@ -212,14 +222,15 @@ void UFE_EnemyMeleeAttackAbility::ExecuteTrace()
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_EnemyMeleeAbility), false, CachedEnemyCharacter);
 	QueryParams.bReturnPhysicalMaterial = true;
 	TArray<FHitResult> Hits;
-	if (!World->SweepMultiByChannel(
+	World->SweepMultiByChannel(
 		Hits,
 		TraceStart,
 		TraceEnd,
 		FQuat::Identity,
 		FECollisionChannels::EnemyTrace,
 		FCollisionShape::MakeSphere(FMath::Max(0.0f, ActiveAttackSettings.TraceRadius)),
-		QueryParams))
+		QueryParams);
+	if (Hits.IsEmpty())
 	{
 		return;
 	}
@@ -243,8 +254,9 @@ void UFE_EnemyMeleeAttackAbility::ExecuteTrace()
 		}
 
 		DamagedActors.Add(TargetActor);
-		if (DamagedActors.Num() >= FMath::Max(1, ActiveAttackSettings.MaxHitTargets))
+		if (DamagedActors.Num() >= MaxTargets)
 		{
+			StopTrace();
 			break;
 		}
 	}

@@ -1,4 +1,5 @@
 #include "Combat/Ability/FEProjectileAttackAbility.h"
+#include "Combat/Component/FECombatComponent.h"
 
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/MeshComponent.h"
@@ -84,7 +85,8 @@ bool UFE_ProjectileAttackAbility::CanFireProjectile(
 	const UFE_ProjectileAttackDataBase* AttackData) const
 {
 	const UWorld* World = CombatCharacter ? CombatCharacter->GetWorld() : nullptr;
-	return World && AttackData && World->GetTimeSeconds() >= NextFireTime;
+	return World && AttackData && UFE_CombatComponent::CanActorAttack(const_cast<ACharacter*>(CombatCharacter)) &&
+		World->GetTimeSeconds() >= NextFireTime;
 }
 
 void UFE_ProjectileAttackAbility::RecordProjectileFired(
@@ -104,7 +106,8 @@ bool UFE_ProjectileAttackAbility::SpawnProjectile(
 	float LaunchSpeed) const
 {
 	if (!CombatCharacter || !CombatCharacter->HasAuthority() || !WeaponData || !AttackData ||
-		!CachedProjectileClass || !CombatCharacter->GetWorld())
+		!CachedProjectileClass || !CombatCharacter->GetWorld() ||
+		!UFE_CombatComponent::CanActorAttack(const_cast<ACharacter*>(CombatCharacter)))
 	{
 		return false;
 	}

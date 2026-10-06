@@ -2,10 +2,12 @@
 
 #include "Components/CapsuleComponent.h"
 #include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
+#include "Combat/Collision/FECollisionChannels.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Combat/AI/FEAITargetCoordinatorSubsystem.h"
-#include "Combat/AI/FEEnemyAIController.h"
+#include "Combat/Interface/FEEncounterTarget.h"
 #include "Combat/Character/FEEnemyCharacter.h"
 #include "Combat/Spawn/FEMonsterEncounterDataAsset.h"
 #include "Combat/Spawn/FEMonsterSpawnAnchor.h"
@@ -46,6 +48,13 @@ void UFE_MonsterSpawnSubsystem::Deinitialize()
 		}
 	}
 	EnemyClassLoadHandles.Reset();
+	for (auto& Pair : EnemyDependencyLoadHandles)
+	{
+		for (auto& Handle : Pair.Value) { if (Handle) { Handle->CancelHandle(); } }
+	}
+	EnemyDependencyLoadHandles.Reset();
+	ReadyEnemyClasses.Reset();
+	CellPopulation.Reset();
 	if (DefaultProfileLoadHandle.IsValid())
 	{
 		DefaultProfileLoadHandle->CancelHandle();
@@ -179,6 +188,7 @@ void UFE_MonsterSpawnSubsystem::UpdateSpawnManagement()
 	GatherPlayerPawns(PlayerPawns);
 	const double CurrentTime = World->GetTimeSeconds();
 	UpdateManagedMonsters(PlayerPawns, CurrentTime);
+	RebuildCellPopulation();
 	UpdateEncounters(PlayerPawns, CurrentTime);
 	UpdateAmbientCells(PlayerPawns, CurrentTime);
 }
@@ -388,7 +398,8 @@ AFE_EnemyCharacter* UFE_MonsterSpawnSubsystem::SpawnManagedMonster(
 {
 	UWorld* World = GetWorld();
 	UClass* LoadedClass = SpawnEntry.EnemyClass.Get();
-	if (!World || World->GetNetMode() == NM_Client || !LoadedClass)
+	if (!World || World->GetNetMode() == NM_Client || !LoadedClass ||
+		!ReadyEnemyClasses.Contains(SpawnEntry.EnemyClass.ToSoftObjectPath()))
 	{
 		RequestEnemyClassLoad(SpawnEntry.EnemyClass);
 		return nullptr;
@@ -426,14 +437,15 @@ AFE_EnemyCharacter* UFE_MonsterSpawnSubsystem::SpawnManagedMonster(
 	FFEManagedMonsterRuntime& Runtime = ManagedMonsters.AddDefaulted_GetRef();
 	Runtime.Monster = Monster;
 	Runtime.SpawnCell = GetSpawnCell(Monster->GetActorLocation());
+	++CellPopulation.FindOrAdd(Runtime.SpawnCell);
 	Runtime.DistanceSettings = DistanceSettings;
 	Runtime.EncounterHandle = EncounterHandle;
 	Monster->SetManagedSimulationActive(true);
 	if (EncounterHandle != INDEX_NONE && IsValid(EncounterTarget))
 	{
-		if (AFE_EnemyAIController* EnemyController = Cast<AFE_EnemyAIController>(Monster->GetController()))
+		if (IFE_EncounterTarget* EnemyController = Cast<IFE_EncounterTarget>(Monster->GetController()))
 		{
-			EnemyController->SetEncounterCombatTarget(EncounterTarget);
+			EnemyController->SetEncounterTarget(EncounterTarget);
 		}
 	}
 	OnMonsterSpawned.Broadcast(Monster);
@@ -554,6 +566,12 @@ bool UFE_MonsterSpawnSubsystem::ProjectSpawnCandidate(
 		return false;
 	}
 	OutSpawnTransform = FTransform(FRotator(0.0f, FMath::FRandRange(-180.0f, 180.0f), 0.0f), ProjectedLocation.Location);
+	const float Clearance = FMath::Max(0.0f, GetDefault<UFE_MonsterSpawnDeveloperSettings>()->MinDistanceFromStructures);
+	if (Clearance > 0.0f && World->OverlapAnyTestByObjectType(ProjectedLocation.Location, FQuat::Identity,
+		FCollisionObjectQueryParams(FECollisionChannels::BuildPiece), FCollisionShape::MakeSphere(Clearance)))
+	{
+		return false;
+	}
 	return true;
 }
 
@@ -627,7 +645,7 @@ const FFEMonsterSpawnEntry* UFE_MonsterSpawnSubsystem::SelectWeightedEntry(
 	float TotalWeight = 0.0f;
 	for (const FFEMonsterSpawnEntry& Entry : Entries)
 	{
-		if (!Entry.EnemyClass.IsNull())
+		if (ReadyEnemyClasses.Contains(Entry.EnemyClass.ToSoftObjectPath()))
 		{
 			TotalWeight += FMath::Max(0.0f, Entry.Weight);
 		}
@@ -640,7 +658,7 @@ const FFEMonsterSpawnEntry* UFE_MonsterSpawnSubsystem::SelectWeightedEntry(
 	float Selection = FMath::FRandRange(0.0f, TotalWeight);
 	for (const FFEMonsterSpawnEntry& Entry : Entries)
 	{
-		if (Entry.EnemyClass.IsNull())
+		if (!ReadyEnemyClasses.Contains(Entry.EnemyClass.ToSoftObjectPath()) || Entry.Weight <= 0.0f)
 		{
 			continue;
 		}
@@ -657,13 +675,43 @@ void UFE_MonsterSpawnSubsystem::RequestEnemyClassLoad(
 	const TSoftClassPtr<AFE_EnemyCharacter>& EnemyClass)
 {
 	const FSoftObjectPath ClassPath = EnemyClass.ToSoftObjectPath();
-	if (!ClassPath.IsValid() || EnemyClass.Get() || EnemyClassLoadHandles.Contains(ClassPath))
+	if (!ClassPath.IsValid() || EnemyClassLoadHandles.Contains(ClassPath))
 	{
 		return;
 	}
 	TSharedPtr<FStreamableHandle> LoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
-		ClassPath);
+		ClassPath, FStreamableDelegate::CreateUObject(this, &ThisClass::PrepareEnemyAssets, ClassPath, 0));
 	EnemyClassLoadHandles.Add(ClassPath, LoadHandle);
+}
+
+void UFE_MonsterSpawnSubsystem::PrepareEnemyAssets(FSoftObjectPath ClassPath, int32 Stage)
+{
+	UClass* Class = Cast<UClass>(ClassPath.ResolveObject());
+	const AFE_EnemyCharacter* DefaultEnemy = Class ? Cast<AFE_EnemyCharacter>(Class->GetDefaultObject()) : nullptr;
+	if (!DefaultEnemy) { return; }
+	TArray<FSoftObjectPath> Paths;
+	if (Stage < 2 && !DefaultEnemy->GatherAISettingsAssetPaths(Paths, Stage == 1)) { return; }
+	if (Stage == 2)
+	{
+		TArray<FSoftObjectPath> GameplayPaths;
+		if (!DefaultEnemy->GatherAISettingsAssetPaths(GameplayPaths, true)) { return; }
+		for (const auto& Path : GameplayPaths) { if (!Path.ResolveObject()) { return; } }
+		ReadyEnemyClasses.Add(ClassPath);
+		return;
+	}
+	if (Paths.IsEmpty()) { PrepareEnemyAssets(ClassPath, Stage + 1); return; }
+	EnemyDependencyLoadHandles.FindOrAdd(ClassPath).Add(UAssetManager::GetStreamableManager().RequestAsyncLoad(
+		Paths, FStreamableDelegate::CreateUObject(this, &ThisClass::PrepareEnemyAssets, ClassPath, Stage + 1)));
+}
+
+void UFE_MonsterSpawnSubsystem::RebuildCellPopulation()
+{
+	CellPopulation.Reset();
+	for (const auto& Runtime : ManagedMonsters)
+	{
+		const AFE_EnemyCharacter* Monster = Runtime.Monster.Get();
+		if (Monster && !Monster->IsDead()) { ++CellPopulation.FindOrAdd(Runtime.SpawnCell); }
+	}
 }
 
 float UFE_MonsterSpawnSubsystem::GetNearestPlayerDistanceSquared(
@@ -798,16 +846,7 @@ int32 UFE_MonsterSpawnSubsystem::CountAliveAmbientMonsters() const
 
 int32 UFE_MonsterSpawnSubsystem::CountAliveMonstersInCell(const FIntPoint& Cell) const
 {
-	int32 Count = 0;
-	for (const FFEManagedMonsterRuntime& Runtime : ManagedMonsters)
-	{
-		const AFE_EnemyCharacter* Monster = Runtime.Monster.Get();
-		if (Runtime.SpawnCell == Cell && Monster && !Monster->IsDead())
-		{
-			++Count;
-		}
-	}
-	return Count;
+	return CellPopulation.FindRef(Cell);
 }
 
 int32 UFE_MonsterSpawnSubsystem::CountAliveMonstersForEncounter(int32 EncounterHandle) const

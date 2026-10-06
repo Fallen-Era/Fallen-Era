@@ -8,6 +8,7 @@
  */
 namespace FECollisionChannels
 {
+	inline constexpr ECollisionChannel BuildPiece = ECC_GameTraceChannel2;
 	inline constexpr ECollisionChannel PlayerHitscanTrace = ECC_GameTraceChannel6;
 	inline constexpr ECollisionChannel Player = ECC_GameTraceChannel3;
 	inline constexpr ECollisionChannel Enemy = ECC_GameTraceChannel4;

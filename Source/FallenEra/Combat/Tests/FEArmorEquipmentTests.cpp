@@ -12,7 +12,7 @@
 #include "Combat/GameplayEffect/FEDamageGameplayEffect.h"
 #include "Combat/Interface/FEDamageable.h"
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFE_ArmorEquipmentTest, "FallenEra.HT.Armor.EquipmentAndDamage",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFE_ArmorEquipmentTest, "FallenEra.Combat.Armor.EquipmentAndDamage",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FFE_ArmorEquipmentTest::RunTest(const FString& Parameters)
@@ -59,8 +59,8 @@ bool FFE_ArmorEquipmentTest::RunTest(const FString& Parameters)
 		return Combat->ApplyGameplayEffectDamage(Request).bDamageApplied;
 	};
 
-	const FGameplayTag Head = FGameplayTag::RequestGameplayTag(TEXT("HT.Equipment.Slot.Head"));
-	const FGameplayTag Body = FGameplayTag::RequestGameplayTag(TEXT("HT.Equipment.Slot.Body"));
+	const FGameplayTag Head = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Head"));
+	const FGameplayTag Body = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Body"));
 	UFE_ArmorItemData* Helmet = NewObject<UFE_ArmorItemData>();
 	Helmet->EquipmentSlotTag = Head;
 	Helmet->ArmorStat.Defense = 3.0f;

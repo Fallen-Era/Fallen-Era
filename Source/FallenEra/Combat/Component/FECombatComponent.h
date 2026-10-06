@@ -17,6 +17,22 @@ class UParticleSystem;
 class USoundBase;
 class AFE_CombatProjectile;
 class UCameraComponent;
+struct FStreamableHandle;
+
+/** Persistent presentation state: no per-frame alpha replication or multicast history. */
+USTRUCT()
+struct FFE_ChargePresentationState
+{
+	GENERATED_BODY()
+	UPROPERTY() float StartServerTime = -1.0f;
+	UPROPERTY() float FullChargeSeconds = 1.0f;
+	UPROPERTY() bool bBow = false;
+	UPROPERTY() TSoftClassPtr<AFE_CombatProjectile> ProjectileClass;
+	UPROPERTY() TSoftObjectPtr<UAnimMontage> Montage;
+	UPROPERTY() EFE_ChargedProjectileAttachmentTarget AttachmentTarget = EFE_ChargedProjectileAttachmentTarget::WeaponMesh;
+	UPROPERTY() FName SocketName;
+	UPROPERTY() FTransform Offset;
+};
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEBowChargeChanged, float);
 
@@ -28,6 +44,9 @@ class FALLENERA_API UFE_CombatComponent : public UActorComponent
 
 public:
 	UFE_CombatComponent();
+	virtual void BeginPlay() override;
+	/** Rebind after PlayerState ASC actor info becomes available. */
+	void RefreshAbilitySystem();
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -36,16 +55,7 @@ public:
 	void PlayAttackMontageLocal(UAnimMontage* Montage);
 	void PlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 	void PlayWeaponAttackEffects(
-		USoundBase* AttackSound,
-		float SoundVolume,
-		float SoundPitch,
-		float NoiseLoudness,
-		float NoiseMaxRange,
-		UNiagaraSystem* MuzzleSystem,
-		UParticleSystem* MuzzleParticleSystem,
-		FName MuzzleSocketName,
-		FVector MuzzleScale,
-		bool bPredictedByOwner);
+		const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData, bool bPredictedByOwner);
 
 	/** Reports a server-authoritative hearing stimulus. Use for footsteps and non-weapon sounds. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Combat|AI")
@@ -55,7 +65,10 @@ public:
 		EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
 		FName AttachSocketName,
 		const FTransform& AttachOffset,
-		bool bPredictedByOwner);
+		bool bPredictedByOwner,
+		float FullChargeSeconds,
+		UAnimMontage* ChargeMontage,
+		bool bBow);
 	void StopChargeProjectilePresentation(bool bPredictedByOwner);
 
 	/** Local-only camera presentation that survives the charging ability ending. */
@@ -67,7 +80,8 @@ public:
 
 	/** Owning-client presentation state consumed by BowCrossHairWidget. */
 	void SetBowChargeAlpha(float NewChargeAlpha);
-	float GetBowChargeAlpha() const { return BowChargeAlpha; }
+	float GetBowChargeAlpha() const;
+	bool IsBowCharging() const;
 	FOnFEBowChargeChanged& OnBowChargeChanged() { return BowChargeChangedDelegate; }
 
 	/** Applies an animation-curve value to both equipped bow meshes without replication. */
@@ -124,6 +138,8 @@ public:
 	/** Returns the ASC exposed by the actor, including PlayerState-owned ASCs. */
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat")
 	static UAbilitySystemComponent* FindAbilitySystemComponent(AActor* Actor);
+	static bool CanActorAttack(AActor* Actor);
+	static bool IsActorAlive(AActor* Actor);
 
 protected:
 	/** Override this per character or weapon when a different damage GE is required. */
@@ -134,9 +150,10 @@ protected:
 	TArray<TObjectPtr<UAnimMontage>> HitReactionMontages;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Death")
-	TObjectPtr<UAnimMontage> DeathMontage;
+	TSoftObjectPtr<UAnimMontage> DeathMontage;
 
 private:
+	static constexpr float LocalPresentationUpdateInterval = 1.0f / 60.0f;
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayAttackMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 
@@ -144,29 +161,28 @@ private:
 	void MulticastPlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayWeaponAttackEffects(
-		USoundBase* AttackSound,
-		float SoundVolume,
-		float SoundPitch,
-		UNiagaraSystem* MuzzleSystem,
-		UParticleSystem* MuzzleParticleSystem,
-		FName MuzzleSocketName,
-		FVector MuzzleScale,
-		bool bPredictedByOwner);
+	void MulticastPlayWeaponAttackEffects(UFE_WeaponItemData* WeaponData, int32 AttackIndex, bool bPredictedByOwner);
+	void PlayWeaponDataEffectsLocal(const UFE_WeaponItemData* WeaponData, int32 AttackIndex);
 
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastStartChargeProjectilePresentation(
-		TSubclassOf<AFE_CombatProjectile> ProjectileClass,
-		EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
-		FName AttachSocketName,
-		FTransform AttachOffset,
-		bool bPredictedByOwner);
-
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastStopChargeProjectilePresentation(bool bPredictedByOwner);
-
-	UFUNCTION(NetMulticast, Reliable)
+	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastStopWeaponActionPresentation(bool bPredictedByOwner);
+
+	UPROPERTY(ReplicatedUsing=OnRep_ChargeState)
+	FFE_ChargePresentationState ChargeState;
+	FFE_ChargePresentationState LocalChargeState;
+	UFUNCTION() void OnRep_ChargeState(const FFE_ChargePresentationState& PreviousState);
+	void RestoreChargePresentation();
+	void HandleWeaponChanged(const UFE_WeaponItemData* WeaponData);
+	void HandleDeathTagChanged(FGameplayTag Tag, int32 NewCount);
+	void CancelAttackActions();
+	void FinishLoadingCombatAssets();
+	float GetPresentationServerTime() const;
+	TWeakObjectPtr<UAbilitySystemComponent> BoundAbilitySystem;
+	FDelegateHandle DeathTagHandle;
+	FDelegateHandle WeaponChangedHandle;
+	TSharedPtr<FStreamableHandle> CombatAssetLoadHandle;
+	TSharedPtr<FStreamableHandle> ChargeAssetLoadHandle;
+	UPROPERTY(Transient) TSubclassOf<UGameplayEffect> CachedDamageEffectClass;
 
 	void StartChargeProjectilePresentationLocal(
 		TSubclassOf<AFE_CombatProjectile> ProjectileClass,
@@ -208,8 +224,8 @@ private:
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayHitReaction(UAnimMontage* HitMontage);
 
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayDeathMontage(UAnimMontage* Montage);
+	UPROPERTY(Replicated)
+	float DeathStartServerTime = 0.0f;
 
 	FTimerHandle StunTimerHandle;
 

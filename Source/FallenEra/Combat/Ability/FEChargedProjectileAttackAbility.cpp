@@ -180,7 +180,10 @@ void UFE_ChargedProjectileAttackAbility::StartLocalChargePresentation()
 			CachedChargedAttackData->AttachmentTarget,
 			CachedChargedAttackData->ChargeAttachSocketName,
 			CachedChargedAttackData->ChargeAttachOffset,
-			true);
+			true,
+			CachedChargedAttackData->MaxChargeTime,
+			CachedChargedAttackData->ChargeMontage,
+			CachedChargedAttackData->IsA<UFE_BowAttackData>());
 		bChargePresentationActive = true;
 	}
 	StartSpecializedChargePresentation();

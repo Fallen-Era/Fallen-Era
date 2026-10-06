@@ -1,4 +1,5 @@
 #include "Combat/Ability/FEHitscanAttackAbility.h"
+#include "Combat/Component/FECombatComponent.h"
 
 #include "Abilities/Tasks/AbilityTask_WaitDelay.h"
 #include "Abilities/Tasks/AbilityTask_WaitInputRelease.h"
@@ -67,7 +68,8 @@ bool UFE_HitscanAttackAbility::FireOnce()
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponItemData* WeaponData = GetCachedWeaponData();
 	const UFE_HitscanAttackData* AttackData = Cast<UFE_HitscanAttackData>(GetCachedAttackData());
-	if (!CombatCharacter || !WeaponData || !AttackData || !CombatCharacter->GetWorld())
+	if (!CombatCharacter || !WeaponData || !AttackData || !CombatCharacter->GetWorld() ||
+		!UFE_CombatComponent::CanActorAttack(const_cast<ACharacter*>(CombatCharacter)))
 	{
 		return false;
 	}

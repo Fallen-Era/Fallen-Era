@@ -9,6 +9,7 @@
 class UInputMappingContext;
 class UUserWidget;
 class UFE_PlayerMainWidget;
+DECLARE_MULTICAST_DELEGATE(FFE_OnPlayerStateReady);
 
 /**
  *  Simple first person Player Controller
@@ -24,6 +25,7 @@ public:
 
 	/** Constructor */
 	AFallenEraPlayerController();
+	FFE_OnPlayerStateReady& OnPlayerStateReady() { return PlayerStateReadyDelegate; }
 
 protected:
 
@@ -56,6 +58,8 @@ protected:
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
+	virtual void OnRep_PlayerState() override;
+	FFE_OnPlayerStateReady PlayerStateReadyDelegate;
 
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;

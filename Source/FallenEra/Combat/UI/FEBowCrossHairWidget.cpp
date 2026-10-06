@@ -24,6 +24,10 @@ void UFE_BowCrossHairWidget::NativeTick(const FGeometry& MyGeometry, float InDel
 	{
 		TryBindCombatComponent();
 	}
+	if (const UFE_CombatComponent* Combat = BoundCombatComponent.Get())
+	{
+		SetChargeAlpha(Combat->GetBowChargeAlpha());
+	}
 }
 
 void UFE_BowCrossHairWidget::SetChargeAlpha(float ChargeAlpha)

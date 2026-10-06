@@ -2,7 +2,6 @@
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "GameplayEffectExtension.h"
-#include "Combat/Component/FECombatComponent.h"
 #include "Net/UnrealNetwork.h"
 
 UFallenEraAttributeSet::UFallenEraAttributeSet()
@@ -111,28 +110,12 @@ void UFallenEraAttributeSet::UpdateDeadStateTag()
 	AActor* OwnerActor = AbilitySystemComponent ? AbilitySystemComponent->GetOwnerActor() : nullptr;
 	if (AbilitySystemComponent && OwnerActor && OwnerActor->HasAuthority())
 	{
-		const bool bWasDead = AbilitySystemComponent->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead);
 		const bool bIsDead = GetHealth() <= 0.0f;
 		AbilitySystemComponent->SetLooseGameplayTagCount(
 			FallenEraGameplayTags::State_Dead,
 			bIsDead ? 1 : 0,
 			EGameplayTagReplicationState::TagAndCountToAll);
 
-		if (!bWasDead && bIsDead)
-		{
-			AActor* AvatarActor = AbilitySystemComponent->GetAvatarActor();
-			if (!AvatarActor)
-			{
-				AvatarActor = OwnerActor;
-			}
-
-			if (UFE_CombatComponent* CombatComponent = AvatarActor
-				? AvatarActor->FindComponentByClass<UFE_CombatComponent>()
-				: nullptr)
-			{
-				CombatComponent->HandleDeath();
-			}
-		}
 	}
 }
 

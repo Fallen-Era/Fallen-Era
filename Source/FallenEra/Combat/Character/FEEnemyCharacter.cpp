@@ -1,4 +1,6 @@
 #include "Combat/Character/FEEnemyCharacter.h"
+#include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
 
 #include "AbilitySystem/FallenEraAbilitySet.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
@@ -87,19 +89,11 @@ void AFE_EnemyCharacter::BeginPlay()
 		}
 		else if (HasAuthority())
 		{
-			// A listen-server viewport may not mark a server-owned mesh as recently rendered
-			// soon enough to update its locomotion graph. Keep pose evaluation active while
-			// still refreshing bones only when the mesh is rendered.
-			CharacterMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPose;
+			// Socket-based server hits require bone refresh even outside the host's viewport.
+			CharacterMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickMontagesAndRefreshBonesWhenPlayingMontages;
 		}
 	}
 	InitializeEnemyAbilitySystem();
-	if (HasAuthority())
-	{
-		CachedAttackDamageEffect = CachedAISettings.DamageEffect.IsNull()
-			? nullptr
-			: CachedAISettings.DamageEffect.LoadSynchronous();
-	}
 	// Component BeginPlay may run before this character initializes its ASC.
 	EquipmentComponent->RefreshEquipment();
 }
@@ -146,6 +140,8 @@ void AFE_EnemyCharacter::OnRep_ManagedVisualCullDistance()
 
 void AFE_EnemyCharacter::CacheSelectedAISettings()
 {
+	if (AISettingsLoadHandle) { AISettingsLoadHandle->CancelHandle(); AISettingsLoadHandle.Reset(); }
+	if (AISettingsEffectLoadHandle) { AISettingsEffectLoadHandle->CancelHandle(); AISettingsEffectLoadHandle.Reset(); }
 	bAISettingsCached = false;
 	CachedAISettings = FSAISettings();
 	CachedAttackDamageEffect = nullptr;
@@ -154,9 +150,21 @@ void AFE_EnemyCharacter::CacheSelectedAISettings()
 	if (AISettingsDataAssets.IsValidIndex(SelectedAISettingsIndex) &&
 		!AISettingsDataAssets[SelectedAISettingsIndex].IsNull())
 	{
-		// Only the selected preset and its hard-referenced animation assets are loaded.
-		CachedAISettingsDataAsset = AISettingsDataAssets[SelectedAISettingsIndex].LoadSynchronous();
+		const auto& Asset = AISettingsDataAssets[SelectedAISettingsIndex];
+		if (!Asset.IsValid())
+		{
+			AISettingsLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+				Asset.ToSoftObjectPath(), FStreamableDelegate::CreateUObject(this, &ThisClass::CacheLoadedAISettings));
+			return;
+		}
 	}
+	CacheLoadedAISettings();
+}
+
+void AFE_EnemyCharacter::CacheLoadedAISettings()
+{
+	CachedAISettingsDataAsset = AISettingsDataAssets.IsValidIndex(SelectedAISettingsIndex)
+		? AISettingsDataAssets[SelectedAISettingsIndex].Get() : nullptr;
 	if (CachedAISettingsDataAsset)
 	{
 		CachedAISettings = CachedAISettingsDataAsset->AISettings;
@@ -175,7 +183,49 @@ void AFE_EnemyCharacter::CacheSelectedAISettings()
 	{
 		CombatComponent->SetHitReactionMontages(CachedAISettings.HitReactionMontages);
 	}
-	bAISettingsCached = true;
+	if (HasAuthority() && !CachedAISettings.DamageEffect.IsNull() && !CachedAISettings.DamageEffect.IsValid())
+	{
+		AISettingsEffectLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+			CachedAISettings.DamageEffect.ToSoftObjectPath(),
+			FStreamableDelegate::CreateUObject(this, &ThisClass::FinishAISettingsInitialization));
+		return;
+	}
+	FinishAISettingsInitialization();
+}
+
+void AFE_EnemyCharacter::FinishAISettingsInitialization()
+{
+	CachedAttackDamageEffect = CachedAISettings.DamageEffect.Get();
+	bAISettingsCached = (AISettingsDataAssets.IsEmpty() || CachedAISettingsDataAsset != nullptr) &&
+		(!HasAuthority() || CachedAISettings.DamageEffect.IsNull() || CachedAttackDamageEffect != nullptr);
+}
+
+void AFE_EnemyCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (AISettingsLoadHandle) { AISettingsLoadHandle->CancelHandle(); AISettingsLoadHandle.Reset(); }
+	if (AISettingsEffectLoadHandle) { AISettingsEffectLoadHandle->CancelHandle(); AISettingsEffectLoadHandle.Reset(); }
+	Super::EndPlay(EndPlayReason);
+}
+
+bool AFE_EnemyCharacter::GatherAISettingsAssetPaths(TArray<FSoftObjectPath>& OutPaths, bool bGameplayDependencies) const
+{
+	for (int32 Index = 0; Index < AISettingsDataAssets.Num(); ++Index)
+	{
+		if (!bRandomizeAISettings && Index != SelectedAISettingsIndex) { continue; }
+		const auto& Preset = AISettingsDataAssets[Index];
+		if (Preset.IsNull()) { continue; }
+		if (!bGameplayDependencies) { OutPaths.AddUnique(Preset.ToSoftObjectPath()); }
+		else
+		{
+			const UFE_AISettingsDataAsset* Data = Preset.Get();
+			if (!Data) { return false; }
+			if (!Data->AISettings.DamageEffect.IsNull())
+			{
+				OutPaths.AddUnique(Data->AISettings.DamageEffect.ToSoftObjectPath());
+			}
+		}
+	}
+	return true;
 }
 
 void AFE_EnemyCharacter::InitializeEnemyAbilitySystem()
@@ -228,7 +278,7 @@ bool AFE_EnemyCharacter::IsDead() const
 bool AFE_EnemyCharacter::TryStartAttack(AActor* TargetActor)
 {
 	if (!HasAuthority() || !AbilitySystemComponent || !AttackAbilityClass || !IsValid(TargetActor) ||
-		IsDead() || IsAttackInProgress() || FECombatTeams::AreSameTeam(this, TargetActor) ||
+		!bAISettingsCached || !UFE_CombatComponent::CanActorAttack(this) || IsAttackInProgress() || FECombatTeams::AreSameTeam(this, TargetActor) ||
 		CachedAISettings.AttackMontages.IsEmpty())
 	{
 		return false;

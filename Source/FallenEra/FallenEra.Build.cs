@@ -26,14 +26,12 @@ public class FallenEra : ModuleRules
 			"UMG",
 			"Slate",
 			"SlateCore",
-			"PhysicsCore"
+			"PhysicsCore",
 			"ModelViewViewModel",
-			"DeveloperSettings"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] 
 		{
-			"GameplayMessageRuntime",
 		});
 
 		PublicIncludePaths.AddRange(new string[] {

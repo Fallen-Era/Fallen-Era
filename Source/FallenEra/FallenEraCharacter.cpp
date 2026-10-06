@@ -322,18 +322,10 @@ void AFallenEraCharacter::PlayAttackMontage(UAnimMontage* Montage)
 {
 	if (CombatComponent)
 	{
-		CombatComponent->PlayAttackMontageLocal(Montage);
+		CombatComponent->PlayAttackMontage(Montage, false);
 	}
 }
 
-void AFallenEraCharacter::MulticastPlayAttackMontage_Implementation(UAnimMontage* Montage)
-{
-	if (!HasAuthority() && IsLocallyControlled())
-	{
-		return;
-	}
-	PlayAttackMontage(Montage);
-}
 
 void AFallenEraCharacter::HandleCombatLeftClickStarted(const FInputActionValue& Value)
 {

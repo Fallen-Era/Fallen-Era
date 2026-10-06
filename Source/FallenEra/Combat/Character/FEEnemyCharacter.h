@@ -21,6 +21,7 @@ class UAnimMontage;
 class UBlendSpace;
 class UGameplayEffect;
 class UNavigationInvokerComponent;
+struct FStreamableHandle;
 
 /** Reusable ACharacter base for enemies with their own GAS owner and combat component. */
 UCLASS(Abstract)
@@ -38,6 +39,9 @@ public:
 	virtual FGenericTeamId GetGenericTeamId() const override;
 	virtual TArray<FFE_ConditionApplicationChance> GetConditionApplicationChances_Implementation() const override;
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	/** Spawn service preloads selectable presets, then their soft gameplay dependencies. */
+	bool GatherAISettingsAssetPaths(TArray<FSoftObjectPath>& OutPaths, bool bGameplayDependencies) const;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat")
@@ -159,6 +163,10 @@ protected:
 private:
 	void SelectAISettingsIndexAtBeginPlay();
 	void CacheSelectedAISettings();
+	void CacheLoadedAISettings();
+	void FinishAISettingsInitialization();
+	TSharedPtr<FStreamableHandle> AISettingsLoadHandle;
+	TSharedPtr<FStreamableHandle> AISettingsEffectLoadHandle;
 	void InitializeEnemyAbilitySystem();
 
 	UFUNCTION()
@@ -170,6 +178,7 @@ private:
 	void ApplyManagedVisualCullDistance();
 
 	TWeakObjectPtr<AActor> PendingAttackTarget;
+	UPROPERTY(Transient)
 	TSubclassOf<UGameplayEffect> CachedAttackDamageEffect;
 	bool bManagedBySpawnSubsystem = false;
 	bool bManagedSimulationActive = true;

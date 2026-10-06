@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AIController.h"
 #include "Perception/AIPerceptionTypes.h"
+#include "Combat/Interface/FEEncounterTarget.h"
 #include "FEEnemyAIController.generated.h"
 
 class UAIPerceptionComponent;
@@ -25,7 +26,7 @@ struct FFE_AITargetMemory
 
 /** Event-driven sight with a staggered low-frequency decision loop for open-world enemies. */
 UCLASS()
-class FALLENERA_API AFE_EnemyAIController : public AAIController
+class FALLENERA_API AFE_EnemyAIController : public AAIController, public IFE_EncounterTarget
 {
 	GENERATED_BODY()
 
@@ -40,6 +41,7 @@ public:
 
 	/** Encounter spawns chase this target immediately, before perception has produced a stimulus. */
 	bool SetEncounterCombatTarget(AActor* TargetActor);
+	virtual bool SetEncounterTarget(AActor* TargetActor) override { return SetEncounterCombatTarget(TargetActor); }
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|AI|Target")
 	AActor* GetCurrentCombatTarget() const { return CurrentTarget.Get(); }

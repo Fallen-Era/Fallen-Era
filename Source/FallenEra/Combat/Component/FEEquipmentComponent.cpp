@@ -46,6 +46,7 @@ void UFE_EquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	bArmorEndingPlay = true;
+	if (WarmWeaponLoadHandle) { WarmWeaponLoadHandle->CancelHandle(); WarmWeaponLoadHandle.Reset(); }
 	if (ArmorLoadHandle)
 	{
 		ArmorLoadHandle->CancelHandle();
@@ -70,6 +71,10 @@ void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void UFE_EquipmentComponent::RefreshEquipment()
 {
+	if (UFE_CombatComponent* Combat = GetOwner()->FindComponentByClass<UFE_CombatComponent>())
+	{
+		Combat->RefreshAbilitySystem();
+	}
 	EquipCurrentWeapon();
 	RefreshArmorEquipment();
 }
@@ -103,6 +108,7 @@ void UFE_EquipmentComponent::PreloadWeaponAssets()
 
 void UFE_EquipmentComponent::CycleWeapon()
 {
+	if (!CanChangeEquipment() || TestItemTags.IsEmpty()) { return; }
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
 		InterruptWeaponActions();
@@ -116,8 +122,18 @@ void UFE_EquipmentComponent::CycleWeapon()
 	}
 
 	CurrentItemTagIndex = (CurrentItemTagIndex + 1 + TestItemTags.Num()) % TestItemTags.Num();
+	LastEquipmentChangeTime = GetWorld()->GetTimeSeconds();
 	EquipCurrentWeapon();
 }
+
+bool UFE_EquipmentComponent::CanChangeEquipment() const
+{
+	return !bArmorEndingPlay && GetWorld() && UFE_CombatComponent::CanActorAttack(GetOwner()) &&
+		GetWorld()->GetTimeSeconds() - LastEquipmentChangeTime >= EquipmentChangeInterval;
+}
+
+bool UFE_EquipmentComponent::ServerCycleWeapon_Validate() { return true; }
+bool UFE_EquipmentComponent::ServerUnequipWeapon_Validate() { return true; }
 
 void UFE_EquipmentComponent::ServerCycleWeapon_Implementation()
 {
@@ -126,23 +142,25 @@ void UFE_EquipmentComponent::ServerCycleWeapon_Implementation()
 
 void UFE_EquipmentComponent::EquipWeaponByItemTag(FGameplayTag ItemTag)
 {
-	if (!GetOwner() || !GetOwner()->HasAuthority() || !ItemTag.IsValid())
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !ItemTag.IsValid() || !CanChangeEquipment())
 	{
 		return;
 	}
 
 	const int32 FoundIndex = TestItemTags.IndexOfByKey(ItemTag);
-	if (FoundIndex == INDEX_NONE)
+	if (FoundIndex == INDEX_NONE || FoundIndex == CurrentItemTagIndex)
 	{
 		return;
 	}
 
 	CurrentItemTagIndex = FoundIndex;
+	LastEquipmentChangeTime = GetWorld()->GetTimeSeconds();
 	EquipCurrentWeapon();
 }
 
 void UFE_EquipmentComponent::UnequipWeapon()
 {
+	if (!CanChangeEquipment() || CurrentItemTagIndex == INDEX_NONE) { return; }
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
 		InterruptWeaponActions();
@@ -151,6 +169,7 @@ void UFE_EquipmentComponent::UnequipWeapon()
 	}
 
 	CurrentItemTagIndex = INDEX_NONE;
+	LastEquipmentChangeTime = GetWorld()->GetTimeSeconds();
 	EquipCurrentWeapon();
 }
 
@@ -195,15 +214,20 @@ void UFE_EquipmentComponent::EquipCurrentWeapon()
 		return;
 	}
 
+	PendingWeaponData = FindWeaponDataForTag(CurrentTag);
 	TArray<FSoftObjectPath> UnloadedWeaponDataPaths;
-	for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
+	if (const auto* KnownAsset = WeaponAssetByTag.Find(CurrentTag))
+	{
+		if (!KnownAsset->IsValid()) { UnloadedWeaponDataPaths.Add(KnownAsset->ToSoftObjectPath()); }
+	}
+	else for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
 	{
 		if (!WeaponDataAsset.IsNull() && !WeaponDataAsset.IsValid())
 		{
 			UnloadedWeaponDataPaths.AddUnique(WeaponDataAsset.ToSoftObjectPath());
 		}
 	}
-	if (!UnloadedWeaponDataPaths.IsEmpty())
+	if (!PendingWeaponData && !UnloadedWeaponDataPaths.IsEmpty())
 	{
 		WeaponChangedDelegate.Broadcast(nullptr);
 		RequestWeaponLoad(UnloadedWeaponDataPaths, true);
@@ -266,7 +290,6 @@ void UFE_EquipmentComponent::FinishLoadingWeaponDataAssets()
 
 void UFE_EquipmentComponent::FinishLoadingWeaponDependencies()
 {
-	WeaponLoadHandle.Reset();
 	UFE_WeaponItemData* LoadedWeaponData = PendingWeaponData;
 	if (bArmorEndingPlay)
 	{
@@ -288,22 +311,48 @@ void UFE_EquipmentComponent::FinishPreloadingWeaponDataAssets()
 		return;
 	}
 
-	// Re-request the data assets together with every dependency in one retained handle.
-	// This keeps the full weapon working set resident after the initial load callback returns.
-	TArray<FSoftObjectPath> PreloadPaths;
-	for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
+	// Cache paths, not UObject pointers: catalog montages can be collected once this initial scan finishes.
+	for (const auto& Tag : TestItemTags)
 	{
-		if (WeaponDataAsset.IsNull())
+		if (!WeaponAssetByTag.Contains(Tag))
 		{
-			continue;
+			if (UFE_WeaponItemData* Data = FindWeaponDataForTag(Tag)) { WeaponAssetByTag.Add(Tag, Data); }
 		}
-		PreloadPaths.AddUnique(WeaponDataAsset.ToSoftObjectPath());
-		GatherWeaponDependencyPaths(WeaponDataAsset.Get(), PreloadPaths, true);
 	}
-
-	WeaponPreloadHandle = PreloadPaths.IsEmpty()
+	TArray<FSoftObjectPath> PreloadPaths;
+	if (!TestItemTags.IsEmpty())
+	{
+		for (int32 Offset = 0; Offset < 2; ++Offset)
+		{
+			const int32 Index = (FMath::Max(0, CurrentItemTagIndex) + Offset) % TestItemTags.Num();
+			if (const auto* Asset = WeaponAssetByTag.Find(TestItemTags[Index]))
+			{
+				PreloadPaths.AddUnique(Asset->ToSoftObjectPath());
+			}
+		}
+	}
+	if (WarmWeaponLoadHandle) { WarmWeaponLoadHandle->CancelHandle(); }
+	WarmWeaponLoadHandle = PreloadPaths.IsEmpty()
 		? nullptr
-		: UAssetManager::GetStreamableManager().RequestAsyncLoad(PreloadPaths);
+		: UAssetManager::GetStreamableManager().RequestAsyncLoad(PreloadPaths,
+			FStreamableDelegate::CreateUObject(this, &ThisClass::FinishWarmingWeaponDataAssets));
+	WeaponPreloadHandle.Reset();
+}
+
+void UFE_EquipmentComponent::FinishWarmingWeaponDataAssets()
+{
+	if (bArmorEndingPlay || TestItemTags.IsEmpty()) { return; }
+	TArray<FSoftObjectPath> Paths;
+	for (int32 Offset = 0; Offset < 2; ++Offset)
+	{
+		const int32 Index = (FMath::Max(0, CurrentItemTagIndex) + Offset) % TestItemTags.Num();
+		if (const auto* Asset = WeaponAssetByTag.Find(TestItemTags[Index]))
+		{
+			Paths.AddUnique(Asset->ToSoftObjectPath());
+			GatherWeaponDependencyPaths(Asset->Get(), Paths, true);
+		}
+	}
+	WarmWeaponLoadHandle = Paths.IsEmpty() ? nullptr : UAssetManager::GetStreamableManager().RequestAsyncLoad(Paths);
 }
 
 void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
@@ -315,6 +364,7 @@ void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 	ApplyWeaponVisuals();
 	CacheWeaponAbilities();
 	WeaponChangedDelegate.Broadcast(CurrentWeaponData);
+	if (bPreloadWeaponAssetsOnBeginPlay) { FinishPreloadingWeaponDataAssets(); }
 }
 
 void UFE_EquipmentComponent::RequestWeaponLoad(

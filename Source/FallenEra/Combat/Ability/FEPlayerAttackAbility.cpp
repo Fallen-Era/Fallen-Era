@@ -154,37 +154,9 @@ void UFE_PlayerAttackAbility::PlayAttackEffects(
 		return;
 	}
 
-	UNiagaraSystem* MuzzleSystem = nullptr;
-	UParticleSystem* MuzzleParticleSystem = nullptr;
-	FVector MuzzleScale = FVector::OneVector;
-	FName MuzzleSocketName = NAME_None;
-	if (const UFE_RangedWeaponItemData* RangedWeaponData = Cast<UFE_RangedWeaponItemData>(WeaponData))
-	{
-		MuzzleSystem = RangedWeaponData->MuzzleNiagaraSystem.Get();
-		MuzzleParticleSystem = RangedWeaponData->MuzzleParticleSystem.Get();
-		MuzzleScale = RangedWeaponData->MuzzleNiagaraScale;
-		if (const UFE_HitscanAttackData* HitscanData = Cast<UFE_HitscanAttackData>(AttackData))
-		{
-			MuzzleSocketName = HitscanData->MuzzleSocketName;
-		}
-		else if (const UFE_ProjectileAttackDataBase* ProjectileData = Cast<UFE_ProjectileAttackDataBase>(AttackData))
-		{
-			MuzzleSocketName = ProjectileData->ProjectileSpawnSocketName;
-		}
-	}
-
 	if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
 	{
-		Combat->PlayWeaponAttackEffects(
-			WeaponData->AttackSound.Get(),
-			WeaponData->AttackSoundVolume,
-			WeaponData->AttackSoundPitch,
-			WeaponData->AttackNoiseLoudness,
-			WeaponData->AttackNoiseMaxRange,
-			MuzzleSystem,
-			MuzzleParticleSystem,
-			MuzzleSocketName,
-			MuzzleScale,
+		Combat->PlayWeaponAttackEffects(WeaponData, AttackData,
 			NetExecutionPolicy == EGameplayAbilityNetExecutionPolicy::LocalPredicted);
 	}
 }

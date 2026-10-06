@@ -69,6 +69,12 @@ void AFallenEraPlayerController::SetupInputComponent()
 	
 }
 
+void AFallenEraPlayerController::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+	PlayerStateReadyDelegate.Broadcast();
+}
+
 void AFallenEraPlayerController::PostProcessInput(const float DeltaTime, const bool bGamePaused)
 {
 	if (AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>())

@@ -71,6 +71,6 @@ void UFE_AnimNotifyState_BowChargeCurve::ApplyVisualAlpha(
 		? OwnerActor->FindComponentByClass<UFE_CombatComponent>()
 		: nullptr)
 	{
-		Combat->SetBowVisualAlpha(VisualAlpha);
+		Combat->SetBowVisualAlpha(Combat->IsBowCharging() ? VisualAlpha : 0.0f);
 	}
 }

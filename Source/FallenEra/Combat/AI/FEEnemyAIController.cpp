@@ -252,6 +252,11 @@ void AFE_EnemyAIController::UpdateDecision()
 		return;
 	}
 
+	if (!EnemyCharacter->IsAISettingsCached())
+	{
+		StopMovement();
+		return;
+	}
 	if (UAbilitySystemComponent* AbilitySystem = EnemyCharacter->GetAbilitySystemComponent();
 		AbilitySystem && AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Stunned))
 	{

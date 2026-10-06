@@ -1,6 +1,5 @@
 #include "Combat/Ability/FEBowAttackAbility.h"
 
-#include "Abilities/Tasks/AbilityTask_WaitDelay.h"
 #include "GameFramework/Character.h"
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
@@ -33,20 +32,10 @@ void UFE_BowAttackAbility::StartSpecializedChargePresentation()
 		Combat->SetBowVisualAlpha(0.0f);
 	}
 
-	if (Character->IsLocallyControlled())
-	{
-		UpdateChargePresentation();
-		ScheduleChargePresentationUpdate();
-	}
 }
 
 void UFE_BowAttackAbility::StopSpecializedChargePresentation()
 {
-	if (ChargePresentationUpdateTask)
-	{
-		ChargePresentationUpdateTask->EndTask();
-		ChargePresentationUpdateTask = nullptr;
-	}
 	if (ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo()))
 	{
 		if (UFE_CombatComponent* Combat = Character->FindComponentByClass<UFE_CombatComponent>())
@@ -59,37 +48,4 @@ void UFE_BowAttackAbility::StopSpecializedChargePresentation()
 			}
 		}
 	}
-}
-
-void UFE_BowAttackAbility::HandleChargePresentationUpdate()
-{
-	ChargePresentationUpdateTask = nullptr;
-	if (!bReleaseRequested && IsActive())
-	{
-		UpdateChargePresentation();
-		ScheduleChargePresentationUpdate();
-	}
-}
-
-void UFE_BowAttackAbility::UpdateChargePresentation()
-{
-	if (ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo()))
-	{
-		if (UFE_CombatComponent* Combat = Character->FindComponentByClass<UFE_CombatComponent>())
-		{
-			Combat->SetBowChargeAlpha(CalculateChargeAlpha());
-		}
-	}
-}
-
-void UFE_BowAttackAbility::ScheduleChargePresentationUpdate()
-{
-	if (bReleaseRequested || !IsActive())
-	{
-		return;
-	}
-	ChargePresentationUpdateTask = UAbilityTask_WaitDelay::WaitDelay(this, 1.0f / 60.0f);
-	ChargePresentationUpdateTask->OnFinish.AddDynamic(
-		this, &UFE_BowAttackAbility::HandleChargePresentationUpdate);
-	ChargePresentationUpdateTask->ReadyForActivation();
 }

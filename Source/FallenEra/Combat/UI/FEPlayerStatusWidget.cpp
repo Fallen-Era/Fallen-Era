@@ -1,14 +1,11 @@
 #include "Combat/UI/FEPlayerStatusWidget.h"
-
-#include "AbilitySystemComponent.h"
-#include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
-#include "FallenEraPlayerState.h"
+#include "Combat/UI/FEPlayerStatusViewModel.h"
+#include "Combat/UI/FEConditionSlotWidget.h"
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
-#include "GameFramework/Pawn.h"
-#include "Combat/Component/FECharacterStatusComponent.h"
-#include "Combat/UI/FEConditionSlotWidget.h"
+
+namespace { constexpr float BottomUpPanelRotation = 180.0f; }
 
 UFE_PlayerStatusWidget::UFE_PlayerStatusWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -21,190 +18,77 @@ void UFE_PlayerStatusWidget::NativeConstruct()
 	Super::NativeConstruct();
 	if (VerticalBox_ConditionBox)
 	{
-		// Reverse the panel while counter-rotating each child so new conditions fill bottom-to-top.
 		VerticalBox_ConditionBox->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
-		VerticalBox_ConditionBox->SetRenderTransformAngle(180.0f);
+		VerticalBox_ConditionBox->SetRenderTransformAngle(BottomUpPanelRotation);
 	}
 	RefreshFromPlayerState();
 }
 
 void UFE_PlayerStatusWidget::NativeDestruct()
 {
-	UnbindFromAbilitySystem();
-	UnbindFromCharacterStatus();
-	Super::NativeDestruct();
-}
-
-void UFE_PlayerStatusWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
-{
-	Super::NativeTick(MyGeometry, InDeltaTime);
-	const APawn* OwningPawn = GetOwningPlayerPawn();
-	if (!BoundAbilitySystemComponent.IsValid() || !BoundCharacterStatusComponent.IsValid() ||
-		(BoundCharacterStatusComponent.IsValid() && BoundCharacterStatusComponent->GetOwner() != OwningPawn))
+	if (StatusViewModel)
 	{
-		RefreshFromPlayerState();
+		StatusViewModel->ValuesChanged.Remove(ValuesChangedHandle);
+		StatusViewModel->ConditionsChanged.Remove(ConditionsChangedHandle);
+		StatusViewModel->Shutdown();
 	}
+	ValuesChangedHandle.Reset();
+	ConditionsChangedHandle.Reset();
+	Super::NativeDestruct();
 }
 
 void UFE_PlayerStatusWidget::RefreshFromPlayerState()
 {
-	APawn* OwningPawn = GetOwningPlayerPawn();
-	BindToCharacterStatus(OwningPawn
-		? OwningPawn->FindComponentByClass<UFE_CharacterStatusComponent>()
-		: nullptr);
-
-	AFallenEraPlayerState* PlayerState = GetOwningPlayerState<AFallenEraPlayerState>();
-	if (!PlayerState)
+	if (!StatusViewModel) { StatusViewModel = NewObject<UFE_PlayerStatusViewModel>(this); }
+	if (!ValuesChangedHandle.IsValid())
 	{
-		return;
+		ValuesChangedHandle = StatusViewModel->ValuesChanged.AddUObject(this, &ThisClass::RefreshValues);
+		ConditionsChangedHandle = StatusViewModel->ConditionsChanged.AddUObject(this, &ThisClass::RebuildConditionSlots);
 	}
-
-	UAbilitySystemComponent* AbilitySystemComponent = PlayerState->GetAbilitySystemComponent();
-	const UFallenEraAttributeSet* AttributeSet = PlayerState->GetAttributeSet();
-	if (!AbilitySystemComponent || !AttributeSet)
-	{
-		return;
-	}
-
-	BindToAbilitySystem(AbilitySystemComponent, AttributeSet);
-	RefreshAllValues(AttributeSet);
+	StatusViewModel->Initialize(GetOwningPlayer());
 }
 
-void UFE_PlayerStatusWidget::BindToCharacterStatus(UFE_CharacterStatusComponent* StatusComponent)
+void UFE_PlayerStatusWidget::RefreshValues()
 {
-	if (BoundCharacterStatusComponent.Get() == StatusComponent)
-	{
-		return;
-	}
-
-	UnbindFromCharacterStatus();
-	BoundCharacterStatusComponent = StatusComponent;
-	if (StatusComponent)
-	{
-		ActiveConditionsChangedHandle = StatusComponent->OnActiveConditionsChanged().AddUObject(
-			this, &UFE_PlayerStatusWidget::RebuildConditionSlots);
-	}
-	RebuildConditionSlots();
-}
-
-void UFE_PlayerStatusWidget::UnbindFromCharacterStatus()
-{
-	if (UFE_CharacterStatusComponent* StatusComponent = BoundCharacterStatusComponent.Get())
-	{
-		if (ActiveConditionsChangedHandle.IsValid())
-		{
-			StatusComponent->OnActiveConditionsChanged().Remove(ActiveConditionsChangedHandle);
-		}
-	}
-	ActiveConditionsChangedHandle.Reset();
-	BoundCharacterStatusComponent.Reset();
+	RefreshHealth(StatusViewModel->Health, StatusViewModel->MaxHealth);
+	RefreshStamina(StatusViewModel->Stamina, StatusViewModel->MaxStamina);
 }
 
 void UFE_PlayerStatusWidget::RebuildConditionSlots()
 {
-	ConditionSlots.Reset();
-	if (!VerticalBox_ConditionBox || !ConditionSlotWidgetClass)
+	if (!VerticalBox_ConditionBox || !ConditionSlotWidgetClass || !StatusViewModel) { return; }
+	TSet<FGameplayTag> ActiveTags;
+	for (const auto& Active : StatusViewModel->Conditions) { ActiveTags.Add(Active.ConditionTag); }
+	for (auto It = ConditionSlots.CreateIterator(); It; ++It)
 	{
-		return;
-	}
-
-	VerticalBox_ConditionBox->ClearChildren();
-	UFE_CharacterStatusComponent* StatusComponent = BoundCharacterStatusComponent.Get();
-	if (!StatusComponent)
-	{
-		return;
-	}
-
-	for (const FFE_ActiveCharacterCondition& ActiveCondition : StatusComponent->GetActiveConditions())
-	{
-		FFE_CharacterConditionDefinition Definition;
-		if (!StatusComponent->GetConditionDefinition(ActiveCondition.ConditionTag, Definition))
+		if (!ActiveTags.Contains(It.Key()))
 		{
-			continue;
+			if (It.Value()) { It.Value()->RemoveFromParent(); }
+			ConditionEndTimes.Remove(It.Key());
+			It.RemoveCurrent();
 		}
-
-		UFE_ConditionSlotWidget* ConditionSlot = CreateWidget<UFE_ConditionSlotWidget>(
-			GetOwningPlayer(), ConditionSlotWidgetClass);
+	}
+	for (const auto& Active : StatusViewModel->Conditions)
+	{
+		const FGameplayTag Tag = Active.ConditionTag;
+		UFE_ConditionSlotWidget* ConditionSlot = ConditionSlots.FindRef(Tag);
+		const double* EndTime = ConditionEndTimes.Find(Tag);
+		if (ConditionSlot && EndTime && *EndTime == Active.EndServerWorldTime) { continue; }
+		FFE_CharacterConditionDefinition Definition;
+		if (!StatusViewModel->GetConditionDefinition(Tag, Definition)) { continue; }
 		if (!ConditionSlot)
 		{
-			continue;
+			ConditionSlot = CreateWidget<UFE_ConditionSlotWidget>(GetOwningPlayer(), ConditionSlotWidgetClass);
+			if (!ConditionSlot) { continue; }
+			ConditionSlot->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
+			ConditionSlot->SetRenderTransformAngle(BottomUpPanelRotation);
+			VerticalBox_ConditionBox->AddChildToVerticalBox(ConditionSlot);
+			ConditionSlots.Add(Tag, ConditionSlot);
 		}
-		ConditionSlot->InitializeConditionSlot(
-			ActiveCondition.ConditionTag,
-			Definition.IconTexture,
-			Definition.IconSize,
-			Definition.DisplayName,
-			ActiveCondition.EndServerWorldTime);
-		ConditionSlot->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
-		ConditionSlot->SetRenderTransformAngle(180.0f);
-		VerticalBox_ConditionBox->AddChildToVerticalBox(ConditionSlot);
-		ConditionSlots.Add(ActiveCondition.ConditionTag, ConditionSlot);
+		ConditionSlot->InitializeConditionSlot(Tag, Definition.IconTexture, Definition.IconSize,
+			Definition.DisplayName, Active.EndServerWorldTime);
+		ConditionEndTimes.Add(Tag, Active.EndServerWorldTime);
 	}
-}
-
-void UFE_PlayerStatusWidget::BindToAbilitySystem(
-	UAbilitySystemComponent* AbilitySystemComponent,
-	const UFallenEraAttributeSet* AttributeSet)
-{
-	if (BoundAbilitySystemComponent.Get() == AbilitySystemComponent && BoundAttributeSet.Get() == AttributeSet)
-	{
-		return;
-	}
-
-	UnbindFromAbilitySystem();
-	BoundAbilitySystemComponent = AbilitySystemComponent;
-	BoundAttributeSet = AttributeSet;
-
-	HealthChangedHandle = AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UFallenEraAttributeSet::GetHealthAttribute()).AddUObject(this, &UFE_PlayerStatusWidget::OnHealthChanged);
-	MaxHealthChangedHandle = AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UFallenEraAttributeSet::GetMaxHealthAttribute()).AddUObject(this, &UFE_PlayerStatusWidget::OnMaxHealthChanged);
-	StaminaChangedHandle = AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UFallenEraAttributeSet::GetStaminaAttribute()).AddUObject(this, &UFE_PlayerStatusWidget::OnStaminaChanged);
-	MaxStaminaChangedHandle = AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-		UFallenEraAttributeSet::GetMaxStaminaAttribute()).AddUObject(this, &UFE_PlayerStatusWidget::OnMaxStaminaChanged);
-}
-
-void UFE_PlayerStatusWidget::UnbindFromAbilitySystem()
-{
-	UAbilitySystemComponent* AbilitySystemComponent = BoundAbilitySystemComponent.Get();
-	if (AbilitySystemComponent)
-	{
-		if (HealthChangedHandle.IsValid())
-		{
-			AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(UFallenEraAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
-		}
-		if (MaxHealthChangedHandle.IsValid())
-		{
-			AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(UFallenEraAttributeSet::GetMaxHealthAttribute()).Remove(MaxHealthChangedHandle);
-		}
-		if (StaminaChangedHandle.IsValid())
-		{
-			AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(UFallenEraAttributeSet::GetStaminaAttribute()).Remove(StaminaChangedHandle);
-		}
-		if (MaxStaminaChangedHandle.IsValid())
-		{
-			AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(UFallenEraAttributeSet::GetMaxStaminaAttribute()).Remove(MaxStaminaChangedHandle);
-		}
-	}
-
-	HealthChangedHandle.Reset();
-	MaxHealthChangedHandle.Reset();
-	StaminaChangedHandle.Reset();
-	MaxStaminaChangedHandle.Reset();
-	BoundAbilitySystemComponent.Reset();
-	BoundAttributeSet.Reset();
-}
-
-void UFE_PlayerStatusWidget::RefreshAllValues(const UFallenEraAttributeSet* AttributeSet) const
-{
-	if (!AttributeSet)
-	{
-		return;
-	}
-
-	RefreshHealth(AttributeSet->GetHealth(), AttributeSet->GetMaxHealth());
-	RefreshStamina(AttributeSet->GetStamina(), AttributeSet->GetMaxStamina());
 }
 
 void UFE_PlayerStatusWidget::RefreshHealth(float Health, float MaxHealth) const
@@ -236,41 +120,5 @@ void UFE_PlayerStatusWidget::RefreshStamina(float Stamina, float MaxStamina) con
 			NSLOCTEXT("PlayerStatusWidget", "StaminaFormat", "{0} / {1}"),
 			FText::AsNumber(FMath::RoundToInt(Stamina)),
 			FText::AsNumber(FMath::RoundToInt(MaxStamina))));
-	}
-}
-
-void UFE_PlayerStatusWidget::OnHealthChanged(const FOnAttributeChangeData& ChangeData)
-{
-	const UFallenEraAttributeSet* AttributeSet = BoundAttributeSet.Get();
-	if (AttributeSet)
-	{
-		RefreshHealth(ChangeData.NewValue, AttributeSet->GetMaxHealth());
-	}
-}
-
-void UFE_PlayerStatusWidget::OnMaxHealthChanged(const FOnAttributeChangeData& ChangeData)
-{
-	const UFallenEraAttributeSet* AttributeSet = BoundAttributeSet.Get();
-	if (AttributeSet)
-	{
-		RefreshHealth(AttributeSet->GetHealth(), ChangeData.NewValue);
-	}
-}
-
-void UFE_PlayerStatusWidget::OnStaminaChanged(const FOnAttributeChangeData& ChangeData)
-{
-	const UFallenEraAttributeSet* AttributeSet = BoundAttributeSet.Get();
-	if (AttributeSet)
-	{
-		RefreshStamina(ChangeData.NewValue, AttributeSet->GetMaxStamina());
-	}
-}
-
-void UFE_PlayerStatusWidget::OnMaxStaminaChanged(const FOnAttributeChangeData& ChangeData)
-{
-	const UFallenEraAttributeSet* AttributeSet = BoundAttributeSet.Get();
-	if (AttributeSet)
-	{
-		RefreshStamina(AttributeSet->GetStamina(), ChangeData.NewValue);
 	}
 }
