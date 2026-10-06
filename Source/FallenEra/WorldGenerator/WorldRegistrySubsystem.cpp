@@ -24,6 +24,7 @@
 #include "VoxelGraphPositionParameter.h"
 #include "VoxelNodeEvaluator.h"
 #include "WorldPersistenceTracker.h"
+#include "Async/IAsyncTask.h"
 #include "EntitySystem/MovieSceneEntitySystemRunner.h"
 
 #include "Graphs/VoxelHeightGraph.h"
@@ -38,25 +39,172 @@
 
 const FString UWorldRegistrySubsystem::RegistrySlotName = TEXT("WorldRegistry");
 
-void UWorldRegistrySubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
+void UWorldRegistrySubsystem::HandlePostOpenMap(UWorld* OpenWorld)
+{
+	switch (WorldOpenMode)
+	{
+	case EWorldOpenMode::None:
+		break;
+	case EWorldOpenMode::Create:
+		PostWorldCreate(OpenWorld);
+		break;
+	case EWorldOpenMode::Load:
+		PostWorldLoad(OpenWorld);
+		break;
+	}
+	
+	WorldOpenMode = EWorldOpenMode::None;
+}
+
+void UWorldRegistrySubsystem::PostWorldCreate(UWorld* OpenWorld)
+{
+	const FWorldCreateRequest Request = PendingCreateRequest;
+	
+	const auto Fail = [this](const TCHAR* Message)
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : %s"), *GetClass()->GetName(), TEXT(__FUNCTION__), Message);
+		ClearPendingLoad();
+	};
+	
+	if (!IsValid(OpenWorld) ||
+		OpenWorld != GetWorld() ||
+		!IsValid(WorldRegistry) ||
+		!IsValid(WorldGeneratorSettings))
+	{
+		Fail(TEXT("World, registry or settings is invalid."));
+		return;
+	}
+	
+	if (Request.WorldSize.X <= 0 || Request.WorldSize.Y <= 0)
+	{
+		Fail(TEXT("World size must be positive."));
+		return;
+	}
+	
+	AVoxelWorld* VoxelWorld = Cast<AVoxelWorld>(UGameplayStatics::GetActorOfClass(OpenWorld, AVoxelWorld::StaticClass()));
+	
+	if (!IsValid(VoxelWorld) || !IsValid(VoxelWorld->LayerStack))
+	{
+		Fail(TEXT("Voxel world or LayerStack is invalid."));
+		return;
+	}
+	
+	for (TActorIterator<AVoxelStampActor> It(OpenWorld); It; ++It)
+	{
+		Fail(TEXT("The destniation map must have no Stamp Actors."));
+		return;
+	}
+	
+	UVoxelHeightGraph* HeightGraph = WorldGeneratorSettings->VoxelGraph.LoadSynchronous();
+	
+	if (!IsValid(HeightGraph))
+	{
+		Fail(TEXT("Voxel Height Graph is invalid."));
+		return;
+	}
+	
+	const auto& HeightLayers = VoxelWorld->LayerStack->HeightLayers;
+	
+	if (HeightLayers.IsEmpty() || !IsValid(HeightLayers[0].Get()))
+	{
+		Fail(TEXT("A vaild Height Layer is required."));
+		return;
+	}
+	
+	FVoxelHeightGraphStampRef Stamp = FVoxelHeightGraphStampRef::New();
+	Stamp->Graph = HeightGraph;
+	Stamp->Layer = HeightLayers[0].Get();
+	Stamp->Transform = FTransform::Identity;
+	
+	const FVector2D HalfWorldSize(
+		Request.WorldSize.X * 0.5f,
+		Request.WorldSize.Y * 0.5f);
+	
+	const FBox2D Bounds(-HalfWorldSize, HalfWorldSize);
+	
+	FString Error;
+	if (!Stamp->SetParameter(TEXT("Bounds"), Bounds, &Error))
+	{
+		Fail(*FString::Printf(TEXT("Failed to configure terrain parameters: %s"), *Error));
+		return;
+	}
+	
+	VoxelWorld->DestroyRuntime();
+	
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = 
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	
+	AVoxelStampActor* StampActor = OpenWorld->SpawnActor<AVoxelStampActor>(
+		AVoxelStampActor::StaticClass(),
+		FTransform::Identity,
+		Params);
+	
+	if (!IsValid(StampActor))
+	{
+		Fail(TEXT("Failed to spawn terrain Stamp Actor."));
+		return;
+	}
+	
+	StampActor->SetStamp(Stamp);
+	
+	FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
+	
+	FWorldRegistryData Entry;
+	Entry.WorldId = FGuid::NewGuid();
+	Entry.DisplayName = Request.DisplayName;
+	Entry.WorldSize = Request.WorldSize;
+	Entry.Diffculty = Request.Diffculty;
+	Entry.ProfileSlotName = FString::Printf(
+		TEXT("World_%s"),
+		*Entry.WorldId.ToString(EGuidFormats::Digits));
+	
+	ActiveTracker = NewObject<UWorldPersistenceTracker>(this);
+	
+	ActiveTracker->GetRegistryDataRef() = Entry;
+	ActiveTracker->BeginSession();
+	
+	if (!SaveWorld())
+	{
+		StampActor->Destroy();
+		FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
+		ActiveTracker = nullptr;
+		
+		Fail(TEXT("Failed to save the generated world."));
+		return;
+	}
+	
+	AddRegistry(Entry);
+	ClearPendingLoad();
+	
+	VoxelWorld->CreateRuntime();
+	
+	VoxelWorld->OnNextStateRendered(
+		FSimpleDelegate::CreateWeakLambda(this, []
+		{
+			UE_LOG(LogTemp, Log, TEXT("UWorldRegistrySubsystem::%s : Create voxel terrain rendered."), TEXT(__FUNCTION__));
+		}));
+}
+
+void UWorldRegistrySubsystem::PostWorldLoad(UWorld* OpenWorld)
 {
 	if (!PendingWorldSave ||
-		!IsValid(LoadedWorld) ||
-		!LoadedWorld->IsGameWorld() ||
-		LoadedWorld->GetGameInstance() != GetGameInstance())
+		!IsValid(OpenWorld) ||
+		!OpenWorld->IsGameWorld() ||
+		OpenWorld->GetGameInstance() != GetGameInstance())
 	{
 		return;
 	}
 	
 	const FString LoadedMapPackage = UWorld::RemovePIEPrefix(
-		LoadedWorld->GetOutermost()->GetName());
+		OpenWorld->GetOutermost()->GetName());
 	
 	if (LoadedMapPackage != PendingMapPackage)
 	{
 		return;
 	}
 	
-	AVoxelWorld* VoxelWorld = Cast<AVoxelWorld>(UGameplayStatics::GetActorOfClass(LoadedWorld, AVoxelWorld::StaticClass()));
+	AVoxelWorld* VoxelWorld = Cast<AVoxelWorld>(UGameplayStatics::GetActorOfClass(OpenWorld, AVoxelWorld::StaticClass()));
 		
 	if (!IsValid(VoxelWorld))
 	{
@@ -65,7 +213,7 @@ void UWorldRegistrySubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
 		return;
 	}
 	
-	for (TActorIterator<AVoxelStampActor> It(LoadedWorld); It; ++It)
+	for (TActorIterator<AVoxelStampActor> It(OpenWorld); It; ++It)
 	{
 		UE_LOG(LogTemp, Error, TEXT("%s::%s : The destination map must have no Stamp Actors."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 		return;
@@ -83,7 +231,7 @@ void UWorldRegistrySubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
 	
 	for (const FWorldStampSnapshot& Snapshot : Save->StampSnapshots)
 	{
-		AVoxelStampActor* Actor = LoadedWorld->SpawnActor<AVoxelStampActor>(
+		AVoxelStampActor* Actor = OpenWorld->SpawnActor<AVoxelStampActor>(
 			AVoxelStampActor::StaticClass(),
 			Snapshot.WorldTransform,
 			Params);
@@ -95,7 +243,7 @@ void UWorldRegistrySubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
 				SpawnActor->Destroy();
 			}
 			
-			FVoxelStampManager::Get(LoadedWorld)->FlushUpdates();
+			FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
 
 			UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to restore world stmaps."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 			
@@ -107,7 +255,7 @@ void UWorldRegistrySubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
 		SpawnActors.Add(Actor);
 	}
 	
-	FVoxelStampManager::Get(LoadedWorld)->FlushUpdates();
+	FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
 	
 	ActiveTracker = NewObject<UWorldPersistenceTracker>(this);
 	ActiveTracker->SetWorldId(Save->Definition.WorldId);
@@ -127,8 +275,8 @@ void UWorldRegistrySubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
 		{
 			UE_LOG(LogTemp, Log, TEXT("OnNextStateRendered|FSimpleDelegate::CreateWeakLambda : Restored voxel terrain rendered."));
 		}));
-	
 }
+
 
 void UWorldRegistrySubsystem::ClearPendingLoad()
 {
@@ -156,7 +304,7 @@ void UWorldRegistrySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	ActiveTracker = NewObject<UWorldPersistenceTracker>();
 	
 	PostLoadMapHandle = 
-		FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &ThisClass::HandlePostLoadMap);
+		FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &ThisClass::HandlePostOpenMap);
 	
 	if (GEngine)
 	{
@@ -201,74 +349,6 @@ void UWorldRegistrySubsystem::Deinitialize()
 }
 
 
-#if !UE_BUILD_SHIPPING
-namespace
-{
-void LogTerrainAmplitude(UWorld* World)
-{
-	// Temporary, read-only diagnostic for the WorldGenerator test asset.
-	const TCHAR* GraphPath = TEXT("/Game/WorldGenerator/NewVoxelHeightGraph.NewVoxelHeightGraph");
-	UVoxelHeightGraph* Graph = LoadObject<UVoxelHeightGraph>(nullptr, GraphPath);
-	if (!Graph)
-	{
-		UE_LOG(LogFallenEra, Warning, TEXT("[VoxelAmplitude] Could not load %s"), GraphPath);
-		return;
-	}
-
-	const auto LogAmplitude = [](const IVoxelParameterOverridesOwner& Owner, const FString& Source)
-	{
-		FString Error;
-		// Keep the exposed type intact: Amplitude may be Float or Double.
-		const FVoxelPinValue Value = Owner.GetParameter(TEXT("Amplitude"), &Error);
-		if (!Value.IsValid())
-		{
-			UE_LOG(LogFallenEra, Warning, TEXT("[VoxelAmplitude] %s: %s"), *Source, *Error);
-			return;
-		}
-
-		UE_LOG(LogFallenEra, Log, TEXT("[VoxelAmplitude] %s: Amplitude=%s, Type=%s"),
-			*Source, *Value.ExportToString(), *Value.GetType().ToString());
-	};
-
-	LogAmplitude(*Graph, FString::Printf(TEXT("Graph asset %s"), GraphPath));
-	if (!World)
-	{
-		UE_LOG(LogFallenEra, Warning, TEXT("[VoxelAmplitude] No World: only the graph asset value was read."));
-		return;
-	}
-
-	int32 NumMatchingStamps = 0;
-	for (TActorIterator<AVoxelStampActor> It(World); It; ++It)
-	{
-		const FVoxelHeightGraphStampRef Stamp = It->GetStamp().CastTo<FVoxelHeightGraphStamp>();
-		if (!Stamp.IsValid() || Stamp->Graph.Get() != Graph)
-		{
-			continue;
-		}
-
-		++NumMatchingStamps;
-		// Reads this placed stamp's enabled override, falling back to its graph.
-		LogAmplitude(*Stamp, FString::Printf(TEXT("Placed stamp %s [%s]"),
-			*It->GetActorNameOrLabel(), *It->GetPathName()));
-	}
-
-	if (NumMatchingStamps == 0)
-	{
-		UE_LOG(LogFallenEra, Warning,
-			TEXT("[VoxelAmplitude] No loaded stamp uses this graph in %s. Open Lvl_PCG_World and run WorldGenerator.LogAmplitude there."),
-			*World->GetPathName());
-	}
-}
-
-FAutoConsoleCommandWithWorld LogTerrainAmplitudeCommand(
-	TEXT("WorldGenerator.LogAmplitude"),
-	TEXT("Log NewVoxelHeightGraph's Amplitude and the effective values of its loaded stamps in the current world."),
-	FConsoleCommandWithWorldDelegate::CreateStatic(&LogTerrainAmplitude));
-}
-#endif
-
-
-
 
 void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCreateRequest& Request)
 {
@@ -296,6 +376,11 @@ void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCrea
 		
 		return;
 	}
+	
+	PendingCreateRequest = Request;
+	WorldOpenMode = EWorldOpenMode::Create;
+	
+	OpenInitWorld();
 	
 	
 	const FIntPoint WorldSize = Request.WorldSize;
@@ -485,7 +570,7 @@ bool UWorldRegistrySubsystem::SaveWorld()
 		ReadLayer(Layer);
 	}
 	
-	FWorldRegistryData& MetaData = ActiveTracker->GetRegistryData();
+	FWorldRegistryData& MetaData = ActiveTracker->GetRegistryDataRef();
 	
 	UWorldSaveGame* Save = NewObject<UWorldSaveGame>();
 	
@@ -587,6 +672,7 @@ void UWorldRegistrySubsystem::LoadWorld(const FString SlotName)
 	
 	PendingWorldSave = Save;
 	PendingSlotName = SlotName;
+	WorldOpenMode = EWorldOpenMode::Load;
 	PendingMapPackage = Settings->InitVoxelWorld.ToSoftObjectPath().GetLongPackageName();
 	
 	OpenInitWorld();

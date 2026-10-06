@@ -19,6 +19,13 @@ class UVoxelHeightGraph;
 class UWorldPersistenceTracker;
 
 struct FVoxelHeightGraphStampRef;
+
+enum class EWorldOpenMode
+{
+	None,
+	Create,
+	Load,
+};
 /**
  * 
  */
@@ -91,11 +98,16 @@ private:
 	static constexpr int32 RegistryUserIndex = 0;
 	
 	
-	void HandlePostLoadMap(UWorld* LoadedWorld);
+	void HandlePostOpenMap(UWorld* OpenedWorld);
+	void PostWorldCreate(UWorld* OpenWorld);
+	void PostWorldLoad(UWorld* OpenWorld);
 	void ClearPendingLoad();
 	
 	UPROPERTY(Transient)
 	TObjectPtr<UWorldSaveGame> PendingWorldSave;
+	
+	FWorldCreateRequest PendingCreateRequest;
+	EWorldOpenMode WorldOpenMode = EWorldOpenMode::None;
 	
 	FString PendingSlotName;
 	FString PendingMapPackage;

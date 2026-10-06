@@ -48,7 +48,7 @@ protected:
 	void SetSessionId(FGuid NewSessionId) { SessionId = NewSessionId; }
 	void SetSlotName(FString NewSlotName) { RegistryData.ProfileSlotName = NewSlotName; }
 	
-	FWorldRegistryData& GetRegistryData() { return RegistryData; }
+	FWorldRegistryData& GetRegistryDataRef() { return RegistryData; }
 	
 	
 	friend class UWorldRegistrySubsystem;
