@@ -36,6 +36,9 @@ struct FALLENERA_API FWorldCreateRequest
 	FIntPoint WorldSize = FIntPoint::ZeroValue;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	int32 WorldSeed;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	EWorldDiffculty Diffculty = EWorldDiffculty::Normal;
 	
 };
@@ -95,7 +98,7 @@ struct FALLENERA_API FWorldDefinitionData
 	FString DisplayName;
 	
 	UPROPERTY()
-	int64 WorldSeed;
+	int32 WorldSeed = 0;
 	
 	UPROPERTY()
 	FIntPoint WorldSize = FIntPoint::ZeroValue;

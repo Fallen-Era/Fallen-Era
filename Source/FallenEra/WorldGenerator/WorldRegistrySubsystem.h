@@ -67,7 +67,7 @@ private:
 	const FGuid& WorldId);
 	
 	
-	void AddRegistry(FWorldRegistryData& NewEntry);
+	
 	
 	
 	
@@ -80,8 +80,9 @@ private:
 		FString& OutError);
 	
 private:
+	bool AddRegistry(FWorldRegistryData& NewEntry);
 	void LoadRegistry();
-	void SaveRegistry();
+	bool SaveRegistry();
 	
 	UPROPERTY()
 	const UWorldGeneratorSettings* WorldGeneratorSettings = nullptr;

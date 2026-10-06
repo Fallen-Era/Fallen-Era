@@ -181,7 +181,23 @@ void UWorldRegistrySubsystem::PostWorldCreate(UWorld* OpenWorld)
 		return;
 	}
 	
-	AddRegistry(Entry);
+	if (!AddRegistry(Entry))
+	{
+		StampActor->Destroy();
+		FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
+		ActiveTracker = nullptr;
+		
+		const bool bDeleted = UGameplayStatics::DeleteGameInSlot(Entry.ProfileSlotName, 0);
+		
+		if (!bDeleted)
+		{
+			UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to remove unreigstered slot '%s'."), 
+				*GetClass()->GetName(), TEXT(__FUNCTION__), *Entry.ProfileSlotName);
+		}
+		
+		Fail(TEXT("Failed to register the generated world."));
+		return;
+	}
 	
 	VoxelWorld->CreateRuntime();
 	
@@ -395,11 +411,17 @@ void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCrea
 
 bool UWorldRegistrySubsystem::SaveWorld()
 {
+	if (!IsValid(ActiveTracker))
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : ActiveTracker is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return false;
+	}
+	
 	UWorld* CurrentWorld = GetWorld();
 	
 	if (!IsValid(CurrentWorld))
 	{
-		UE_LOG(LogTemp, Fatal, TEXT("%s::%s : Current World is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : Current World is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 		return false;
 	}
 	
@@ -407,14 +429,14 @@ bool UWorldRegistrySubsystem::SaveWorld()
 	
 	if (!IsValid(VoxelWorld))
 	{
-		UE_LOG(LogTemp, Fatal, TEXT("%s::%s : Voxel World is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : Voxel World is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 		return false;
 	}
 	
 	UVoxelLayerStack* Stack = VoxelWorld->LayerStack;
 	if (!Stack)
 	{
-		UE_LOG(LogTemp, Fatal, TEXT("%s::%s : Stack"), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : Stack"), *GetClass()->GetName(), TEXT(__FUNCTION__));
 		return false;
 	}
 	
@@ -457,11 +479,6 @@ bool UWorldRegistrySubsystem::SaveWorld()
 		ReadLayer(Layer);
 	}
 	
-	if (!IsValid(ActiveTracker))
-	{
-		UE_LOG(LogTemp, Error, TEXT("%s::%s : ActiveTracker is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
-		return false;
-	}
 	
 	FWorldRegistryData& MetaData = ActiveTracker->GetRegistryDataRef();
 	
@@ -566,10 +583,35 @@ void UWorldRegistrySubsystem::LoadWorld(const FString SlotName)
 	
 }
 
-void UWorldRegistrySubsystem::AddRegistry(FWorldRegistryData& NewEntry)
+bool UWorldRegistrySubsystem::AddRegistry(FWorldRegistryData& NewEntry)
 {
+	if (!IsValid(WorldRegistry))
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : World registry is invalid."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return false;
+	}
+	
+	if (WorldRegistry->Find(NewEntry.WorldId) != INDEX_NONE)
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : World Id already exists."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return false;
+	}
+	
 	WorldRegistry->AddRegistry(NewEntry);
-	SaveRegistry();
+	
+	if (!SaveRegistry())
+	{
+		const int32 AddedIndex = WorldRegistry->Find(NewEntry.WorldId);
+		
+		if (AddedIndex != INDEX_NONE)
+		{
+			WorldRegistry->RemoveRegistry(AddedIndex);
+		}
+		
+		return false;
+	}
+	
+	return true;
 }
 
 void UWorldRegistrySubsystem::RemoveRegistry(FWorldRegistryData& ExistEntry)
@@ -644,23 +686,25 @@ void UWorldRegistrySubsystem::LoadRegistry()
 	
 }
 
-void UWorldRegistrySubsystem::SaveRegistry()
+bool UWorldRegistrySubsystem::SaveRegistry()
 {
-	if (WorldRegistry)
+	if (!IsValid(WorldRegistry))
 	{
-		if (!UGameplayStatics::SaveGameToSlot(WorldRegistry, RegistrySlotName, RegistryUserIndex))
-		{
-			UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to save registry slot '%s'."),
-				*GetClass()->GetName(), TEXT(__FUNCTION__), *RegistrySlotName);
-			return;
-		}
-		UE_LOG(LogTemp, Log, TEXT("%s::%s : Saved Registry."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Error,
+			TEXT("SaveRegistry: World registry is invalid."));
+		return false;
 	}
-	else
+	
+	
+	if (!UGameplayStatics::SaveGameToSlot(WorldRegistry, RegistrySlotName, RegistryUserIndex))
 	{
-		LoadRegistry();
-		UE_LOG(LogTemp, Error, TEXT("%s::%s : Registry save failed. Reason: Runtime object is invalid. Attempting to reload. Please try saving again."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to save registry slot '%s'."),
+			*GetClass()->GetName(), TEXT(__FUNCTION__), *RegistrySlotName);
+		return false;
 	}
+	
+	UE_LOG(LogTemp, Log, TEXT("%s::%s : Saved Registry."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+	return true;
 }
 
 
