@@ -15,10 +15,7 @@ void AFEBuildStorage::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 
 int32 AFEBuildStorage::StoreItems(FGameplayTag ItemTag, int32 Count)
 {
-	if (!HasAuthority() || !ItemTag.IsValid() || Count <= 0)
-	{
-		return 0;
-	}
+	if (!HasAuthority() || !ItemTag.IsValid() || Count <= 0) return 0;
 
 	int32 Remaining = Count;
 
@@ -55,20 +52,44 @@ int32 AFEBuildStorage::StoreItems(FGameplayTag ItemTag, int32 Count)
 	return Stored;
 }
 
-int32 AFEBuildStorage::TakeSlot(int32 SlotIndex, FGameplayTag ExpectedTag)
+int32 AFEBuildStorage::GetSlotCount(int32 SlotIndex, FGameplayTag ExpectedTag) const
 {
-	// 다른 플레이어가 먼저 꺼내 칸이 당겨졌을 수 있다. 종류가 다르면 엉뚱한 칸을 꺼내지 않도록 거부
 	const bool bIsValidSlot = Contents.IsValidIndex(SlotIndex) && Contents[SlotIndex].ItemTag == ExpectedTag;
-	if (!HasAuthority() || !bIsValidSlot)
-	{
-		return 0;
-	}
+	return bIsValidSlot ? FMath::Max(Contents[SlotIndex].Count, 0) : 0;
+}
 
-	const int32 Taken = Contents[SlotIndex].Count;
-	Contents.RemoveAt(SlotIndex); // 뒤 칸들이 앞으로 당겨진다 (빈 칸은 항상 뒤쪽)
+int32 AFEBuildStorage::TakeFromSlot(int32 SlotIndex, FGameplayTag ExpectedTag, int32 MaxCount)
+{
+	const int32 Taken = FMath::Min(GetSlotCount(SlotIndex, ExpectedTag), MaxCount);
+	if (!HasAuthority() || Taken <= 0) return 0;
+
+	Contents[SlotIndex].Count -= Taken;
+	if (Contents[SlotIndex].Count <= 0)
+	{
+		ClearSlot(SlotIndex);
+	}
 	OnRep_Contents();
-	
 	return Taken;
+}
+
+void AFEBuildStorage::ClearSlot(int32 SlotIndex)
+{
+	Contents.RemoveAt(SlotIndex); // 뒤 칸들이 앞으로 당겨진다 (빈 칸은 항상 뒤쪽)
+}
+
+bool AFEBuildStorage::AcceptsItem(FGameplayTag ItemTag, FText& OutReason) const
+{
+	return true;
+}
+
+FText AFEBuildStorage::GetSlotLabel(int32 SlotIndex) const
+{
+	return FText::GetEmpty();
+}
+
+bool AFEBuildStorage::IsEmpty() const
+{
+	return !Contents.ContainsByPredicate([](const FFEBuildItemCost& Slot) { return Slot.Count > 0; });
 }
 
 int32 AFEBuildStorage::GetCapacity() const
@@ -88,9 +109,10 @@ const TArray<FFEBuildItemCost>& AFEBuildStorage::GetContents() const
 
 bool AFEBuildStorage::CanDemolish(FText& OutReason) const
 {
-	if (Contents.Num() > 0)
+	// 화로는 빈 칸도 항목으로 남아 있으므로 항목 수가 아니라 개수로 판단한다
+	if (!IsEmpty())
 	{
-		OutReason = LOCTEXT("StorageNotEmpty", "보관함을 비워야 철거할 수 있습니다");
+		OutReason = LOCTEXT("StorageNotEmpty", "안의 아이템을 모두 꺼내야 철거할 수 있습니다");
 		return false;
 	}
 	return true;

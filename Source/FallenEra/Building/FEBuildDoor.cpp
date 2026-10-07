@@ -67,6 +67,7 @@ void AFEBuildDoor::OnApplyState(EFEBuildPieceState NewState)
     }
     Panel->SetRelativeLocation(HingeOffset);
     Panel->EmptyOverrideMaterials();
+    Panel->SetCollisionProfileName(GetCollisionProfileForState(NewState)); // 고스트=충돌 없음, 청사진=겹침, 완성=막음
     // 완성된 문만 NavMesh 에 반영. 청사진·고스트는 좀비가 그냥 지나간다.
     Panel->SetCanEverAffectNavigation(NewState == EFEBuildPieceState::Built);
 

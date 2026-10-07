@@ -9,6 +9,10 @@
 #include "FEBuildingTypes.h"
 #include "FEBuildingComponent.generated.h"
 
+class UAbilitySystemComponent;
+class UEnhancedInputLocalPlayerSubsystem;
+class UInputMappingContext;
+class AFEBuildFurnace;
 class AFEBuildStorage;
 class UFEBuildingViewModel;
 class AFEBuildPiece;
@@ -85,6 +89,10 @@ public:
     /** [Client Only] 보관함 칸 클릭 → 그 칸을 통째로 내 인벤토리로 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void TakeSlot(int32 SlotIndex, FGameplayTag ItemTag);
+    
+    /** [Client Only] 화로 패널의 불 켜기/끄기 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void ToggleFurnaceLit();
 
     /** HUD 위젯이 바인딩할 뷰모델. 지연 생성 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
@@ -106,6 +114,13 @@ protected:
     /** 빌드 모드 진입 시 선택되는 피스. 빌드 메뉴가 이를 대체한다. */
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building", meta = (AllowedTypes = "BuildPiece"))
     FPrimaryAssetId DefaultPieceId;
+    
+    /** 빌드 모드 중에만 추가되는 입력 (배치·취소·회전·철거). 전투 IMC(우선순위 20)보다 높아야 좌·우클릭을 가져온다 */
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Input")
+    TObjectPtr<UInputMappingContext> BuildModeMappingContext;
+
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Input")
+    int32 BuildModeMappingPriority = 30;
 
     /** [Server RPC] Location 은 정수 cm 로 양자화, YawStep 은 0..GetYawStepCount()-1 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -126,6 +141,10 @@ protected:
     /** [Server RPC] 보관함 SlotIndex 칸 → 요청자의 인벤토리 */
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerTakeItem(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag);
+    
+    /** [Server RPC] 화로 점화/소화 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerSetFurnaceLit(AFEBuildFurnace* Furnace, bool bLit);
 
     /** [Server RPC] 패널을 열 때 소지품 목록 요청 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -172,6 +191,9 @@ private:
     
     /** 보관함 칸(내용만 갱신)과 소지품 칸(다시 생성)을 그린다 */
     void RefreshStorageSlots();
+    
+    /** 열린 패널이 화로면 진행 바·버튼 문구 갱신 */
+    void RefreshFurnaceState();
 
     /** [Server Only] 현재 소지품을 요청자에게 보낸다 */
     void SendInventorySnapshot();
@@ -226,4 +248,23 @@ private:
     mutable FString LastSnapDescription;
     
     FString LastInvalidReason;
+    
+    /** [Client Only] 마지막으로 검증한 배치 위치·회전. 같으면 검증(오버랩 여러 번)을 건너뛴다 */
+    FVector LastValidatedLocation = FVector::ZeroVector;
+    uint8 LastValidatedYawStep = 0;
+
+    /** [Client Only] 마지막 검증 시각(월드 초). 음수면 다음 프레임에 무조건 검증 */
+    double LastValidationTime = -1.0;
+
+    /** [Server Only] 마지막 배치 요청 시각. 배치 속도 제한용 */
+    double LastPlaceRequestTime = -1.0;
+    
+    /** State.Building 태그와 빌드 모드 전용 입력(IMC)을 빌드 모드 여부에 맞춘다 */
+    void UpdateBuildModeState();
+    
+    /** 태그를 건 ASC. 폰이 죽어 빙의가 풀려도 같은 ASC 에서 떼기 위해 기억한다 (ASC 는 PlayerState 소유) */
+    TWeakObjectPtr<UAbilitySystemComponent> BuildModeTagOwner;
+
+    /** IMC 를 넣은 로컬 플레이어 입력 서브시스템. 폰이 사라져 컨트롤러를 못 찾아도 같은 곳에서 빼기 위해 기억한다 */
+    TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> BuildModeInputOwner;
 };

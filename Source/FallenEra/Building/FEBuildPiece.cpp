@@ -91,10 +91,8 @@ void AFEBuildPiece::InitializePiece(const UFEBuildPieceDefinition* InDefinition,
 void AFEBuildPiece::SetState(EFEBuildPieceState NewState)
 {
     const bool bCanChange = HasAuthority() && State != NewState;
-    if (!bCanChange)
-    {
-        return;
-    }
+    if (!bCanChange) return;
+
     State = NewState;
     ApplyState();
 
@@ -107,10 +105,7 @@ void AFEBuildPiece::SetState(EFEBuildPieceState NewState)
 bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag)
 {
     const bool bCanSupply = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Blueprint;
-    if (!bCanSupply)
-    {
-        return false;
-    }
+    if (!bCanSupply) return false;
 
     const int32 Index = Definition->RequiredItems.IndexOfByPredicate([&ItemTag](const FFEBuildItemCost& Cost)
     {
@@ -123,16 +118,11 @@ bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag
 
     const int32 Remaining = Definition->RequiredItems[Index].Count - SuppliedCounts[Index];
     const int32 Available = FMath::Min(Remaining, Inventory.CountItems(ItemTag));
-    if (Available <= 0)
-    {
-        return false;
-    }
+    if (Available <= 0) return false;
 
     const int32 Removed = Inventory.RemoveItems(ItemTag, Available);
-    if (Removed <= 0)
-    {
-        return false;
-    }
+    if (Removed <= 0) return false;
+    
     SuppliedCounts[Index] += Removed;
     OnRep_SuppliedCounts(); // 서버 로컬 반영
 
@@ -143,10 +133,8 @@ bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag
 bool AFEBuildPiece::TryComplete()
 {
     const bool bCanTry = HasAuthority() && State == EFEBuildPieceState::Blueprint && IsFullySupplied();
-    if (!bCanTry)
-    {
-        return false;
-    }
+    if (!bCanTry) return false;
+
     if (!UFEBuildingSubsystem::CanComplete(this))
     {
         UE_LOG(LogFEBuilding, Log, TEXT("%s: fully supplied, waiting for support"), *GetName());
@@ -163,10 +151,7 @@ bool AFEBuildPiece::CanDemolish(FText& OutReason) const
 
 void AFEBuildPiece::Demolish(IFEBuildInventoryProvider* Inventory)
 {
-    if (!HasAuthority())
-    {
-        return;
-    }
+    if (!HasAuthority()) return;
 
     if (Inventory && Definition)
     {
@@ -188,10 +173,8 @@ void AFEBuildPiece::Demolish(IFEBuildInventoryProvider* Inventory)
 
 void AFEBuildPiece::Collapse()
 {
-    if (!HasAuthority())
-    {
-        return;
-    }
+    if (!HasAuthority()) return;
+
     // 지금은 그냥 사라진다. 
     // 아이템 월드 스폰 API 가 오면 (1) 붕괴 연출(토대 제거 → 위 구조물 순차 낙하) 뒤 (2) 체력과 무관하게 루팅 아이템으로 변환한다
     UE_LOG(LogFEBuilding, Log, TEXT("%s collapsed (support %d)"), *GetName(), SupportDistance);
@@ -200,10 +183,8 @@ void AFEBuildPiece::Collapse()
 
 void AFEBuildPiece::SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance)
 {
-    if (!HasAuthority())
-    {
-        return;
-    }
+    if (!HasAuthority()) return;
+
     DesignSupportDistance = InDesignDistance;
     SupportDistance = InBuiltDistance;
 }
@@ -262,10 +243,7 @@ FText AFEBuildPiece::GetInteractText_Implementation(AActor* InstigatorActor) con
 
 void AFEBuildPiece::Interact_Implementation(AActor* InstigatorActor)
 {
-    if (!HasAuthority())
-    {
-        return; // [Server Only]
-    }
+    if (!HasAuthority()) return; // [Server Only]
 
     if (State == EFEBuildPieceState::Blueprint)
     {
@@ -419,10 +397,7 @@ void AFEBuildPiece::OnRep_SuppliedCounts()
 
 void AFEBuildPiece::RequestDefinition()
 {
-    if (!PieceId.IsValid())
-    {
-        return;
-    }
+    if (!PieceId.IsValid()) return;
 
     UAssetManager& AssetManager = UAssetManager::Get();
     if (!AssetManager.GetPrimaryAssetPath(PieceId).IsValid())
@@ -449,10 +424,8 @@ void AFEBuildPiece::ApplyMaterialToAll(UStaticMeshComponent* MeshComponent, cons
 {
     // 고스트/청사진 머티리얼은 작은 Unlit 머티리얼이라 첫 사용 시 동기 로드해도 부담이 없다.
     UMaterialInterface* Material = SoftMaterial.LoadSynchronous();
-    if (MeshComponent == nullptr || Material == nullptr)
-    {
-        return;
-    }
+    if (MeshComponent == nullptr || Material == nullptr) return;
+
     for (int32 SlotIndex = 0; SlotIndex < MeshComponent->GetNumMaterials(); ++SlotIndex)
     {
         MeshComponent->SetMaterial(SlotIndex, Material);
@@ -472,10 +445,7 @@ FName AFEBuildPiece::GetCollisionProfileForState(EFEBuildPieceState PieceState)
 void AFEBuildPiece::ApplyState()
 {
     UStaticMesh* StaticMesh = Definition ? Definition->Mesh.Get() : nullptr;
-    if (StaticMesh == nullptr)
-    {
-        return; // 정의가 아직 해석되지 않았거나 Runtime 번들이 로드되지 않음. 이후 콜백에서 다시 시도된다.
-    }
+    if (StaticMesh == nullptr)return; // 정의가 아직 해석되지 않았거나 Runtime 번들이 로드되지 않음. 이후 콜백에서 다시 시도된다.
 
     Mesh->SetStaticMesh(StaticMesh);
     Mesh->EmptyOverrideMaterials();

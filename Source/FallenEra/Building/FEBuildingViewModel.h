@@ -85,7 +85,9 @@ public:
 	/** bInIsStorageSlot: 보관함 칸이면 true. InSlotIndex: 보관함 칸 번호 (소지품 칸은 INDEX_NONE) */
 	void Initialize(UFEBuildingComponent* InComponent, bool bInIsStorageSlot, int32 InSlotIndex);
 	void SetItem(FGameplayTag InItemTag, int32 InCount);
-	void SetEmpty();
+	
+	/** EmptyLabel 이 있으면 빈 칸 가운데에 표시 (화로의 "연료/재료/결과") */
+	void SetEmpty(const FText& EmptyLabel = FText::GetEmpty());
 
 	/** [Client Only] 칸 클릭 → 보관함 칸이면 꺼내기, 소지품 칸이면 넣기 */
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
@@ -147,6 +149,12 @@ public:
 	void SetStorageSlots(const TArray<UObject*>& InSlots);
 	void SetCarriedSlots(const TArray<UObject*>& InSlots);
 	void SetNotice(const FText& InText); /** 잠깐 띄우는 안내 문구. 빈 텍스트면 숨김 */
+	void SetFurnaceVisible(bool bInVisible);
+	void SetFurnaceState(bool bInIsLit, float InProgress);
+
+	/** [Client Only] 화로 "불 켜기/끄기" 버튼 */
+	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
+	void ToggleFurnaceLit();
 
 	/** [Client Only] 저장고 패널 "닫기" 버튼 */
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
@@ -205,6 +213,17 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
 	ESlateVisibility NoticeVisibility = ESlateVisibility::Collapsed;
+	
+	/** 보관함 패널 안의 화로 전용 줄 (진행 바 + 버튼) */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	ESlateVisibility FurnaceVisibility = ESlateVisibility::Collapsed;
+
+	/** 0~1. ProgressBar.Percent */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	float FurnaceProgress = 0.f;
+
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText FireButtonText;
 
     TWeakObjectPtr<UFEBuildingComponent> Component;
 };

@@ -12,6 +12,8 @@ namespace FEBuildingTags
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Build_Demolish,    "Ability.Input.Build.Demolish",  "X. 조준 피스 철거");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Build_Menu,        "Ability.Input.Build.Menu",      "Tab. 빌드 메뉴 열기/닫기 (빌드 모드 밖에서 누르면 진입)");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Interact,          "Ability.Input.Interact",        "E. 조준/근접 IFEInteractable 과 상호작용. 팀 공용 후보");
+    
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Building,                  "State.Building",                "빌드 모드 중 (로컬). 상호작용 등이 이 태그로 스스로 꺼진다");
 
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Build_Piece_Structure,           "Build.Piece.Structure",  "토대, 벽, 천장, 기둥, 문");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Build_Piece_Functional,          "Build.Piece.Functional", "작업대, 저장고, 화로, 모닥불, 침구");
@@ -32,6 +34,11 @@ namespace FEBuildingTags
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Build_Socket_Ceiling_CornerTop,  "Build.Socket.Ceiling.CornerTop", "천장 윗면 코너. 2층 기둥이 서는 자리 (상대 전용)");
     UE_DEFINE_GAMEPLAY_TAG(Build_Socket_Furniture_Base,             "Build.Socket.Furniture.Base");
 
-    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_Wood,              "Item.Resource.Wood",  "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
-    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_Stone,             "Item.Resource.Stone", "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_Wood,              "Item.Resource.Wood",       "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_Stone,             "Item.Resource.Stone",      "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_IronOre,           "Item.Resource.IronOre",    "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_IronIngot,         "Item.Resource.IronIngot",  "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Food_RawMeat,               "Item.Food.RawMeat",        "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Food_CookedMeat,            "Item.Food.CookedMeat",     "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
 }

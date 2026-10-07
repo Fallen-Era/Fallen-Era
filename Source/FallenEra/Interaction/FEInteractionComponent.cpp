@@ -3,6 +3,8 @@
 #include "FEInteractionComponent.h"
 #include "FEInteractable.h"
 #include "FEInteractPromptViewModel.h"
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemGlobals.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
@@ -40,11 +42,9 @@ UFEInteractPromptViewModel* UFEInteractionComponent::GetPromptViewModel()
 void UFEInteractionComponent::UpdatePrompt()
 {
     const APawn* Pawn = Cast<APawn>(GetOwner());
-    if (Pawn == nullptr || !Pawn->IsLocallyControlled())
-    {
-        return;
-    }
-    AActor* Target = FindInteractTarget();
+    if (Pawn == nullptr || !Pawn->IsLocallyControlled()) return;
+
+    AActor* Target = IsBlockedByTags() ? nullptr : FindInteractTarget();
     const FText Prompt = Target ? IFEInteractable::Execute_GetInteractText(Target, GetOwner()) : FText::GetEmpty();
     GetPromptViewModel()->SetPrompt(Prompt);
 }
@@ -52,15 +52,15 @@ void UFEInteractionComponent::UpdatePrompt()
 bool UFEInteractionComponent::IsInteractable(const AActor* Target, AActor* InstigatorActor)
 {
     const bool bImplements = IsValid(Target) && Target->GetClass()->ImplementsInterface(UFEInteractable::StaticClass());
-    if (!bImplements)
-    {
-        return false;
-    }
+    if (!bImplements) return false;
+
     return IFEInteractable::Execute_CanInteract(const_cast<AActor*>(Target), InstigatorActor);
 }
 
 void UFEInteractionComponent::TryInteract()
 {
+    if (IsBlockedByTags()) return; // 같은 키를 쓰는 다른 모드(빌드 등)가 입력을 쓰는 중
+
     if (AActor* Target = FindInteractTarget())
     {
         ServerInteract(Target);
@@ -127,10 +127,8 @@ AActor* UFEInteractionComponent::FindInteractTarget() const
 bool UFEInteractionComponent::GetViewPoint(FVector& OutLocation, FRotator& OutRotation) const
 {
     const APawn* Pawn = Cast<APawn>(GetOwner());
-    if (Pawn == nullptr)
-    {
-        return false;
-    }
+    if (Pawn == nullptr) return false;
+
     if (const APlayerController* PlayerController = Pawn->GetController<APlayerController>())
     {
         PlayerController->GetPlayerViewPoint(OutLocation, OutRotation);
@@ -152,6 +150,14 @@ FCollisionObjectQueryParams UFEInteractionComponent::MakeObjectQuery() const
     return Query;
 }
 
+bool UFEInteractionComponent::IsBlockedByTags() const
+{
+    if (BlockedTags.IsEmpty()) return false;
+
+    const UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner());
+    return ASC != nullptr && ASC->HasAnyMatchingGameplayTags(BlockedTags);
+}
+
 bool UFEInteractionComponent::ServerInteract_Validate(AActor* Target)
 {
     return Target != nullptr;
@@ -161,10 +167,8 @@ void UFEInteractionComponent::ServerInteract_Implementation(AActor* Target)
 {
     AActor* Owner = GetOwner();
     const bool bCanHandle = Owner != nullptr && Owner->HasAuthority() && IsValid(Target);
-    if (!bCanHandle)
-    {
-        return;
-    }
+    if (!bCanHandle) return;
+
 
     // 클라 타게팅은 조준 거리 + 탐색 반경 안. 지연을 감안해 여유를 준다.
     const float MaxReach = InteractDistance + SearchRadius + 200.f;

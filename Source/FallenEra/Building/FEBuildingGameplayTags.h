@@ -19,6 +19,9 @@ namespace FEBuildingTags
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Build_Demolish);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Build_Menu);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Interact);
+    
+    // 상태 (로컬 loose 태그. 다른 시스템이 "빌드 중"을 알아야 할 때 이 태그만 본다)
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Building);
 
     // 피스 분류 (UFEBuildPieceDefinition::Category)
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Piece_Structure);
@@ -44,4 +47,9 @@ namespace FEBuildingTags
     // 아이템 담당이 Item.* 태그를 정의하면 이 줄과 DA 의 재료 태그를 교체하고 삭제
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_Wood);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_Stone);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_IronOre);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_IronIngot);
+    
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Food_RawMeat);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Food_CookedMeat);
 }

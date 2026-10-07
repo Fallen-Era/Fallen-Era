@@ -85,14 +85,14 @@ void UFEItemSlotViewModel::SetItem(FGameplayTag InItemTag, int32 InCount)
     UE_MVVM_SET_PROPERTY_VALUE(bIsFilled, true);
 }
 
-void UFEItemSlotViewModel::SetEmpty()
+void UFEItemSlotViewModel::SetEmpty(const FText& EmptyLabel)
 {
     Count = 0;
     UE_MVVM_SET_PROPERTY_VALUE(ItemTag, FGameplayTag());
-    UE_MVVM_SET_PROPERTY_VALUE(ItemName, FText::GetEmpty());
+    UE_MVVM_SET_PROPERTY_VALUE(ItemName, EmptyLabel);
     UE_MVVM_SET_PROPERTY_VALUE(IconBrush, FSlateBrush());
     UE_MVVM_SET_PROPERTY_VALUE(IconVisibility, ESlateVisibility::Collapsed);
-    UE_MVVM_SET_PROPERTY_VALUE(NameVisibility, ESlateVisibility::Collapsed);
+    UE_MVVM_SET_PROPERTY_VALUE(NameVisibility, EmptyLabel.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
     UE_MVVM_SET_PROPERTY_VALUE(CountVisibility, ESlateVisibility::Collapsed);
     UE_MVVM_SET_PROPERTY_VALUE(bIsFilled, false);
 }
@@ -100,10 +100,8 @@ void UFEItemSlotViewModel::SetEmpty()
 void UFEItemSlotViewModel::Click()
 {
     UFEBuildingComponent* Owner = Component.Get();
-    if (Owner == nullptr || !bIsFilled)
-    {
-        return;
-    }
+    if (Owner == nullptr || !bIsFilled) return;
+
     if (bIsStorageSlot)
     {
         Owner->TakeSlot(SlotIndex, ItemTag);
@@ -192,6 +190,27 @@ void UFEBuildingViewModel::SetNotice(const FText& InText)
 {
     UE_MVVM_SET_PROPERTY_VALUE(NoticeText, InText);
     UE_MVVM_SET_PROPERTY_VALUE(NoticeVisibility, InText.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+}
+
+void UFEBuildingViewModel::SetFurnaceVisible(bool bInVisible)
+{
+    UE_MVVM_SET_PROPERTY_VALUE(FurnaceVisibility, bInVisible ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+}
+
+void UFEBuildingViewModel::SetFurnaceState(bool bInIsLit, float InProgress)
+{
+    UE_MVVM_SET_PROPERTY_VALUE(FurnaceProgress, InProgress);
+    UE_MVVM_SET_PROPERTY_VALUE(FireButtonText, bInIsLit
+        ? NSLOCTEXT("FEBuilding", "FireOff", "불 끄기")
+        : NSLOCTEXT("FEBuilding", "FireOn", "불 켜기"));
+}
+
+void UFEBuildingViewModel::ToggleFurnaceLit()
+{
+    if (UFEBuildingComponent* Owner = Component.Get())
+    {
+        Owner->ToggleFurnaceLit();
+    }
 }
 
 void UFEBuildingViewModel::CloseStoragePanel()

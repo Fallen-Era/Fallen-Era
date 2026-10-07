@@ -8,6 +8,10 @@
 #include "FEBuildingSubsystem.h"
 #include "FEBuildingViewModel.h"
 #include "FEBuildStorage.h"
+#include "FEBuildFurnace.h"
+#include "FEBuildingGameplayTags.h"
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemGlobals.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StaticMesh.h"
@@ -15,8 +19,10 @@
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
-#include "DrawDebugHelpers.h"
+#include "Stats/Stats.h"
 #include "Engine/OverlapResult.h"
+#include "EnhancedInputSubsystems.h"
+#include "Engine/LocalPlayer.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -37,6 +43,15 @@ static TAutoConsoleVariable<bool> CVarFEShowSupport(
 
 namespace
 {
+    /** 클라·서버 사이 위치 차이(네트워크 지연)를 흡수하는 거리 여유. 거리 검사 두 곳이 반드시 같은 값을 써야 한다 */
+    constexpr float ReachSlack = 300.f;
+
+    /** 배치 트랜스폼이 그대로여도 이 간격마다 다시 검증한다 (다른 플레이어가 바로 옆에 지은 경우) */
+    constexpr double PreviewRevalidateInterval = 0.25;
+
+    /** [Server] 한 플레이어의 배치 요청 최소 간격. 사람 손으로는 넘을 수 없는 속도 */
+    constexpr double MinPlaceInterval = 0.1;
+    
     UClass* ResolvePieceClass(const UFEBuildPieceDefinition* Piece)
     {
         UClass* LoadedClass = Piece->PieceClass.Get();
@@ -111,6 +126,8 @@ void UFEBuildingComponent::ToggleBuildMode()
         return;
     }
     bIsInBuildMode = true;
+    UpdateBuildModeState();
+    UE_LOG(LogFEBuilding, Log, TEXT("Build mode on"));
     YawStepOffset = 0;
     SetComponentTickEnabled(true);
     GetViewModel()->SetBuildMode(true);
@@ -123,10 +140,7 @@ void UFEBuildingComponent::SelectPiece(FPrimaryAssetId InPieceId)
     SelectedPiece = nullptr;
     SelectedPieceId = InPieceId;
 
-    if (!InPieceId.IsValid())
-    {
-        return;
-    }
+    if (!InPieceId.IsValid()) return;
 
     UAssetManager& AssetManager = UAssetManager::Get();
     if (!AssetManager.GetPrimaryAssetPath(InPieceId).IsValid())
@@ -144,10 +158,8 @@ void UFEBuildingComponent::SelectPiece(FPrimaryAssetId InPieceId)
 void UFEBuildingComponent::HandlePreviewAssetsLoaded(FPrimaryAssetId LoadedPieceId)
 {
     const bool bStillWanted = bIsInBuildMode && LoadedPieceId == SelectedPieceId;
-    if (!bStillWanted)
-    {
-        return; // 로드 중에 다른 피스를 고르거나 빌드 모드를 나간 경우
-    }
+    if (!bStillWanted) return; // 로드 중에 다른 피스를 고르거나 빌드 모드를 나간 경우
+    
     SelectedPiece = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(LoadedPieceId));
     UE_LOG(LogFEBuilding, Log, TEXT("Selected piece: %s"), *LoadedPieceId.ToString());
     
@@ -170,16 +182,20 @@ void UFEBuildingComponent::RotatePreview(int32 Direction)
 void UFEBuildingComponent::ConfirmPlacement()
 {
     const bool bCanPlace = bIsInBuildMode && bIsPreviewValid && SelectedPiece != nullptr;
-    if (!bCanPlace)
-    {
-        return;
-    }
+    if (!bCanPlace) return;
+
     ServerPlacePiece(SelectedPieceId, PreviewLocation, PreviewYawStep);
 }
 
 void UFEBuildingComponent::CancelBuild()
 {
+    const bool bWasInBuildMode = bIsInBuildMode;
     bIsInBuildMode = false;
+    UpdateBuildModeState();
+    if (bWasInBuildMode)
+    {
+        UE_LOG(LogFEBuilding, Log, TEXT("Build mode off")); // 취소 입력은 빌드 모드 밖에서도 오므로 실제로 나갈 때만
+    }
     SetComponentTickEnabled(false);
     DestroyPreview();
     SelectedPiece = nullptr;
@@ -229,21 +245,16 @@ void UFEBuildingComponent::ToggleBuildMenu()
 
 void UFEBuildingComponent::CloseBuildMenu()
 {
-    if (!bIsMenuOpen)
-    {
-        return;
-    }
+    if (!bIsMenuOpen) return;
     bIsMenuOpen = false;
+    
     GetViewModel()->SetMenuOpen(false);
     UpdateUIMode();
 }
 
 void UFEBuildingComponent::BuildPieceEntries()
 {
-    if (!bIsMenuOpen)
-    {
-        return; // 로드 중에 닫힘
-    }
+    if (!bIsMenuOpen) return; // 로드 중에 닫힘
 
     TArray<FPrimaryAssetId> PieceIds;
     UAssetManager::Get().GetPrimaryAssetIdList(UFEBuildPieceDefinition::AssetType, PieceIds);
@@ -337,7 +348,16 @@ void UFEBuildingComponent::OpenStoragePanel(AFEBuildStorage* Storage)
     const UFEBuildPieceDefinition* Definition = Storage->GetDefinition();
     GetViewModel()->SetStorageTitle(Definition ? Definition->DisplayName : FText::GetEmpty());
     GetViewModel()->SetStoragePanelOpen(true);
-
+    
+    // 화로면 진행 바 줄을 보이고 점화·진행도 변화를 받는다
+    AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(Storage);
+    if (Furnace)
+    {
+        Furnace->OnFurnaceStateChangedNative.AddUObject(this, &UFEBuildingComponent::RefreshFurnaceState);
+    }
+    GetViewModel()->SetFurnaceVisible(Furnace != nullptr);
+    
+    RefreshFurnaceState();
     RefreshStorageSlots();      // 보관함 내용만으로 먼저 그린다
     ServerRequestInventory();   // 소지품이 도착하면 ClientReceiveInventory 가 다시 그린다
     UpdateUIMode();
@@ -349,21 +369,32 @@ void UFEBuildingComponent::CloseStoragePanel()
     {
         StorageTarget->OnContentsChangedNative.RemoveAll(this);
         StorageTarget->OnDestroyed.RemoveDynamic(this, &UFEBuildingComponent::HandleStorageTargetDestroyed);
+        if (AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(StorageTarget))
+        {
+            Furnace->OnFurnaceStateChangedNative.RemoveAll(this);
+        }
         StorageTarget = nullptr;
     }
     CarriedItems.Reset();
     GetViewModel()->SetStoragePanelOpen(false);
     GetViewModel()->SetStorageSlots(TArray<UObject*>());
     GetViewModel()->SetCarriedSlots(TArray<UObject*>());
+    GetViewModel()->SetFurnaceVisible(false);
     UpdateUIMode();
 }
 
 void UFEBuildingComponent::StoreStack(FGameplayTag ItemTag, int32 Count)
 {
-    if (StorageTarget && ItemTag.IsValid() && Count > 0)
+    if (StorageTarget == nullptr || !ItemTag.IsValid() || Count <= 0) return;
+
+    // 화로는 연료·재료만 받는다. 클라가 먼저 판단해 바로 알려 주고, 서버 StoreItems 가 같은 검사를 다시 한다
+    FText Reason;
+    if (!StorageTarget->AcceptsItem(ItemTag, Reason))
     {
-        ServerStoreItem(StorageTarget, ItemTag, Count);
+        ShowNotice(Reason);
+        return;
     }
+    ServerStoreItem(StorageTarget, ItemTag, Count);
 }
 
 void UFEBuildingComponent::TakeSlot(int32 SlotIndex, FGameplayTag ItemTag)
@@ -376,10 +407,7 @@ void UFEBuildingComponent::TakeSlot(int32 SlotIndex, FGameplayTag ItemTag)
 
 void UFEBuildingComponent::RefreshStorageSlots()
 {
-    if (StorageTarget == nullptr)
-    {
-        return;
-    }
+    if (StorageTarget == nullptr) return;
 
     // 보관함: 앞쪽부터 찬 칸, 나머지는 빈 칸
     const TArray<FFEBuildItemCost>& Contents = StorageTarget->GetContents();
@@ -387,17 +415,14 @@ void UFEBuildingComponent::RefreshStorageSlots()
     for (int32 Index = 0; Index < Slots.Num(); ++Index)
     {
         UFEItemSlotViewModel* Slot = Cast<UFEItemSlotViewModel>(Slots[Index]);
-        if (Slot == nullptr)
-        {
-            continue;
-        }
-        if (Contents.IsValidIndex(Index))
+        const bool bIsFilled = Contents.IsValidIndex(Index) && Contents[Index].Count > 0; // 화로는 빈 칸도 항목으로 있다
+        if (bIsFilled)
         {
             Slot->SetItem(Contents[Index].ItemTag, Contents[Index].Count);
         }
         else
         {
-            Slot->SetEmpty();
+            Slot->SetEmpty(StorageTarget->GetSlotLabel(Index));
         }
     }
 
@@ -435,6 +460,76 @@ void UFEBuildingComponent::ShowNotice(const FText& Text)
     }), 2.f, false);
 }
 
+void UFEBuildingComponent::UpdateBuildModeState()
+{
+    // 1) State.Building 태그. 빌드 모드 중엔 회전(E)과 상호작용(E)이 같은 키라 상호작용 컴포넌트가 이 태그를 보고 스스로 꺼진다.
+    //    로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
+    UAbilitySystemComponent* ASC = bIsInBuildMode
+        ? UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner())
+        : BuildModeTagOwner.Get();
+    if (ASC != nullptr)
+    {
+        ASC->SetLooseGameplayTagCount(FEBuildingTags::State_Building, bIsInBuildMode ? 1 : 0);
+    }
+    BuildModeTagOwner = bIsInBuildMode ? ASC : nullptr;
+
+    // 2) 빌드 모드 전용 IMC. 전투 IMC(우선순위 20)보다 높게 넣어 같은 키(좌·우클릭)를 가져온다 → 빌드 모드 중엔 공격이 나가지 않는다.
+    //    뺄 때는 넣었던 서브시스템을 쓴다. 폰이 사라지는 EndPlay 에선 컨트롤러를 이미 못 찾을 수 있다.
+    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = BuildModeInputOwner.Get();
+    if (bIsInBuildMode)
+    {
+        const APawn* Pawn = Cast<APawn>(GetOwner());
+        const APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+        InputSubsystem = PlayerController
+            ? ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer())
+            : nullptr;
+    }
+
+    if (BuildModeMappingContext == nullptr)
+    {
+        if (bIsInBuildMode)
+        {
+            UE_LOG(LogFEBuilding, Warning, TEXT("BuildModeMappingContext is not set on %s. Place/Cancel/Rotate keys will not work."), *GetNameSafe(GetOwner()));
+        }
+    }
+    else if (InputSubsystem != nullptr)
+    {
+        if (bIsInBuildMode)
+        {
+            InputSubsystem->AddMappingContext(BuildModeMappingContext, BuildModeMappingPriority);
+        }
+        else
+        {
+            InputSubsystem->RemoveMappingContext(BuildModeMappingContext);
+        }
+        UE_LOG(LogFEBuilding, Log, TEXT("Build mode input %s (priority %d)"), bIsInBuildMode ? TEXT("added") : TEXT("removed"), BuildModeMappingPriority);
+    }
+    BuildModeInputOwner = bIsInBuildMode ? InputSubsystem : nullptr;
+}
+
+void UFEBuildingComponent::RefreshFurnaceState()
+{
+    if (const AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(StorageTarget))
+    {
+        GetViewModel()->SetFurnaceState(Furnace->IsLit(), Furnace->GetProcessPercent() / 100.f);
+    }
+}
+
+void UFEBuildingComponent::ToggleFurnaceLit()
+{
+    AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(StorageTarget);
+    if (Furnace == nullptr) return;
+
+    const bool bWantLit = !Furnace->IsLit();
+    FText Reason;
+    if (bWantLit && !Furnace->CanIgnite(Reason))
+    {
+        ShowNotice(Reason);
+        return;
+    }
+    ServerSetFurnaceLit(Furnace, bWantLit);
+}
+
 bool UFEBuildingComponent::IsInBuildMode() const
 {
     return bIsInBuildMode;
@@ -461,10 +556,8 @@ UFEBuildingViewModel* UFEBuildingComponent::GetViewModel()
 void UFEBuildingComponent::RefreshSupplyRows()
 {
     const UFEBuildPieceDefinition* Definition = SupplyTarget ? SupplyTarget->GetDefinition() : nullptr;
-    if (Definition == nullptr)
-    {
-        return;
-    }
+    if (Definition == nullptr) return;
+
     if (SupplyTarget->IsFullySupplied())
     {
         CloseSupplyPanel(); // 다 찼다. 완성 여부는 지지 구조가 결정하므로 패널은 여기서 끝
@@ -490,10 +583,7 @@ void UFEBuildingComponent::UpdateUIMode()
 {
     const APawn* Pawn = Cast<APawn>(GetOwner());
     APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    if (PlayerController == nullptr || !PlayerController->IsLocalController())
-    {
-        return;
-    }
+    if (PlayerController == nullptr || !PlayerController->IsLocalController()) return;
 
     const bool bUIOpen = bIsMenuOpen || SupplyTarget != nullptr || StorageTarget != nullptr;
     PlayerController->SetShowMouseCursor(bUIOpen);
@@ -521,6 +611,9 @@ void UFEBuildingComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 
 void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    // 빌드 모드 중 폰이 사라지면 PlayerState 의 ASC 에 태그가 남아 다음 폰의 상호작용이 막힌다
+    bIsInBuildMode = false;
+    UpdateBuildModeState();
     DestroyPreview();
     CloseSupplyPanel();
     CloseStoragePanel();
@@ -529,10 +622,9 @@ void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void UFEBuildingComponent::UpdatePreview()
 {
-    if (SelectedPiece == nullptr)
-    {
-        return; // 에셋 로드 중
-    }
+    QUICK_SCOPE_CYCLE_COUNTER(STAT_FEBuild_UpdatePreview);
+    
+    if (SelectedPiece == nullptr) return; // 에셋 로드 중
 
     const bool bNeedsNewGhost = PreviewActor == nullptr || PreviewActor->GetDefinition() != SelectedPiece;
     if (bNeedsNewGhost)
@@ -543,20 +635,37 @@ void UFEBuildingComponent::UpdatePreview()
         PreviewActor->InitializePiece(SelectedPiece, EFEBuildPieceState::Preview);
         PreviewActor->FinishSpawning(FTransform::Identity);
         bIsPreviewValid = true; // InitializePiece 가 "유효" 고스트 머티리얼을 적용한 상태
+        LastValidationTime = -1.0; // 피스가 바뀌었으면 바로 검증
     }
 
     if (!ComputePlacement(PreviewLocation, PreviewYawStep))
     {
         PreviewActor->SetActorHiddenInGame(true);
         bIsPreviewValid = false;
+        LastValidationTime = -1.0; // 다시 보일 때 같은 자리여도 캐시를 믿지 않는다
         return;
     }
+    
+    // 원격 클라의 위치는 FVector_NetQuantize 로 1cm 반올림돼 서버에 도착한다.
+    // 클라도 같은 위치로 놓고 검증해야 벽에 붙이거나 가장자리에 걸칠 때 "초록인데 서버 거부"가 생기지 않는다.
+    PreviewLocation = PreviewLocation.GridSnap(1.f);
 
     const FTransform PlacementTransform = MakePlacementTransform(PreviewLocation, PreviewYawStep);
     PreviewActor->SetActorHiddenInGame(false);
     PreviewActor->SetActorTransform(PlacementTransform);
 
     DrawDebugOverlays();
+
+    // 고스트 위치는 매 프레임 따라가고(끊겨 보이면 바로 티가 남), 무거운 배치 검증은
+    // 위치·회전이 바뀌었거나 주기가 됐을 때만 한다. 소켓에 스냅된 동안엔 위치가 그대로라 대부분 건너뛴다.
+    const double Now = GetWorld()->GetTimeSeconds();
+    const bool bTransformChanged = !PreviewLocation.Equals(LastValidatedLocation, 0.1f) || PreviewYawStep != LastValidatedYawStep;
+    const bool bIsDue = LastValidationTime < 0.0 || Now - LastValidationTime >= PreviewRevalidateInterval;
+    if (!bTransformChanged && !bIsDue) return;
+
+    LastValidatedLocation = PreviewLocation;
+    LastValidatedYawStep = PreviewYawStep;
+    LastValidationTime = Now;
 
     FText Reason;
     const bool bIsValid = ValidatePlacement(GetWorld(), SelectedPiece, PlacementTransform, GetOwner(), &Reason);
@@ -566,11 +675,11 @@ void UFEBuildingComponent::UpdatePreview()
         PreviewActor->SetPreviewValid(bIsValid);
         if (bIsValid)
         {
-            UE_LOG(LogFEBuilding, Log, TEXT("Preview valid"));
+            UE_LOG(LogFEBuilding, Verbose, TEXT("Preview valid"));
         }
         else
         {
-            UE_LOG(LogFEBuilding, Log, TEXT("Preview invalid: %s"), *ReasonString);
+            UE_LOG(LogFEBuilding, Verbose, TEXT("Preview invalid: %s"), *ReasonString);
         }
     }
     LastInvalidReason = ReasonString;
@@ -591,10 +700,7 @@ void UFEBuildingComponent::DrawDebugOverlays() const
 {
     const bool bDrawSockets = CVarFEDebugSockets.GetValueOnGameThread();
     const bool bShowSupport = CVarFEShowSupport.GetValueOnGameThread();
-    if (!bDrawSockets && !bShowSupport)
-    {
-        return;
-    }
+    if (!bDrawSockets && !bShowSupport) return;
 
     const UWorld* World = GetWorld();
     const float Radius = bShowSupport ? 2000.f : UFEBuildingSettings::Get()->SnapRadius * 2.f;
@@ -631,10 +737,7 @@ void UFEBuildingComponent::DrawDebugOverlays() const
 bool UFEBuildingComponent::GetViewPoint(FVector& OutLocation, FRotator& OutRotation) const
 {
     const APawn* Pawn = Cast<APawn>(GetOwner());
-    if (Pawn == nullptr)
-    {
-        return false;
-    }
+    if (Pawn == nullptr) return false;
 
     if (const APlayerController* PlayerController = Pawn->GetController<APlayerController>())
     {
@@ -651,10 +754,8 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
 {
     FVector ViewLocation;
     FRotator ViewRotation;
-    if (!GetViewPoint(ViewLocation, ViewRotation))
-    {
-        return false;
-    }
+    if (!GetViewPoint(ViewLocation, ViewRotation)) return false;
+
     const APawn* Pawn = Cast<APawn>(GetOwner());
 
     const UFEBuildingSettings* Settings = UFEBuildingSettings::Get();
@@ -675,10 +776,7 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
     const FVector CursorPoint = bHitSomething ? Hit.ImpactPoint : TraceEnd;
 
     // 근처 구조물의 소켓에 맞출 수 있으면 스냅이 우선. 스냅 중에는 회전과 지면 높이가 소켓에서 결정된다.
-    if (FindSnapPlacement(CursorPoint, OutLocation, OutYawStep))
-    {
-        return true;
-    }
+    if (FindSnapPlacement(CursorPoint, OutLocation, OutYawStep)) return true;
 
     OutLocation = CursorPoint;
 
@@ -712,17 +810,11 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
 
 bool UFEBuildingComponent::FindSnapPlacement(const FVector& CursorPoint, FVector& OutLocation, uint8& OutYawStep) const
 {
-    if (SelectedPiece == nullptr || SelectedPiece->Sockets.Num() == 0)
-    {
-        return false;
-    }
+    if (SelectedPiece == nullptr || SelectedPiece->Sockets.Num() == 0) return false;
 
     TArray<AFEBuildPiece*> Nearby;
     UFEBuildingSubsystem::GatherNearbyPieces(GetWorld(), CursorPoint, UFEBuildingSettings::Get()->SnapRadius, GetOwner(), Nearby);
-    if (Nearby.Num() == 0)
-    {
-        return false;
-    }
+    if (Nearby.Num() == 0) return false;
 
     // 타입이 맞는 (프리뷰 소켓, 대상 소켓) 쌍 중 대상 소켓이 커서에 가장 가까운 것을 고른다.
     float BestDistSq = TNumericLimits<float>::Max();
@@ -785,10 +877,7 @@ AFEBuildPiece* UFEBuildingComponent::FindPieceUnderCrosshair() const
 {
     FVector ViewLocation;
     FRotator ViewRotation;
-    if (!GetViewPoint(ViewLocation, ViewRotation))
-    {
-        return nullptr;
-    }
+    if (!GetViewPoint(ViewLocation, ViewRotation)) return nullptr;
 
     // 청사진은 Visibility 채널을 무시하므로 오브젝트 타입(BuildPiece)으로 찾는다.
     const FVector TraceEnd = ViewLocation + ViewRotation.Vector() * UFEBuildingSettings::Get()->MaxBuildDistance;
@@ -802,11 +891,9 @@ bool UFEBuildingComponent::IsPieceInReach(const AFEBuildPiece* Piece) const
 {
     const AActor* Owner = GetOwner();
     const bool bIsValidRequest = Owner != nullptr && Owner->HasAuthority() && Piece != nullptr && !Piece->IsActorBeingDestroyed();
-    if (!bIsValidRequest)
-    {
-        return false;
-    }
-    const float MaxDistanceWithSlack = UFEBuildingSettings::Get()->MaxBuildDistance + 300.f;
+    if (!bIsValidRequest) return false;
+
+    const float MaxDistanceWithSlack = UFEBuildingSettings::Get()->MaxBuildDistance + ReachSlack;
     return FVector::Dist(Owner->GetActorLocation(), Piece->GetActorLocation()) <= MaxDistanceWithSlack;
 }
 
@@ -818,6 +905,8 @@ FTransform UFEBuildingComponent::MakePlacementTransform(const FVector& Location,
 
 bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* Instigator, FText* OutReason)
 {
+    QUICK_SCOPE_CYCLE_COUNTER(STAT_FEBuild_ValidatePlacement);
+    
     auto Fail = [OutReason](const FText& Why)
     {
         if (OutReason)
@@ -836,7 +925,7 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
 
     const UFEBuildingSettings* Settings = UFEBuildingSettings::Get();
 
-    const float MaxDistanceWithSlack = Settings->MaxBuildDistance + 300.f;
+    const float MaxDistanceWithSlack = Settings->MaxBuildDistance + ReachSlack;
     if (Instigator && FVector::Dist(Instigator->GetActorLocation(), Transform.GetLocation()) > MaxDistanceWithSlack)
     {
         return Fail(LOCTEXT("TooFar", "Too far away"));
@@ -937,10 +1026,14 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
         const FVector CoreExtent = LocalBounds.GetExtent() * 0.4f;
         const FVector CoreCenter = Transform.TransformPosition(LocalBounds.GetCenter());
         FCollisionQueryParams CoreParams(SCENE_QUERY_STAT(FEBuildDuplicate), false, Instigator);
-        const bool bOverlapsStructure = World->OverlapAnyTestByObjectType(
-            CoreCenter, Transform.GetRotation(), FCollisionObjectQueryParams(ECC_FEBuildPiece), FCollisionShape::MakeBox(CoreExtent), CoreParams);
-        if (bOverlapsStructure)
+        TArray<FOverlapResult> CoreOverlaps;
+        World->OverlapMultiByObjectType(
+            CoreOverlaps, CoreCenter, Transform.GetRotation(), FCollisionObjectQueryParams(ECC_FEBuildPiece), FCollisionShape::MakeBox(CoreExtent), CoreParams);
+        if (CoreOverlaps.Num() > 0)
         {
+            // 진단: 무엇과 겹쳤는지 (log LogFEBuilding Verbose)
+            UE_LOG(LogFEBuilding, Verbose, TEXT("Duplicate check hit %s (%s)"),
+                *GetNameSafe(CoreOverlaps[0].GetActor()), *GetNameSafe(CoreOverlaps[0].GetComponent()));
             return Fail(LOCTEXT("Duplicate", "Already placed here"));
         }
     }
@@ -974,6 +1067,16 @@ bool UFEBuildingComponent::ServerPlacePiece_Validate(FPrimaryAssetId InPieceId, 
 
 void UFEBuildingComponent::ServerPlacePiece_Implementation(FPrimaryAssetId InPieceId, FVector_NetQuantize Location, uint8 YawStep)
 {
+    // 청사진은 재료 없이 놓이므로 배치 자체가 공짜다. 조작된 클라이언트의 요청 폭주를 서버에서 끊는다.
+    // ponytail: 플레이어당 미완성 청사진 개수 상한은 소유권(철거 권한) 규칙이 정해질 때 함께 추가
+    const double Now = GetWorld()->GetTimeSeconds();
+    if (LastPlaceRequestTime >= 0.0 && Now - LastPlaceRequestTime < MinPlaceInterval)
+    {
+        UE_LOG(LogFEBuilding, Verbose, TEXT("%s: placement request throttled"), *GetNameSafe(GetOwner()));
+        return;
+    }
+    LastPlaceRequestTime = Now;
+    
     UAssetManager& AssetManager = UAssetManager::Get();
     if (!AssetManager.GetPrimaryAssetPath(InPieceId).IsValid())
     {
@@ -1000,10 +1103,7 @@ void UFEBuildingComponent::HandleServerAssetsLoaded(FPrimaryAssetId LoadedPieceI
     });
 
     AActor* Owner = GetOwner();
-    if (Owner == nullptr || !Owner->HasAuthority())
-    {
-        return; // [Server Only]
-    }
+    if (Owner == nullptr || !Owner->HasAuthority()) return; // [Server Only]
 
     const UFEBuildPieceDefinition* Piece = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(LoadedPieceId));
     const FTransform PlacementTransform = MakePlacementTransform(Location, YawStep);
@@ -1021,6 +1121,8 @@ void UFEBuildingComponent::HandleServerAssetsLoaded(FPrimaryAssetId LoadedPieceI
         ResolvePieceClass(Piece), PlacementTransform, nullptr, Cast<APawn>(Owner), ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
     Spawned->InitializePiece(Piece, InitialState);
     Spawned->FinishSpawning(PlacementTransform);
+    
+    UE_LOG(LogFEBuilding, Log, TEXT("%s placed %s (%s)"), *GetNameSafe(Owner), *Spawned->GetName(), *LoadedPieceId.ToString());
 }
 
 bool UFEBuildingComponent::ServerDemolishPiece_Validate(AFEBuildPiece* Piece)
@@ -1051,10 +1153,8 @@ bool UFEBuildingComponent::ServerSupplyItem_Validate(AFEBuildPiece* Piece, FGame
 
 void UFEBuildingComponent::ServerSupplyItem_Implementation(AFEBuildPiece* Piece, FGameplayTag ItemTag)
 {
-    if (!IsPieceInReach(Piece))
-    {
-        return;
-    }
+    if (!IsPieceInReach(Piece)) return;
+
     IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
     if (Inventory == nullptr)
     {
@@ -1072,10 +1172,7 @@ bool UFEBuildingComponent::ServerStoreItem_Validate(AFEBuildStorage* Storage, FG
 void UFEBuildingComponent::ServerStoreItem_Implementation(AFEBuildStorage* Storage, FGameplayTag ItemTag, int32 Count)
 {
     IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
-    if (!IsPieceInReach(Storage) || Inventory == nullptr)
-    {
-        return;
-    }
+    if (!IsPieceInReach(Storage) || Inventory == nullptr) return;
 
     // 클라가 보낸 개수는 화면 기준이다. 실제 보유량으로 다시 자른 뒤,
     // 보관함에 먼저 넣어 보고(칸 제한) 실제로 들어간 만큼만 인벤토리에서 뺀다. 순서가 반대면 아이템이 증발한다.
@@ -1096,22 +1193,30 @@ bool UFEBuildingComponent::ServerTakeItem_Validate(AFEBuildStorage* Storage, int
 void UFEBuildingComponent::ServerTakeItem_Implementation(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag)
 {
     IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
-    if (!IsPieceInReach(Storage) || Inventory == nullptr)
-    {
-        return;
-    }
+    if (!IsPieceInReach(Storage) || Inventory == nullptr) return;
 
-    const int32 Taken = Storage->TakeSlot(SlotIndex, ItemTag);
-    if (Taken > 0)
+    // 넣기와 같은 원칙: 받는 쪽(인벤토리)에 먼저 넣고, 실제로 들어간 만큼만 칸에서 뺀다.
+    // 되돌리기가 필요 없어서 화로처럼 아무 아이템이나 받지 않는 컨테이너에서도 증발하지 않는다.
+    const int32 Available = Storage->GetSlotCount(SlotIndex, ItemTag);
+    if (Available > 0)
     {
-        // 인벤토리가 다 받지 못하면 남은 만큼 보관함에 되돌린다. 방금 한 칸을 비웠으므로 항상 들어간다.
-        const int32 Added = Inventory->AddItems(ItemTag, Taken);
-        if (Added < Taken)
-        {
-            Storage->StoreItems(ItemTag, Taken - Added);
-        }
+        const int32 Added = Inventory->AddItems(ItemTag, Available);
+        Storage->TakeFromSlot(SlotIndex, ItemTag, Added);
     }
     SendInventorySnapshot();
+}
+
+bool UFEBuildingComponent::ServerSetFurnaceLit_Validate(AFEBuildFurnace* Furnace, bool bLit)
+{
+    return Furnace != nullptr;
+}
+
+void UFEBuildingComponent::ServerSetFurnaceLit_Implementation(AFEBuildFurnace* Furnace, bool bLit)
+{
+    if (IsPieceInReach(Furnace))
+    {
+        Furnace->SetLit(bLit); // 켤 때 CanIgnite 를 서버 값으로 다시 검사한다
+    }
 }
 
 bool UFEBuildingComponent::ServerRequestInventory_Validate()
