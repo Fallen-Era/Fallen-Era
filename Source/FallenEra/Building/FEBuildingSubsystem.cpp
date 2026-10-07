@@ -13,6 +13,9 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerState.h"
 #include "TimerManager.h"
+#include "FEBuildingComponent.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 
 namespace
 {
@@ -51,6 +54,33 @@ static FAutoConsoleCommandWithWorld CmdBuildSnapshotLoad(
             UE_LOG(LogFEBuilding, Log, TEXT("Snapshot load requested: %d piece(s)"), GBuildSnapshot.Num());
             Subsystem->RestoreRecords(GBuildSnapshot);
         }
+    }));
+
+static FAutoConsoleCommandWithWorldAndArgs CmdBuildDamageAimed(
+    TEXT("fe.Build.DamageAimed"),
+    TEXT("[Server] Damage the build piece under the host player's crosshair. Usage: fe.Build.DamageAimed <amount=100>"),
+    FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+    {
+        if (World == nullptr || World->GetNetMode() == NM_Client)
+        {
+            UE_LOG(LogFEBuilding, Warning, TEXT("fe.Build.DamageAimed is server-only. Run it in the host window."));
+            return;
+        }
+
+        const float Amount = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 100.f;
+        const APlayerController* PlayerController = World->GetFirstPlayerController();
+        const APawn* Pawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+        const UFEBuildingComponent* Building = Pawn ? Pawn->FindComponentByClass<UFEBuildingComponent>() : nullptr;
+        AFEBuildPiece* Piece = Building ? Building->FindPieceUnderCrosshair() : nullptr;
+        if (Piece == nullptr)
+        {
+            UE_LOG(LogFEBuilding, Warning, TEXT("fe.Build.DamageAimed: no build piece under the crosshair"));
+            return;
+        }
+
+        // 팀 검사를 거치지 않도록 ReceiveCombatDamage 가 아니라 실제 감소 함수를 직접 부른다
+        Piece->ApplyStructureDamage(Amount, Pawn);
+        UE_LOG(LogFEBuilding, Log, TEXT("DamageAimed %s -%.0f (now %d%%)"), *Piece->GetName(), Amount, FMath::RoundToInt(Piece->GetHealthPercent() * 100.f));
     }));
 
 UFEBuildingSubsystem* UFEBuildingSubsystem::Get(const UWorld* World)

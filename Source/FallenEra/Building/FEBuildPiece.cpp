@@ -11,6 +11,7 @@
 #include "Engine/StreamableManager.h"
 #include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
+#include "Combat/FECombatTeams.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -32,6 +33,7 @@ void AFEBuildPiece::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
     DOREPLIFETIME(AFEBuildPiece, SuppliedCounts);
     DOREPLIFETIME(AFEBuildPiece, DesignSupportDistance);
     DOREPLIFETIME(AFEBuildPiece, SupportDistance);
+    DOREPLIFETIME(AFEBuildPiece, HealthPercent);
 }
 
 void AFEBuildPiece::BeginPlay()
@@ -68,6 +70,9 @@ void AFEBuildPiece::InitializePiece(const UFEBuildPieceDefinition* InDefinition,
 
     const int32 ItemCount = InDefinition ? InDefinition->RequiredItems.Num() : 0;
     SuppliedCounts.Init(0, ItemCount);
+    
+    // 청사진은 피해를 받지 않으므로 처음부터 최대 체력으로 두고, 완성되는 순간에도 그대로 쓴다
+    Health = InDefinition ? InDefinition->MaxHealth : 0.f;
 
     // 재료가 필요 없는 피스(또는 InstantBuild)는 바로 완성. 진행도도 1 이 되도록 맞춘다.
     const bool bNothingToSupply = GetTotalRequired() == 0;
@@ -181,6 +186,106 @@ void AFEBuildPiece::Collapse()
     Destroy();
 }
 
+void AFEBuildPiece::ApplyStructureDamage(float Amount, const AActor* Source)
+{
+    const bool bCanDamage = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Built
+        && Amount > 0.f && !IsActorBeingDestroyed() && UFEBuildingSettings::Get()->bStructureDamageEnabled;
+    if (!bCanDamage) return;
+
+    SetHealth(Health - Amount);
+    UE_LOG(LogFEBuilding, Verbose, TEXT("%s took %.0f from %s (%.0f / %.0f)"),
+        *GetName(), Amount, *GetNameSafe(Source), Health, Definition->MaxHealth);
+
+    if (Health <= 0.f)
+    {
+        // 위 구조물은 EndPlay → UnregisterPiece → 지지 재계산에서 연쇄 붕괴한다 (철거·붕괴와 같은 경로)
+        // ponytail: 보관함·화로 내용물은 사라진다. 아이템 월드 스폰 API 가 오면 바닥에 떨군다
+        UE_LOG(LogFEBuilding, Log, TEXT("%s destroyed by %s"), *GetName(), *GetNameSafe(Source));
+        Destroy();
+    }
+}
+
+bool AFEBuildPiece::TryRepair(IFEBuildInventoryProvider& Inventory, FText& OutReason)
+{
+    const bool bCanRepair = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Built && !IsActorBeingDestroyed();
+    if (!bCanRepair) return false;
+
+    const float MaxHealth = Definition->MaxHealth;
+    const float Missing = MaxHealth - Health;
+    if (Missing <= 0.f)
+    {
+        OutReason = LOCTEXT("RepairNotDamaged", "손상되지 않았습니다");
+        return false;
+    }
+
+    // 1) 가득 수리 비용 = 깎인 비율 × 재료 개수 × RepairCostRate (항목마다 올림)
+    const TArray<FFEBuildItemCost>& Required = Definition->RequiredItems;
+    const float CostScale = Missing / MaxHealth * UFEBuildingSettings::Get()->RepairCostRate;
+    TArray<int32> FullCosts;
+    FullCosts.SetNum(Required.Num());
+
+    // 2) 가장 부족한 재료 기준으로 수리 비율(0~1)을 정한다. 이 비율로 깎으면 어떤 항목도 가진 수를 넘지 않는다
+    float Fraction = 1.f;
+    for (int32 Index = 0; Index < Required.Num(); ++Index)
+    {
+        FullCosts[Index] = FMath::CeilToInt(Required[Index].Count * CostScale);
+        if (FullCosts[Index] > 0)
+        {
+            const int32 Owned = Inventory.CountItems(Required[Index].ItemTag);
+            Fraction = FMath::Min(Fraction, static_cast<float>(Owned) / FullCosts[Index]);
+        }
+    }
+    if (Fraction <= 0.f)
+    {
+        OutReason = LOCTEXT("RepairNoItems", "수리할 재료가 부족합니다");
+        return false;
+    }
+
+    // 3) 인벤토리에서 먼저 빼고 회복한다. ceil(비용 × 비율) ≤ 보유량이라 같은 서버 프레임 안에서는 부족해지지 않는다
+    FString CostText;
+    for (int32 Index = 0; Index < Required.Num(); ++Index)
+    {
+        const int32 Cost = FMath::CeilToInt(FullCosts[Index] * Fraction);
+        if (Cost > 0)
+        {
+            const int32 Removed = Inventory.RemoveItems(Required[Index].ItemTag, Cost);
+            CostText += FString::Printf(TEXT("%s %d "), *Required[Index].ItemTag.GetTagName().ToString(), Removed);
+        }
+    }
+
+    const float OldHealth = Health;
+    // 가득 수리는 부동소수 오차로 99% 에 머물지 않게 최대값을 직접 넣는다
+    SetHealth(Fraction >= 1.f ? MaxHealth : Health + Missing * Fraction);
+    UE_LOG(LogFEBuilding, Log, TEXT("%s repaired %.0f -> %.0f / %.0f (cost: %s)"), *GetName(), OldHealth, Health, MaxHealth, *CostText);
+    return true;
+}
+
+FFE_CombatDamageResult AFEBuildPiece::ReceiveCombatDamage_Implementation(const FFE_CombatDamageRequest& DamageRequest)
+{
+    FFE_CombatDamageResult Result;
+
+    // 청사진은 근접 판정(Enemy 채널 Overlap)에 잡히지만 피해 대상이 아니다 → 처리 안 함으로 돌려 적의 타격 수를 소모하지 않게 한다.
+    // 같은 팀 검사는 HT 의 ApplyDamageInternal 도 하지만, 다른 호출 경로(함정·폭발물 등)를 대비해 여기서도 한다.
+    const bool bCanReceive = HasAuthority() && State == EFEBuildPieceState::Built
+        && !FECombatTeams::AreSameTeam(DamageRequest.SourceActor.Get(), this);
+    if (!bCanReceive) return Result;
+
+    ApplyStructureDamage(DamageRequest.SourceAttackPower, DamageRequest.SourceActor.Get());
+
+    // 맞은 것으로 처리 → 적 근접 공격의 최대 타격 수를 벽이 소모해 벽 뒤 플레이어는 맞지 않는다.
+    // bImpactCueHandled 는 false 로 두어 HT 쪽이 타격 이펙트를 재생한다.
+    Result.bHandled = true;
+    Result.bDamageApplied = true;
+    return Result;
+}
+
+FGenericTeamId AFEBuildPiece::GetGenericTeamId() const
+{
+    // 플레이어 팀 → 플레이어의 공격·수류탄은 HT 의 같은 팀 검사에서 걸러진다.
+    // 플레이어도 건물을 부술 수 있게 바꾸려면 여기서 FGenericTeamId::NoTeam 을 반환한다
+    return FECombatTeams::Player;
+}
+
 void AFEBuildPiece::SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance)
 {
     if (!HasAuthority()) return;
@@ -196,6 +301,7 @@ void AFEBuildPiece::WriteRecord(FFEBuildPieceRecord& OutRecord) const
     OutRecord.Yaw = GetActorRotation().Yaw;
     OutRecord.State = State;
     OutRecord.SuppliedCounts = SuppliedCounts;
+    OutRecord.Health = IsDamaged() ? Health : 0.f; // 0 = 가득
 }
 
 void AFEBuildPiece::ReadRecord(const FFEBuildPieceRecord& Record)
@@ -204,6 +310,10 @@ void AFEBuildPiece::ReadRecord(const FFEBuildPieceRecord& Record)
     // 정의가 바뀌어 재료 항목 수가 달라졌을 수 있으므로 현재 정의 길이에 맞춘다 (인덱스 기반 접근이 깨지지 않게).
     SuppliedCounts = Record.SuppliedCounts;
     SuppliedCounts.SetNum(Definition ? Definition->RequiredItems.Num() : 0);
+    if (Record.Health > 0.f)
+    {
+        SetHealth(Record.Health);
+    }
 }
 
 void AFEBuildPiece::SetPreviewValid(bool bIsValid)
@@ -362,6 +472,16 @@ float AFEBuildPiece::GetSupplyProgress() const
     return FMath::Clamp(static_cast<float>(GetTotalSupplied()) / Total, 0.f, 1.f);
 }
 
+float AFEBuildPiece::GetHealthPercent() const
+{
+    return HealthPercent / 100.f;
+}
+
+bool AFEBuildPiece::IsDamaged() const
+{
+    return State == EFEBuildPieceState::Built && HealthPercent < 100;
+}
+
 int32 AFEBuildPiece::GetSuppliedCount(int32 Index) const
 {
     return SuppliedCounts.IsValidIndex(Index) ? SuppliedCounts[Index] : 0;
@@ -393,6 +513,29 @@ void AFEBuildPiece::OnRep_SuppliedCounts()
 {
     OnSupplyChanged(GetTotalSupplied(), GetTotalRequired());
     OnSupplyChangedNative.Broadcast();
+}
+
+void AFEBuildPiece::OnRep_HealthPercent()
+{
+    OnHealthChanged(GetHealthPercent());
+}
+
+void AFEBuildPiece::SetHealth(float NewHealth)
+{
+    const float MaxHealth = Definition ? Definition->MaxHealth : 1.f;
+    Health = FMath::Clamp(NewHealth, 0.f, MaxHealth);
+
+    // 가득 = 100, 손상 = 1~99. 내림 + 최소 1 이라 조금만 깎여도 클라에서 "손상"으로 보인다
+    const uint8 NewPercent = Health >= MaxHealth
+        ? 100
+        : static_cast<uint8>(FMath::Clamp(FMath::FloorToInt(Health / MaxHealth * 100.f), 1, 99));
+    if (NewPercent == HealthPercent) return;
+
+    HealthPercent = NewPercent;
+    if (HasActorBegunPlay())
+    {
+        OnRep_HealthPercent(); // 서버 로컬 반영. 복원 중(FinishSpawning 전)에는 BP 이벤트를 부르지 않는다
+    }
 }
 
 void AFEBuildPiece::RequestDefinition()

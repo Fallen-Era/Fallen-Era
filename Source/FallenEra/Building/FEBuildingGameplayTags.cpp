@@ -41,4 +41,6 @@ namespace FEBuildingTags
     
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Food_RawMeat,               "Item.Food.RawMeat",        "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Food_CookedMeat,            "Item.Food.CookedMeat",     "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Tool_Hammer,                "Item.Tool.Hammer", "수리 도구 (임시. 아이템 시스템이 오면 교체)");
 }

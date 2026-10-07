@@ -55,6 +55,13 @@ public:
     /** [Client Only] 조준한 피스 철거 요청 (X). 청사진 100% / 완성품 RefundRate 환불. */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void DemolishPiece();
+    
+    /** [Client Only] 조준한 완성 피스 수리 요청. 망치 무기의 GA_Build_Repair(좌클릭)가 호출한다 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void RepairPiece();
+
+    /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 없으면 nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. 디버그 명령도 사용 */
+    AFEBuildPiece* FindPieceUnderCrosshair() const;
 
     /** [Client Only] 빌드 메뉴 열기/닫기 (Tab). 빌드 모드 밖이면 진입하며 연다. */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
@@ -130,6 +137,14 @@ protected:
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerDemolishPiece(AFEBuildPiece* Piece);
     
+    /** [Server RPC] 망치 장착 + 거리 확인 후 Piece 수리. 실패 사유는 ClientShowNotice 로 돌려준다 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerRepairPiece(AFEBuildPiece* Piece);
+
+    /** [Client RPC] 서버만 아는 실패 사유(재료 부족·도구 없음)를 요청자 HUD 에 띄운다 */
+    UFUNCTION(Client, Reliable)
+    void ClientShowNotice(const FText& Text);
+    
     /** [Server RPC] 요청자의 인벤토리에서 Piece 의 ItemTag 항목에 있는 만큼 투입 */
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerSupplyItem(AFEBuildPiece* Piece, FGameplayTag ItemTag);
@@ -170,9 +185,6 @@ private:
 
     /** 커서 근처 구조물의 소켓에 맞춘 배치. 후보가 없으면 false. */
     bool FindSnapPlacement(const FVector& CursorPoint, FVector& OutLocation, uint8& OutYawStep) const;
-
-    /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 없으면 nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. */
-    AFEBuildPiece* FindPieceUnderCrosshair() const;
 
     /** [Server Only] 이 피스에 대한 요청을 처리해도 되는지 (유효성 + 거리) */
     bool IsPieceInReach(const AFEBuildPiece* Piece) const;

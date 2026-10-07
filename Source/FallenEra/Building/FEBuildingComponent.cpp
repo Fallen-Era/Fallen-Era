@@ -23,6 +23,8 @@
 #include "Engine/OverlapResult.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
+#include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Weapon/FEWeaponItemData.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -218,6 +220,20 @@ void UFEBuildingComponent::DemolishPiece()
         return;
     }
     ServerDemolishPiece(Piece);
+}
+
+void UFEBuildingComponent::RepairPiece()
+{
+    AFEBuildPiece* Piece = FindPieceUnderCrosshair();
+    if (Piece == nullptr || Piece->GetState() != EFEBuildPieceState::Built) return;
+
+    // 체력 % 는 리플리케이트되므로 손상 여부는 클라가 먼저 판단한다 (RPC 절약). 재료·도구는 서버만 안다
+    if (!Piece->IsDamaged())
+    {
+        ShowNotice(LOCTEXT("RepairNotDamagedClient", "손상되지 않았습니다"));
+        return;
+    }
+    ServerRepairPiece(Piece);
 }
 
 void UFEBuildingComponent::ToggleBuildMenu()
@@ -1144,6 +1160,49 @@ void UFEBuildingComponent::ServerDemolishPiece_Implementation(AFEBuildPiece* Pie
 
     // 철거 권한(지은 사람/팀) 검사 없음. 소유권 규칙이 회의에서 정해지면 여기에 추가.
     Piece->Demolish(UFEBuildingSubsystem::FindInventoryProvider(GetOwner()));
+}
+
+bool UFEBuildingComponent::ServerRepairPiece_Validate(AFEBuildPiece* Piece)
+{
+    return Piece != nullptr;
+}
+
+void UFEBuildingComponent::ServerRepairPiece_Implementation(AFEBuildPiece* Piece)
+{
+    if (!IsPieceInReach(Piece)) return;
+
+    // GA_Build_Repair 는 LocalOnly 라 클라에서만 돈다. 지금 망치를 들고 있는지는 서버가 장비 상태로 다시 확인한다
+    // ponytail: 아이템 식별이 FPrimaryAssetId 로 바뀌면 태그 대신 아이템 ID 로 비교
+    const AActor* Owner = GetOwner();
+    const UFE_EquipmentComponent* Equipment = Owner ? Owner->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+    const UFE_WeaponItemData* Weapon = Equipment ? Equipment->GetCurrentWeaponData() : nullptr;
+
+    FText Reason;
+    if (Weapon == nullptr || !Weapon->HasItemTag(FEBuildingTags::Item_Tool_Hammer))
+    {
+        Reason = LOCTEXT("RepairNoTool", "수리 도구를 들고 있어야 합니다");
+    }
+    else
+    {
+        IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(Owner);
+        if (Inventory == nullptr)
+        {
+            UE_LOG(LogFEBuilding, Warning, TEXT("%s has no IFEBuildInventoryProvider; cannot repair"), *GetNameSafe(Owner));
+            return;
+        }
+        if (Piece->TryRepair(*Inventory, Reason))
+        {
+            return;
+        }
+    }
+
+    UE_LOG(LogFEBuilding, Log, TEXT("Repair rejected: %s (%s)"), *Piece->GetName(), *Reason.ToString());
+    ClientShowNotice(Reason);
+}
+
+void UFEBuildingComponent::ClientShowNotice_Implementation(const FText& Text)
+{
+    ShowNotice(Text);
 }
 
 bool UFEBuildingComponent::ServerSupplyItem_Validate(AFEBuildPiece* Piece, FGameplayTag ItemTag)
