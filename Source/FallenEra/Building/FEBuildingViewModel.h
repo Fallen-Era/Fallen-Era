@@ -12,6 +12,16 @@
 
 class UFEBuildingComponent;
 
+/** 빌드 메뉴 탭. 구조물은 재질별, 그 외(가구·방어시설)는 Furniture */
+UENUM(BlueprintType)
+enum class EFEBuildMenuTab : uint8
+{
+	Wood,
+	Stone,
+	Metal,
+	Furniture
+};
+
 /** 빌드 메뉴의 피스 1줄. ListView 엔트리 위젯(WBP_PieceEntry)의 뷰모델 */
 UCLASS(BlueprintType)
 class FALLENERA_API UFEBuildPieceEntryViewModel : public UMVVMViewModelBase
@@ -141,6 +151,7 @@ public:
     void SetMenuOpen(bool bInOpen);
     void SetPieceEntries(const TArray<UObject*>& InEntries);
     void SetSelectedPieceName(const FText& InName);
+	void SetMenuTabTitle(const FText& InTitle);
     void SetSupplyPanelOpen(bool bInOpen);
     void SetSupplyTitle(const FText& InTitle);
     void SetSupplyRows(const TArray<UObject*>& InRows);
@@ -151,6 +162,22 @@ public:
 	void SetNotice(const FText& InText); /** 잠깐 띄우는 안내 문구. 빈 텍스트면 숨김 */
 	void SetFurnaceVisible(bool bInVisible);
 	void SetFurnaceState(bool bInIsLit, float InProgress);
+	
+	/** [Client Only] 메뉴 탭 버튼 4개. 인자 없는 함수라 View Bindings 이벤트로 바로 연결된다 */
+	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
+	void SelectWoodTab();
+
+	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
+	void SelectStoneTab();
+
+	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
+	void SelectMetalTab();
+
+	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
+	void SelectFurnitureTab();
+	
+	/** 망치로 조준한 완성 피스. InName 이 비면 숨김. InHealthPercent 0~1. InUpgrade 가 비면 업그레이드 줄 숨김 */
+	void SetAimedPiece(const FText& InName, float InHealthPercent, const FText& InRepairCost, const FText& InUpgrade);
 
 	/** [Client Only] 화로 "불 켜기/끄기" 버튼 */
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
@@ -183,6 +210,10 @@ public:
 
     UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
     FText SelectedPieceName;
+	
+	/** 지금 보고 있는 탭 이름 ("나무" 등). 목록 위에 표시 */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText MenuTabTitle;
 
     UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
     ESlateVisibility SupplyPanelVisibility = ESlateVisibility::Collapsed;
@@ -224,6 +255,33 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
 	FText FireButtonText;
+	
+	/** 망치로 조준한 피스의 체력 줄 (이름 + 바 + % + 수리 비용) */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	ESlateVisibility AimedPieceVisibility = ESlateVisibility::Collapsed;
+
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText AimedPieceName;
+
+	/** 0~1. ProgressBar.Percent */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	float AimedHealthPercent = 1.f;
+
+	/** "77%" */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText AimedHealthText;
+
+	/** "수리: 나무 3" (클라 추정치) / "손상 없음" */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText RepairCostText;
+	
+	/** "우클릭 업그레이드: 돌 벽 (돌 6)" */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText UpgradeText;
+
+	/** 마지막 단계(UpgradeTo 없음)면 Collapsed */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	ESlateVisibility UpgradeVisibility = ESlateVisibility::Collapsed;
 
     TWeakObjectPtr<UFEBuildingComponent> Component;
 };

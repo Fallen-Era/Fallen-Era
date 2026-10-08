@@ -9,6 +9,9 @@
 
 class AFEBuildPiece;
 class UStaticMesh;
+class UNiagaraSystem;
+class USoundBase;
+class UMaterialInterface;
 class UTexture2D;
 
 /**
@@ -45,6 +48,10 @@ public:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (AssetBundles = "Runtime"))
     TSoftObjectPtr<UStaticMesh> Mesh;
+    
+    /** 완성 상태 머티리얼. 같은 메시를 재질별 DA(나무/돌/철)가 공유하므로 색은 DA 가 정한다. 비우면 메시 기본 머티리얼 */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (AssetBundles = "Runtime"))
+    TSoftObjectPtr<UMaterialInterface> BuiltMaterial;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Cost")
     EFEBuildMaterial Material = EFEBuildMaterial::Wood;
@@ -58,6 +65,19 @@ public:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Durability", meta = (ClampMin = 1))
     float MaxHealth = 300.f;
+    
+    /** 완성 피스가 사라질 때(파괴·붕괴·철거) 클라에서 재생하는 파편 효과. 비우면 없음. 재질별로 다르게 */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Durability", meta = (AssetBundles = "Runtime"))
+    TSoftObjectPtr<UNiagaraSystem> BreakEffect;
+
+    /** BreakEffect 와 같은 시점의 소리. 비우면 없음 */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Durability", meta = (AssetBundles = "Runtime"))
+    TSoftObjectPtr<USoundBase> BreakSound;
+    
+    /** 망치 우클릭 업그레이드 대상 (다음 재질 DA). 비우면 마지막 단계. PieceClass 가 같아야 한다 (액터는 그대로, 정의만 교체).
+     *  Runtime 번들이라 이 DA 를 로드하면 대상 DA 객체(이름·비용)도 같이 로드된다. 대상의 메시·머티리얼은 교체할 때 따로 로드 */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Upgrade", meta = (AssetBundles = "Runtime"))
+    TSoftObjectPtr<UFEBuildPieceDefinition> UpgradeTo;
 
     /** 이 피스가 얹힌 대상의 지지 거리에 더해지는 값. 바닥(토대)은 0 (anchor). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Structure", meta = (ClampMin = 0))

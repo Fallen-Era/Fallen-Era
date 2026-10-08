@@ -70,6 +70,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Sandbox", meta = (ClampMin = 0))
 	float RepairCostRate = 0.5f;
 	
+	/** 수리 최소 간격(초). 클라는 휘두르기 연타를, 서버는 RPC 폭주를 막는다 */
+	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Sandbox", meta = (ClampMin = 0))
+	float RepairInterval = 0.6f;
+	
 	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Items", meta = (Categories = "Item"))
 	TMap<FGameplayTag, FText> ItemDisplayNames;
 	

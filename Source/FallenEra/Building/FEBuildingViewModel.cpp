@@ -205,6 +205,44 @@ void UFEBuildingViewModel::SetFurnaceState(bool bInIsLit, float InProgress)
         : NSLOCTEXT("FEBuilding", "FireOn", "불 켜기"));
 }
 
+void UFEBuildingViewModel::SetMenuTabTitle(const FText& InTitle)
+{
+    UE_MVVM_SET_PROPERTY_VALUE(MenuTabTitle, InTitle);
+}
+
+void UFEBuildingViewModel::SelectWoodTab()
+{
+    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Wood);
+}
+
+void UFEBuildingViewModel::SelectStoneTab()
+{
+    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Stone);
+}
+
+void UFEBuildingViewModel::SelectMetalTab()
+{
+    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Metal);
+}
+
+void UFEBuildingViewModel::SelectFurnitureTab()
+{
+    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Furniture);
+}
+
+void UFEBuildingViewModel::SetAimedPiece(const FText& InName, float InHealthPercent, const FText& InRepairCost, const FText& InUpgrade)
+{
+    UE_MVVM_SET_PROPERTY_VALUE(AimedPieceVisibility, InName.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+    if (InName.IsEmpty()) return; // 숨길 때는 나머지 값을 건드리지 않는다 (10Hz 갱신에서 불필요한 알림 방지)
+
+    UE_MVVM_SET_PROPERTY_VALUE(AimedPieceName, InName);
+    UE_MVVM_SET_PROPERTY_VALUE(AimedHealthPercent, InHealthPercent);
+    UE_MVVM_SET_PROPERTY_VALUE(AimedHealthText, FText::AsPercent(InHealthPercent));
+    UE_MVVM_SET_PROPERTY_VALUE(RepairCostText, InRepairCost);
+    UE_MVVM_SET_PROPERTY_VALUE(UpgradeText, InUpgrade);
+    UE_MVVM_SET_PROPERTY_VALUE(UpgradeVisibility, InUpgrade.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+}
+
 void UFEBuildingViewModel::ToggleFurnaceLit()
 {
     if (UFEBuildingComponent* Owner = Component.Get())

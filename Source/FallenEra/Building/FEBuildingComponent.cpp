@@ -25,8 +25,52 @@
 #include "Engine/LocalPlayer.h"
 #include "Combat/Component/FEEquipmentComponent.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
+#include "Combat/FECombatGameplayTags.h"
+#include "FallenEraCharacter.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
+
+namespace
+{
+    /** "나무 3, 돌 2" — 수리·업그레이드 HUD 문구 공용 */
+    FText FormatItemCosts(const TArray<FFEBuildItemCost>& Costs)
+    {
+        TArray<FText> Parts;
+        for (const FFEBuildItemCost& Cost : Costs)
+        {
+            Parts.Add(FText::Format(LOCTEXT("ItemCostEntry", "{0} {1}"),
+                UFEBuildingSettings::Get()->GetItemDisplayName(Cost.ItemTag), FText::AsNumber(Cost.Count)));
+        }
+        return FText::Join(FText::FromString(TEXT(", ")), Parts);
+    }
+    
+    /** 구조물은 재질별 탭, 그 외(가구·방어시설·이동)는 가구 탭 */
+    bool MatchesMenuTab(const UFEBuildPieceDefinition& Definition, EFEBuildMenuTab Tab)
+    {
+        if (Definition.Category != FEBuildingTags::Build_Piece_Structure)
+        {
+            return Tab == EFEBuildMenuTab::Furniture;
+        }
+        switch (Tab)
+        {
+        case EFEBuildMenuTab::Wood:  return Definition.Material == EFEBuildMaterial::Wood;
+        case EFEBuildMenuTab::Stone: return Definition.Material == EFEBuildMaterial::Stone;
+        case EFEBuildMenuTab::Metal: return Definition.Material == EFEBuildMaterial::Metal;
+        default:                     return false;
+        }
+    }
+
+    FText GetMenuTabTitle(EFEBuildMenuTab Tab)
+    {
+        switch (Tab)
+        {
+        case EFEBuildMenuTab::Wood:  return LOCTEXT("TabWood", "나무");
+        case EFEBuildMenuTab::Stone: return LOCTEXT("TabStone", "돌");
+        case EFEBuildMenuTab::Metal: return LOCTEXT("TabMetal", "철");
+        default:                     return LOCTEXT("TabFurniture", "가구");
+        }
+    }
+}
 
 // 테스트용: 1 이면 배치 즉시 완성(재료 투입 생략). 기본은 청사진 경로.
 static TAutoConsoleVariable<bool> CVarFEInstantBuild(
@@ -224,16 +268,31 @@ void UFEBuildingComponent::DemolishPiece()
 
 void UFEBuildingComponent::RepairPiece()
 {
-    AFEBuildPiece* Piece = FindPieceUnderCrosshair();
-    if (Piece == nullptr || Piece->GetState() != EFEBuildPieceState::Built) return;
+    if (!TrySwingTool(FallenEraCombatGameplayTags::Ability_Input_Combat_LeftClick)) return;
 
-    // 체력 % 는 리플리케이트되므로 손상 여부는 클라가 먼저 판단한다 (RPC 절약). 재료·도구는 서버만 안다
-    if (!Piece->IsDamaged())
+    // 손상 여부는 리플리케이트된 % 로 클라가 먼저 판단한다. 대상이 없어도 서버에는 알린다 (다른 플레이어에게 휘두르기 표시)
+    AFEBuildPiece* Piece = FindPieceUnderCrosshair();
+    const bool bIsBuilt = Piece != nullptr && Piece->GetState() == EFEBuildPieceState::Built;
+    if (bIsBuilt && !Piece->IsDamaged())
     {
         ShowNotice(LOCTEXT("RepairNotDamagedClient", "손상되지 않았습니다"));
-        return;
     }
-    ServerRepairPiece(Piece);
+    ServerRepairPiece(bIsBuilt && Piece->IsDamaged() ? Piece : nullptr);
+}
+
+void UFEBuildingComponent::UpgradePiece()
+{
+    if (!TrySwingTool(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick)) return;
+
+    // 다음 단계가 있는지는 클라도 안다 (대상 DA 가 Runtime 번들로 로드돼 있음). 재료는 서버만 안다
+    AFEBuildPiece* Piece = FindPieceUnderCrosshair();
+    const bool bIsBuilt = Piece != nullptr && Piece->GetState() == EFEBuildPieceState::Built;
+    const bool bHasTarget = bIsBuilt && Piece->GetUpgradeTarget() != nullptr;
+    if (bIsBuilt && !bHasTarget)
+    {
+        ShowNotice(LOCTEXT("UpgradeMaxClient", "더 이상 업그레이드할 수 없습니다"));
+    }
+    ServerUpgradePiece(bHasTarget ? Piece : nullptr);
 }
 
 void UFEBuildingComponent::ToggleBuildMenu()
@@ -268,6 +327,13 @@ void UFEBuildingComponent::CloseBuildMenu()
     UpdateUIMode();
 }
 
+void UFEBuildingComponent::SelectMenuTab(EFEBuildMenuTab Tab)
+{
+    MenuTab = Tab;
+    // 정의 에셋은 메뉴를 열 때 MenuLoadHandle 로 이미 로드돼 있다 → 다시 로드하지 않고 목록만 다시 채운다
+    BuildPieceEntries();
+}
+
 void UFEBuildingComponent::BuildPieceEntries()
 {
     if (!bIsMenuOpen) return; // 로드 중에 닫힘
@@ -283,6 +349,8 @@ void UFEBuildingComponent::BuildPieceEntries()
     for (const FPrimaryAssetId& PieceId : PieceIds)
     {
         const UFEBuildPieceDefinition* Definition = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(PieceId));
+        if (Definition == nullptr || !MatchesMenuTab(*Definition, MenuTab)) continue; // 다른 탭의 피스
+        
         const FText Name = Definition && !Definition->DisplayName.IsEmpty() ? Definition->DisplayName : FText::FromName(PieceId.PrimaryAssetName);
 
         UFEBuildPieceEntryViewModel* Entry = NewObject<UFEBuildPieceEntryViewModel>(GetViewModel());
@@ -291,6 +359,7 @@ void UFEBuildingComponent::BuildPieceEntries()
         Entries.Add(Entry);
     }
     GetViewModel()->SetPieceEntries(Entries);
+    GetViewModel()->SetMenuTabTitle(GetMenuTabTitle(MenuTab));
 }
 
 void UFEBuildingComponent::OpenSupplyPanel(AFEBuildPiece* Piece)
@@ -625,6 +694,18 @@ void UFEBuildingComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
     }
 }
 
+void UFEBuildingComponent::BeginPlay()
+{
+    Super::BeginPlay();
+
+    // 망치 조준 HUD. 데디케이티드 서버는 화면이 없다. 서버의 원격 폰에서는 UpdateAimedPiece 가 바로 빠져나간다
+    // (상호작용 프롬프트와 같은 10Hz 폴링: "무엇을 조준하는지"는 카메라가 돌 때마다 바뀌는데 이벤트가 없다)
+    if (GetNetMode() != NM_DedicatedServer)
+    {
+        GetWorld()->GetTimerManager().SetTimer(AimTimer, this, &UFEBuildingComponent::UpdateAimedPiece, 0.1f, true);
+    }
+}
+
 void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     // 빌드 모드 중 폰이 사라지면 PlayerState 의 ASC 에 태그가 남아 다음 폰의 상호작용이 막힌다
@@ -633,6 +714,7 @@ void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
     DestroyPreview();
     CloseSupplyPanel();
     CloseStoragePanel();
+    GetWorld()->GetTimerManager().ClearTimer(AimTimer);
     Super::EndPlay(EndPlayReason);
 }
 
@@ -1164,40 +1246,152 @@ void UFEBuildingComponent::ServerDemolishPiece_Implementation(AFEBuildPiece* Pie
 
 bool UFEBuildingComponent::ServerRepairPiece_Validate(AFEBuildPiece* Piece)
 {
-    return Piece != nullptr;
+    return true; // nullptr = 수리 대상 없이 휘두르기만
 }
 
 void UFEBuildingComponent::ServerRepairPiece_Implementation(AFEBuildPiece* Piece)
 {
+    if (!ServerSwingTool(FallenEraCombatGameplayTags::Ability_Input_Combat_LeftClick)) return;
+    if (!IsPieceInReach(Piece)) return; // nullptr 포함 (빈 곳에 휘두르기)
+
+    IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
+    if (Inventory == nullptr)
+    {
+        UE_LOG(LogFEBuilding, Warning, TEXT("%s has no IFEBuildInventoryProvider; cannot repair"), *GetNameSafe(GetOwner()));
+        return;
+    }
+
+    FText Reason;
+    if (!Piece->TryRepair(*Inventory, Reason))
+    {
+        UE_LOG(LogFEBuilding, Log, TEXT("Repair rejected: %s (%s)"), *Piece->GetName(), *Reason.ToString());
+        ClientShowNotice(Reason);
+    }
+}
+
+bool UFEBuildingComponent::ServerUpgradePiece_Validate(AFEBuildPiece* Piece)
+{
+    return true; // nullptr = 대상 없이 휘두르기만
+}
+
+void UFEBuildingComponent::ServerUpgradePiece_Implementation(AFEBuildPiece* Piece)
+{
+    if (!ServerSwingTool(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick)) return;
     if (!IsPieceInReach(Piece)) return;
 
-    // GA_Build_Repair 는 LocalOnly 라 클라에서만 돈다. 지금 망치를 들고 있는지는 서버가 장비 상태로 다시 확인한다
+    IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
+    if (Inventory == nullptr)
+    {
+        UE_LOG(LogFEBuilding, Warning, TEXT("%s has no IFEBuildInventoryProvider; cannot upgrade"), *GetNameSafe(GetOwner()));
+        return;
+    }
+
+    // 철거 권한처럼 업그레이드 권한도 아직 없음 (누구나). 소유권 규칙이 정해지면 여기에 추가
+    FText Reason;
+    if (!Piece->TryUpgrade(*Inventory, Reason))
+    {
+        UE_LOG(LogFEBuilding, Log, TEXT("Upgrade rejected: %s (%s)"), *Piece->GetName(), *Reason.ToString());
+        ClientShowNotice(Reason);
+    }
+}
+
+bool UFEBuildingComponent::IsHoldingRepairTool() const
+{
     // ponytail: 아이템 식별이 FPrimaryAssetId 로 바뀌면 태그 대신 아이템 ID 로 비교
     const AActor* Owner = GetOwner();
     const UFE_EquipmentComponent* Equipment = Owner ? Owner->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
     const UFE_WeaponItemData* Weapon = Equipment ? Equipment->GetCurrentWeaponData() : nullptr;
+    return Weapon != nullptr && Weapon->HasItemTag(FEBuildingTags::Item_Tool_Hammer);
+}
 
-    FText Reason;
-    if (Weapon == nullptr || !Weapon->HasItemTag(FEBuildingTags::Item_Tool_Hammer))
+UAnimMontage* UFEBuildingComponent::GetToolMontage(FGameplayTag InputTag) const
+{
+    const AActor* Owner = GetOwner();
+    const UFE_EquipmentComponent* Equipment = Owner ? Owner->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+    const UFE_WeaponAttackData* Attack = Equipment ? Equipment->GetCurrentAttackForInputTag(InputTag) : nullptr;
+    return Attack ? Attack->AttackMontage.Get() : nullptr;
+}
+
+bool UFEBuildingComponent::TrySwingTool(FGameplayTag InputTag)
+{
+    // 연타 방지 (수리·업그레이드 공통 간격). 휘두르기는 대상이 없어도 한다
+    const double Now = GetWorld()->GetTimeSeconds();
+    if (Now - LastRepairClickTime < UFEBuildingSettings::Get()->RepairInterval) return false;
+    LastRepairClickTime = Now;
+
+    // 원격 클라는 자기 휘두르기를 바로 재생한다 — HT 의 MulticastPlayAttackMontage 가 원격 소유 클라를 건너뛰기 때문.
+    // 호스트는 서버 쪽 멀티캐스트에서 한 번 재생되므로 여기서 재생하지 않는다 (중복 방지)
+    if (!GetOwner()->HasAuthority())
     {
-        Reason = LOCTEXT("RepairNoTool", "수리 도구를 들고 있어야 합니다");
+        AFallenEraCharacter* Character = Cast<AFallenEraCharacter>(GetOwner());
+        UAnimMontage* Montage = GetToolMontage(InputTag);
+        if (Character && Montage)
+        {
+            Character->PlayAttackMontage(Montage);
+        }
     }
-    else
+    return true;
+}
+
+bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
+{
+    // GA 는 LocalOnly 라 클라에서만 돈다. 지금 망치를 들고 있는지는 서버가 장비 상태로 다시 확인한다
+    if (!IsHoldingRepairTool())
     {
-        IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(Owner);
-        if (Inventory == nullptr)
-        {
-            UE_LOG(LogFEBuilding, Warning, TEXT("%s has no IFEBuildInventoryProvider; cannot repair"), *GetNameSafe(Owner));
-            return;
-        }
-        if (Piece->TryRepair(*Inventory, Reason))
-        {
-            return;
-        }
+        const FText Reason = LOCTEXT("RepairNoTool", "수리 도구를 들고 있어야 합니다");
+        UE_LOG(LogFEBuilding, Log, TEXT("Tool use rejected: %s"), *Reason.ToString());
+        ClientShowNotice(Reason);
+        return false;
     }
 
-    UE_LOG(LogFEBuilding, Log, TEXT("Repair rejected: %s (%s)"), *Piece->GetName(), *Reason.ToString());
-    ClientShowNotice(Reason);
+    // RPC 폭주 방지. 네트워크 지터로 클릭 간격이 줄어 도착할 수 있어 절반만 요구한다
+    const double Now = GetWorld()->GetTimeSeconds();
+    if (Now - LastRepairRequestTime < UFEBuildingSettings::Get()->RepairInterval * 0.5f) return false;
+    LastRepairRequestTime = Now;
+
+    // 다른 플레이어에게 휘두르기 표시. 원격 소유 클라는 HT 멀티캐스트가 건너뛴다 (이미 로컬 재생)
+    AFallenEraCharacter* Character = Cast<AFallenEraCharacter>(GetOwner());
+    if (UAnimMontage* Montage = GetToolMontage(InputTag); Character && Montage)
+    {
+        Character->MulticastPlayAttackMontage(Montage);
+    }
+    return true;
+}
+
+void UFEBuildingComponent::UpdateAimedPiece()
+{
+    const APawn* Pawn = Cast<APawn>(GetOwner());
+    if (Pawn == nullptr || !Pawn->IsLocallyControlled()) return;
+
+    // 망치를 들지 않았으면 트레이스도 하지 않는다
+    const AFEBuildPiece* Piece = IsHoldingRepairTool() ? FindPieceUnderCrosshair() : nullptr;
+    const bool bShow = Piece != nullptr && Piece->GetState() == EFEBuildPieceState::Built && Piece->GetDefinition() != nullptr;
+    if (!bShow)
+    {
+        GetViewModel()->SetAimedPiece(FText::GetEmpty(), 1.f, FText::GetEmpty(), FText::GetEmpty());
+        return;
+    }
+
+    const float Percent = Piece->GetHealthPercent();
+    FText RepairText = LOCTEXT("RepairNotNeeded", "손상 없음");
+    if (Piece->IsDamaged())
+    {
+        // 클라는 정확한 HP 를 모른다 → 리플리케이트된 % 로 추정 (내림이라 실제보다 최대 1개 많게 보일 수 있다)
+        TArray<FFEBuildItemCost> Costs;
+        Piece->GetRepairCost(1.f - Percent, Costs);
+        RepairText = Costs.IsEmpty()
+            ? LOCTEXT("RepairFree", "수리: 재료 없음")
+            : FText::Format(LOCTEXT("RepairCost", "수리: {0}"), FormatItemCosts(Costs));
+    }
+
+    FText UpgradeText;
+    if (const UFEBuildPieceDefinition* Target = Piece->GetUpgradeTarget())
+    {
+        UpgradeText = FText::Format(LOCTEXT("UpgradeHint", "우클릭 업그레이드: {0} ({1})"),
+            Target->DisplayName, FormatItemCosts(Target->RequiredItems));
+    }
+
+    GetViewModel()->SetAimedPiece(Piece->GetDefinition()->DisplayName, Percent, RepairText, UpgradeText);
 }
 
 void UFEBuildingComponent::ClientShowNotice_Implementation(const FText& Text)

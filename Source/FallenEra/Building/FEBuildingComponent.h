@@ -10,6 +10,8 @@
 #include "FEBuildingComponent.generated.h"
 
 class UAbilitySystemComponent;
+class UAnimMontage;
+enum class EFEBuildMenuTab : uint8;
 class UEnhancedInputLocalPlayerSubsystem;
 class UInputMappingContext;
 class AFEBuildFurnace;
@@ -59,6 +61,10 @@ public:
     /** [Client Only] 조준한 완성 피스 수리 요청. 망치 무기의 GA_Build_Repair(좌클릭)가 호출한다 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void RepairPiece();
+    
+    /** [Client Only] 조준한 완성 피스를 다음 재질로 업그레이드 요청. 망치 무기의 GA_Build_Upgrade(우클릭)가 호출한다 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void UpgradePiece();
 
     /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 없으면 nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. 디버그 명령도 사용 */
     AFEBuildPiece* FindPieceUnderCrosshair() const;
@@ -70,6 +76,9 @@ public:
     /** [Client Only] 메뉴 닫기 (뷰모델 "닫기" 버튼, 피스 선택 후) */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void CloseBuildMenu();
+    
+    /** [Client Only] 빌드 메뉴 탭 변경 → 그 탭의 피스만 목록에 다시 채운다 */
+    void SelectMenuTab(EFEBuildMenuTab Tab);
 
     /** [Client Only] 청사진 재료 투입 패널 열기. 같은 피스면 닫는다. AFEBuildPiece::InteractLocal 이 호출 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
@@ -115,6 +124,7 @@ public:
     static FTransform MakePlacementTransform(const FVector& Location, uint8 YawStep);
 
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+    virtual void BeginPlay() override;
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 protected:
@@ -140,6 +150,10 @@ protected:
     /** [Server RPC] 망치 장착 + 거리 확인 후 Piece 수리. 실패 사유는 ClientShowNotice 로 돌려준다 */
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerRepairPiece(AFEBuildPiece* Piece);
+    
+    /** [Server RPC] 망치 장착 + 거리 확인 후 Piece 업그레이드. nullptr = 대상 없이 휘두르기만 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerUpgradePiece(AFEBuildPiece* Piece);
 
     /** [Client RPC] 서버만 아는 실패 사유(재료 부족·도구 없음)를 요청자 HUD 에 띄운다 */
     UFUNCTION(Client, Reliable)
@@ -219,6 +233,9 @@ private:
     void HandleStorageTargetDestroyed(AActor* DestroyedActor);
 
     bool bIsMenuOpen = false;
+    
+    /** 마지막으로 연 메뉴 탭. 다음에 메뉴를 열어도 유지 */
+    EFEBuildMenuTab MenuTab{};
 
     UPROPERTY(Transient)
     TObjectPtr<UFEBuildingViewModel> ViewModel;
@@ -270,6 +287,30 @@ private:
 
     /** [Server Only] 마지막 배치 요청 시각. 배치 속도 제한용 */
     double LastPlaceRequestTime = -1.0;
+    
+    /** [Client Only] 망치 조준 HUD 갱신 타이머 (0.1초, 로컬 플레이어만 실제로 일함) */
+    FTimerHandle AimTimer;
+
+    /** [Client Only] 망치를 들고 있으면 조준한 완성 피스의 체력·수리 비용을 뷰모델에 넣고, 아니면 숨긴다 */
+    void UpdateAimedPiece();
+
+    /** 지금 수리 도구(Item.Tool.Hammer)를 들고 있다. 서버 판정과 클라 HUD 가 같이 쓴다 */
+    bool IsHoldingRepairTool() const;
+
+    /** 들고 있는 도구에서 InputTag(좌/우클릭)에 해당하는 공격 몽타주 (망치 DA 의 AttackActions). 없으면 nullptr */
+    UAnimMontage* GetToolMontage(FGameplayTag InputTag) const;
+
+    /** [Client Only] 휘두르기 공통 처리: 간격 확인 + 원격 클라 로컬 재생. 휘둘렀으면 true */
+    bool TrySwingTool(FGameplayTag InputTag);
+
+    /** [Server Only] 휘두르기 공통 처리: 망치 확인 + 간격 확인 + 다른 플레이어에게 몽타주 멀티캐스트. 계속 진행하면 true */
+    bool ServerSwingTool(FGameplayTag InputTag);
+
+    /** [Client Only] 마지막 수리 휘두르기 시각. RepairInterval 연타 방지 */
+    double LastRepairClickTime = -1.0;
+
+    /** [Server Only] 마지막 수리 요청 처리 시각. RepairInterval 미만 간격의 RPC 는 무시 */
+    double LastRepairRequestTime = -1.0;
     
     /** State.Building 태그와 빌드 모드 전용 입력(IMC)을 빌드 모드 여부에 맞춘다 */
     void UpdateBuildModeState();

@@ -2,6 +2,7 @@
 
 #include "FEBuildDoor.h"
 #include "FEBuildingSettings.h"
+#include "FEBuildPieceDefinition.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Net/UnrealNetwork.h"
@@ -78,6 +79,13 @@ void AFEBuildDoor::OnApplyState(EFEBuildPieceState NewState)
         break;
     case EFEBuildPieceState::Blueprint:
         ApplyMaterialToAll(Panel, UFEBuildingSettings::Get()->BlueprintMaterial);
+        break;
+    case EFEBuildPieceState::Built:
+        // 문틀(본체)과 같은 재질 머티리얼. 비어 있으면 문짝 메시 기본 머티리얼
+        if (const UFEBuildPieceDefinition* PieceDefinition = GetDefinition())
+        {
+            ApplyMaterialToAll(Panel, PieceDefinition->BuiltMaterial);
+        }
         break;
     default:
         break;

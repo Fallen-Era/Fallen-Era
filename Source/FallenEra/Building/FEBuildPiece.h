@@ -59,6 +59,15 @@ public:
     /** [Server Only] 깎인 만큼 재료로 수리. 재료가 모자라면 가진 만큼 비례 수리. 성공하면 true, 실패면 OutReason */
     bool TryRepair(IFEBuildInventoryProvider& Inventory, FText& OutReason);
     
+    /** MissingRatio(0~1, 깎인 비율)만큼 수리할 때의 비용. 서버 수리와 클라 미리보기가 같은 식을 쓴다. 비용 0 인 항목은 빠진다 */
+    void GetRepairCost(float MissingRatio, TArray<FFEBuildItemCost>& OutCosts) const;
+    
+    /** [Server Only] UpgradeTo 대상 재질로 교체. 대상 RequiredItems 전부를 한 번에 낸다(모자라면 실패). 체력 비율은 유지. 성공하면 true */
+    bool TryUpgrade(IFEBuildInventoryProvider& Inventory, FText& OutReason);
+
+    /** 업그레이드 대상 정의. 완성 피스가 아니거나, 마지막 단계거나, 아직 로드 전이면 nullptr. 서버 판정과 클라 HUD 공용 */
+    const UFEBuildPieceDefinition* GetUpgradeTarget() const;
+    
     /** [Server Only] 서브시스템이 재계산 결과를 기록 */
     void SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance);
 
@@ -193,6 +202,11 @@ protected:
     
     UFUNCTION()
     void OnRep_HealthPercent();
+    
+    /** [Multicast RPC] 사라지기 직전의 파편 효과·소리. Destroy 전에 보내는 Reliable 이라 채널이 닫히기 전에 도착한다.
+     *  클라 EndPlay 로 하지 않는 이유: 거리 밖으로 멀어져 액터가 지워질 때도 EndPlay(Destroyed) 가 와서 구분할 수 없다 */
+    UFUNCTION(NetMulticast, Reliable)
+    void MulticastPlayBreakEffect();
 
     /** BP 훅 (VFX/SFX 용). ApplyState 가 실행될 때마다 호출되며 최초 1회도 포함. */
     UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
