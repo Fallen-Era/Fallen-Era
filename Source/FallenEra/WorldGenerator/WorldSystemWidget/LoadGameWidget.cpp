@@ -5,7 +5,7 @@
 
 #include "Components/VerticalBox.h"
 #include "Components/Button.h"
-#include "WorldGenerator/WorldRegistrySubsystem.h"
+#include "WorldGenerator/Subsystem/WorldRegistrySubsystem.h"
 #include "WorldGenerator/Settings/WorldGeneratorSettings.h"
 
 #include "WorldGenerator/WorldSystemWidget/WorldRegistryElement.h"

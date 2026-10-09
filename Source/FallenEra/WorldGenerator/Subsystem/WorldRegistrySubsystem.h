@@ -3,12 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Data/Payload.h"
+#include "WorldGenerator/Data/Payload.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "GameplayTagContainer.h"
-#include "Data/Payload.h"
 #include "GameFramework/GameplayMessageSubsystem.h"
-#include "Save/WorldRegistrySaveGame.h"
+#include "WorldGenerator/Save/WorldRegistrySaveGame.h"
 #include "WorldRegistrySubsystem.generated.h"
 
 class UWorldSaveGame;

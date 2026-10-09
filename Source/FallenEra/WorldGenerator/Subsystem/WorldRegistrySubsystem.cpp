@@ -5,7 +5,7 @@
 
 #include "EngineUtils.h"
 #include "FallenEra.h"
-#include "GameplayTag/WorldGameplayTag.h"
+#include "WorldGenerator/GameplayTag/WorldGameplayTag.h"
 
 #include "GameFramework/GameplayMessageSubsystem.h"
 #include "Graphs/VoxelHeightGraph.h"
@@ -23,18 +23,18 @@
 #include "VoxelGraphEnvironment.h"
 #include "VoxelGraphPositionParameter.h"
 #include "VoxelNodeEvaluator.h"
-#include "WorldPersistenceTracker.h"
+#include "WorldGenerator/WorldPersistenceTracker.h"
 #include "Async/IAsyncTask.h"
 #include "EntitySystem/MovieSceneEntitySystemRunner.h"
 
 #include "Graphs/VoxelHeightGraph.h"
 #include "Graphs/VoxelHeightGraphStampRef.h"
 
-#include "Settings/WorldGeneratorSettings.h"
+#include "WorldGenerator//Settings/WorldGeneratorSettings.h"
 #include "Heightmap/VoxelHeightmapStamp.h"
 #include "Kismet/GameplayStatics.h"
-#include "Save/WorldSaveGame.h"
-#include "Save/WorldRegistrySaveGame.h"
+#include "WorldGenerator/Save/WorldSaveGame.h"
+#include "WorldGenerator/Save/WorldRegistrySaveGame.h"
 
 
 const FString UWorldRegistrySubsystem::RegistrySlotName = TEXT("WorldRegistry");

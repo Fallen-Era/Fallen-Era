@@ -37,6 +37,9 @@ protected:
 	TObjectPtr<UButton> Btn_Exit;
 	
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UButton> Btn_Randomize;
+	
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UEditableText> EDIT_TXT_WorldName;
 	
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
@@ -45,10 +48,15 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UEditableText> EDIT_TXT_Size_Y;
 	
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UEditableText> EDIT_TXT_WorldSeed;
+	
 	FText ValidSizeX;
 	FText ValidSizeY;
 	
 public:
+	
+	void PostUpdate();
 	
 	UPROPERTY(BlueprintAssignable)
 	FOnNewGameExitClicked OnNewGameExitClicked;
@@ -62,9 +70,17 @@ private:
 	void OnExitClicked();
 	
 	UFUNCTION()
+	void OnRandomizeClicked();
+	
+	UFUNCTION()
 	void OnTXTSizeXChanged(const FText& Text);
 	
 	UFUNCTION()
 	void OnTXTSizeYChanged(const FText& Text);
+	
+	UFUNCTION()
+	void OnTXTSeedChanged(const FText& Text);
+	
+	void RandomizeSeed(const int32 RandSeed);
 	
 };

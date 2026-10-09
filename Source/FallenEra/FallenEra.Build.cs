@@ -31,7 +31,7 @@ public class FallenEra : ModuleRules
 			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",
-			"PhysicsCore"
+			"PhysicsCore",
 			"DeveloperSettings"
 		});
 

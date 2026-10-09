@@ -9,7 +9,7 @@
 #include "NetworkMessage.h"
 
 #include "Components/WidgetSwitcher.h"
-#include "WorldGenerator/WorldRegistrySubsystem.h"
+#include "WorldGenerator/Subsystem/WorldRegistrySubsystem.h"
 
 #include "WorldGenerator/GameplayTag/WorldGameplayTag.h"
 
@@ -40,6 +40,7 @@ void UMainPanelWidget::NativeConstruct()
 
 void UMainPanelWidget::HandleNewGameRequested()
 {
+	NewGame->PostUpdate();
 	WidgetSwitcher->SetActiveWidget(NewGame);
 }
 
