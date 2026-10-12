@@ -209,8 +209,14 @@ private:
     /** Asset Manager 의 BuildPiece 목록 → 엔트리 뷰모델. 정의 에셋 로드 완료 후 호출 */
     void BuildPieceEntries();
 
-    /** SupplyTarget 의 현재 투입량으로 행 뷰모델 갱신. 다 찼으면 패널을 닫는다 */
+    /** SupplyTarget 의 현재 투입량·소지품으로 줄 갱신. 정의나 잠금 상태가 바뀌었으면 줄을 다시 만든다. 다 찼으면 패널을 닫는다 */
     void RefreshSupplyRows();
+
+    /** 투입 패널 줄을 새로 만든다. 재질 미정 = 사슬 전체(선택지), 잠김 = 현재 정의의 재료만 */
+    void RebuildSupplyRows();
+
+    /** 클라 소지품 스냅샷(CarriedItems)에서 ItemTag 개수 */
+    int32 GetCarriedCount(FGameplayTag ItemTag) const;
 
     UFUNCTION()
     void HandleSupplyTargetDestroyed(AActor* DestroyedActor);
@@ -250,6 +256,10 @@ private:
 
     /** [Client Only] 서버가 보내 준 소지품 스냅샷. 패널 표시에만 쓴다 (판정은 전부 서버) */
     TArray<FFEBuildItemCost> CarriedItems;
+    
+    /** 지금 투입 패널 줄을 만든 기준. 정의(재질)나 잠금 상태가 바뀌면 줄을 다시 만든다 */
+    TWeakObjectPtr<const UFEBuildPieceDefinition> SupplyRowsDefinition;
+    bool bSupplyRowsLocked = false;
 
     TSharedPtr<FStreamableHandle> MenuLoadHandle;
 

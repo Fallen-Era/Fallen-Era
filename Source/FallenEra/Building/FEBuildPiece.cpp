@@ -19,6 +19,21 @@
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
+namespace
+{
+    /** 액터 클래스는 실행 중에 바꿀 수 없다 → 정의만 교체하려면 PieceClass 가 같아야 한다. 다르면 DA 설정 오류라 경고를 남긴다 */
+    bool HasSamePieceClass(const UFEBuildPieceDefinition& From, const UFEBuildPieceDefinition& To)
+    {
+        if (From.PieceClass.ToSoftObjectPath() == To.PieceClass.ToSoftObjectPath())
+        {
+            return true;
+        }
+        UE_LOG(LogFEBuilding, Warning, TEXT("%s -> %s: different PieceClass. Fix UpgradeTo in the data asset."),
+            *From.GetPrimaryAssetId().ToString(), *To.GetPrimaryAssetId().ToString());
+        return false;
+    }
+}
+
 AFEBuildPiece::AFEBuildPiece()
 {
     PrimaryActorTick.bCanEverTick = false;
@@ -117,19 +132,63 @@ void AFEBuildPiece::SetState(EFEBuildPieceState NewState)
     }
 }
 
-bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag)
+bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag, FText& OutReason)
 {
     const bool bCanSupply = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Blueprint;
     if (!bCanSupply) return false;
 
-    const int32 Index = Definition->RequiredItems.IndexOfByPredicate([&ItemTag](const FFEBuildItemCost& Cost)
+    const auto FindItemIndex = [&ItemTag](const UFEBuildPieceDefinition& Candidate)
     {
-        return Cost.ItemTag == ItemTag;
-    });
-    if (!SuppliedCounts.IsValidIndex(Index))
+        return Candidate.RequiredItems.IndexOfByPredicate([&ItemTag](const FFEBuildItemCost& Cost)
+        {
+            return Cost.ItemTag == ItemTag;
+        });
+    };
+
+    // 이 재료를 쓰는 재질을 정한다: 현재 재질이 쓰면 그대로, 아니면 (아직 안 정해졌을 때만) 재질 사슬에서 찾는다
+    const UFEBuildPieceDefinition* Target = Definition;
+    if (FindItemIndex(*Definition) == INDEX_NONE)
     {
-        return false; // 이 피스가 요구하지 않는 재료
+        if (IsMaterialLocked())
+        {
+            // 다른 플레이어가 먼저 다른 재료를 넣어 재질이 정해졌다
+            OutReason = FText::Format(LOCTEXT("SupplyLocked", "이미 {0}(으)로 짓는 중입니다"), Definition->DisplayName);
+            return false;
+        }
+
+        TArray<const UFEBuildPieceDefinition*> Chain;
+        Definition->GetMaterialChain(Chain);
+        const UFEBuildPieceDefinition* const* Found = Chain.FindByPredicate([&FindItemIndex](const UFEBuildPieceDefinition* Candidate)
+        {
+            return FindItemIndex(*Candidate) != INDEX_NONE;
+        });
+        if (Found == nullptr)
+        {
+            return false; // 사슬 어디에도 없는 재료 (UI 는 이런 요청을 보내지 않는다)
+        }
+        Target = *Found;
     }
+
+    // 재질을 바꾸기 전에 재료가 있는지 먼저 본다. 바꿔 놓고 못 넣으면 "재질 미정인데 시작 재질이 아닌" 상태가 된다
+    if (Inventory.CountItems(ItemTag) <= 0)
+    {
+        OutReason = FText::Format(LOCTEXT("SupplyNoItems", "{0}이(가) 없습니다"), UFEBuildingSettings::Get()->GetItemDisplayName(ItemTag));
+        return false;
+    }
+
+    if (Target != Definition)
+    {
+        if (!HasSamePieceClass(*Definition, *Target))
+        {
+            OutReason = LOCTEXT("SupplyInvalid", "이 재료로는 지을 수 없습니다");
+            return false;
+        }
+        UE_LOG(LogFEBuilding, Log, TEXT("%s material chosen: %s -> %s"), *GetName(), *PieceId.ToString(), *Target->GetPrimaryAssetId().ToString());
+        SwapDefinition(Target, false); // 투입량 0 으로 교체 → 아래 투입으로 잠긴다
+    }
+
+    const int32 Index = FindItemIndex(*Definition);
+    if (!SuppliedCounts.IsValidIndex(Index)) return false;
 
     const int32 Remaining = Definition->RequiredItems[Index].Count - SuppliedCounts[Index];
     const int32 Available = FMath::Min(Remaining, Inventory.CountItems(ItemTag));
@@ -143,6 +202,12 @@ bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag
 
     TryComplete();
     return true;
+}
+
+bool AFEBuildPiece::IsMaterialLocked() const
+{
+    // 별도 상태값 없이 리플리케이트·저장되는 투입량으로 판단 → 서버·클라·복원이 자동으로 같다
+    return State == EFEBuildPieceState::Built || GetTotalSupplied() > 0;
 }
 
 bool AFEBuildPiece::TryComplete()
@@ -300,12 +365,8 @@ bool AFEBuildPiece::TryUpgrade(IFEBuildInventoryProvider& Inventory, FText& OutR
         OutReason = LOCTEXT("UpgradeMax", "더 이상 업그레이드할 수 없습니다");
         return false;
     }
-
-    // 액터 클래스는 실행 중에 바꿀 수 없다 — 정의만 교체하므로 PieceClass 가 같아야 한다 (다르면 DA 설정 오류)
-    if (Target->PieceClass.ToSoftObjectPath() != Definition->PieceClass.ToSoftObjectPath())
+    if (!HasSamePieceClass(*Definition, *Target))
     {
-        UE_LOG(LogFEBuilding, Warning, TEXT("%s: UpgradeTo %s has a different PieceClass. Fix the data asset."),
-            *GetName(), *Target->GetPrimaryAssetId().ToString());
         OutReason = LOCTEXT("UpgradeInvalid", "업그레이드할 수 없는 구조물입니다");
         return false;
     }
@@ -329,23 +390,32 @@ bool AFEBuildPiece::TryUpgrade(IFEBuildInventoryProvider& Inventory, FText& OutR
         CostText += FString::Printf(TEXT("%s %d "), *Cost.ItemTag.GetTagName().ToString(), Removed);
     }
 
-    // 체력 비율 유지 — 가득 채우면 "업그레이드로 싸게 수리"하는 편법이 생긴다
-    const float HealthRatio = Definition->MaxHealth > 0.f ? Health / Definition->MaxHealth : 1.f;
     const FPrimaryAssetId OldId = PieceId;
+    SwapDefinition(Target, true); // 투입량 가득 → 철거 환불은 새 재질 기준
+
+    UE_LOG(LogFEBuilding, Log, TEXT("%s upgraded %s -> %s (cost: %s)"), *GetName(), *OldId.ToString(), *PieceId.ToString(), *CostText);
+    return true;
+}
+
+void AFEBuildPiece::SwapDefinition(const UFEBuildPieceDefinition* Target, bool bFillSupply)
+{
+    if (!HasAuthority() || Target == nullptr || Target == Definition) return;
+
+    // 체력 비율 유지 — 업그레이드로 가득 채우면 "싸게 수리"하는 편법이 생긴다. 청사진은 항상 가득이라 비율 1
+    const float HealthRatio = Definition && Definition->MaxHealth > 0.f ? Health / Definition->MaxHealth : 1.f;
 
     // 같은 액터에서 정의만 교체. 위치·소켓·문 열림 상태는 그대로다
     Definition = Target;
     PieceId = Target->GetPrimaryAssetId();
 
-    // 투입량을 대상 재료로 가득 → 철거 환불은 새 재질 기준
     SuppliedCounts.SetNum(Target->RequiredItems.Num());
     for (int32 Index = 0; Index < Target->RequiredItems.Num(); ++Index)
     {
-        SuppliedCounts[Index] = Target->RequiredItems[Index].Count;
+        SuppliedCounts[Index] = bFillSupply ? Target->RequiredItems[Index].Count : 0;
     }
     OnRep_SuppliedCounts(); // 서버 로컬 반영
 
-    // Fraction 1 이면 부동소수 오차 없이 최대값 (수리와 같은 이유)
+    // 비율 1 이면 부동소수 오차 없이 최대값 (수리와 같은 이유)
     SetHealth(HealthRatio >= 1.f ? Target->MaxHealth : Target->MaxHealth * HealthRatio);
 
     // 새 메시·머티리얼(Runtime 번들)을 로드한 뒤 외형 갱신. 클라는 PieceId 리플리케이트 → OnRep_PieceId 로 같은 함수를 탄다
@@ -356,9 +426,6 @@ bool AFEBuildPiece::TryUpgrade(IFEBuildInventoryProvider& Inventory, FText& OutR
     {
         Subsystem->MarkDirty();
     }
-
-    UE_LOG(LogFEBuilding, Log, TEXT("%s upgraded %s -> %s (cost: %s)"), *GetName(), *OldId.ToString(), *PieceId.ToString(), *CostText);
-    return true;
 }
 
 FFE_CombatDamageResult AFEBuildPiece::ReceiveCombatDamage_Implementation(const FFE_CombatDamageRequest& DamageRequest)
@@ -448,6 +515,25 @@ FText AFEBuildPiece::GetInteractText_Implementation(AActor* InstigatorActor) con
     if (IsFullySupplied())
     {
         return LOCTEXT("WaitingSupport", "지지 구조 완성 대기");
+    }
+
+    // 재질 미정이면 고를 수 있는 재료를 알려 준다: "재료 선택 (나무 · 돌 · 철)"
+    if (Definition && !IsMaterialLocked())
+    {
+        TArray<const UFEBuildPieceDefinition*> Chain;
+        Definition->GetMaterialChain(Chain);
+        if (Chain.Num() > 1)
+        {
+            TArray<FText> ItemNames;
+            for (const UFEBuildPieceDefinition* Variant : Chain)
+            {
+                if (!Variant->RequiredItems.IsEmpty())
+                {
+                    ItemNames.Add(UFEBuildingSettings::Get()->GetItemDisplayName(Variant->RequiredItems[0].ItemTag));
+                }
+            }
+            return FText::Format(LOCTEXT("SupplyChoosePrompt", "재료 선택 ({0})"), FText::Join(FText::FromString(TEXT(" · ")), ItemNames));
+        }
     }
     return FText::Format(LOCTEXT("SupplyPrompt", "재료 투입 ({0} / {1})"), FText::AsNumber(GetTotalSupplied()), FText::AsNumber(GetTotalRequired()));
 }

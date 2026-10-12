@@ -38,8 +38,13 @@ public:
     /** [Server Only] 클라이언트는 OnRep_State 로 따라온다. */
     void SetState(EFEBuildPieceState NewState);
     
-    /** [Server Only] ItemTag 항목에 인벤토리에서 있는 만큼 투입. 다 차고 지지되면 Built. 무언가 바뀌었으면 true. */
-    bool TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag);
+    /** [Server Only] ItemTag 를 인벤토리에서 있는 만큼 투입. 다 차고 지지되면 Built. 무언가 바뀌었으면 true.
+     *  재질 미정(투입량 0)이고 현재 정의에 없는 재료면, 재질 사슬에서 그 재료를 쓰는 정의로 교체한 뒤 투입한다(= 재질 결정).
+     *  이미 다른 재질로 잠겼으면 실패 + OutReason */
+    bool TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag, FText& OutReason);
+
+    /** 재질이 정해졌다 (청사진에 무언가 투입됨, 또는 완성됨). 리플리케이트된 투입량만 봐서 서버·클라 공용 */
+    bool IsMaterialLocked() const;
     
     /** [Server Only] 재료가 다 찬 청사진을 완성 시도. 지지 구조가 아직 청사진이면 false (대기). */
     bool TryComplete();
@@ -239,4 +244,8 @@ private:
 
     /** [Server Only] Health 를 바꾸고 HealthPercent 갱신 + 서버 로컬 OnRep */
     void SetHealth(float NewHealth);
+    
+    /** [Server Only] 같은 액터에서 정의만 Target 으로 교체 (재질 결정·업그레이드 공용). 체력 비율 유지, 지지 재계산, 새 번들 로드.
+     *  bFillSupply: true = 투입량을 Target 재료로 가득 (업그레이드), false = 0 으로 (청사진 재질 결정) */
+    void SwapDefinition(const UFEBuildPieceDefinition* Target, bool bFillSupply);
 };

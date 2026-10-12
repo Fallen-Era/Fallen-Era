@@ -32,19 +32,26 @@ void UFEBuildPieceEntryViewModel::Select()
 
 // ---- 투입 행 ----
 
-void UFESupplyRowViewModel::Initialize(UFEBuildingComponent* InComponent, FGameplayTag InItemTag, const FText& InItemName)
+void UFESupplyRowViewModel::Initialize(UFEBuildingComponent* InComponent, FGameplayTag InItemTag, const FText& InItemName, const FText& InVariantName, bool bInShowOr)
 {
     Component = InComponent;
+    VariantName = InVariantName;
     UE_MVVM_SET_PROPERTY_VALUE(ItemTag, InItemTag);
     UE_MVVM_SET_PROPERTY_VALUE(ItemName, InItemName);
+    UE_MVVM_SET_PROPERTY_VALUE(OrVisibility, bInShowOr ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 }
 
-void UFESupplyRowViewModel::SetCounts(int32 InSupplied, int32 InRequired)
+void UFESupplyRowViewModel::SetCounts(int32 InSupplied, int32 InRequired, int32 InCarried)
 {
-    const FText NewLabel = FText::Format(NSLOCTEXT("FEBuilding", "SupplyRow", "{0}   {1} / {2}"),
+    const FText Counts = FText::Format(NSLOCTEXT("FEBuilding", "SupplyRow", "{0}   {1} / {2}"),
         ItemName, FText::AsNumber(InSupplied), FText::AsNumber(InRequired));
+    const FText NewLabel = VariantName.IsEmpty()
+        ? Counts
+        : FText::Format(NSLOCTEXT("FEBuilding", "SupplyRowVariant", "{0} — {1}"), VariantName, Counts);
     UE_MVVM_SET_PROPERTY_VALUE(Label, NewLabel);
-    UE_MVVM_SET_PROPERTY_VALUE(bCanSupply, InSupplied < InRequired);
+
+    // 덜 찼고, 넣을 재료가 1개라도 있을 때만 (가진 만큼만 넣는 부분 투입 허용)
+    UE_MVVM_SET_PROPERTY_VALUE(bCanSupply, InSupplied < InRequired && InCarried > 0);
 }
 
 void UFESupplyRowViewModel::Supply()
@@ -145,6 +152,11 @@ void UFEBuildingViewModel::SetSupplyTitle(const FText& InTitle)
     UE_MVVM_SET_PROPERTY_VALUE(SupplyTitle, InTitle);
 }
 
+void UFEBuildingViewModel::SetSupplyHint(const FText& InHint)
+{
+    UE_MVVM_SET_PROPERTY_VALUE(SupplyHint, InHint);
+}
+
 void UFEBuildingViewModel::SetSupplyRows(const TArray<UObject*>& InRows)
 {
     UE_MVVM_SET_PROPERTY_VALUE(SupplyRows, TArray<TObjectPtr<UObject>>(InRows));
@@ -210,19 +222,9 @@ void UFEBuildingViewModel::SetMenuTabTitle(const FText& InTitle)
     UE_MVVM_SET_PROPERTY_VALUE(MenuTabTitle, InTitle);
 }
 
-void UFEBuildingViewModel::SelectWoodTab()
+void UFEBuildingViewModel::SelectConstructionTab()
 {
-    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Wood);
-}
-
-void UFEBuildingViewModel::SelectStoneTab()
-{
-    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Stone);
-}
-
-void UFEBuildingViewModel::SelectMetalTab()
-{
-    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Metal);
+    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Construction);
 }
 
 void UFEBuildingViewModel::SelectFurnitureTab()

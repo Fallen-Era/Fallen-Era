@@ -12,13 +12,11 @@
 
 class UFEBuildingComponent;
 
-/** 빌드 메뉴 탭. 구조물은 재질별, 그 외(가구·방어시설)는 Furniture */
+/** 빌드 메뉴 탭. 건설 = 구조물(재질 사슬의 시작만), 가구 = 그 외(가구·방어시설) */
 UENUM(BlueprintType)
 enum class EFEBuildMenuTab : uint8
 {
-	Wood,
-	Stone,
-	Metal,
+	Construction,
 	Furniture
 };
 
@@ -57,8 +55,11 @@ class FALLENERA_API UFESupplyRowViewModel : public UMVVMViewModelBase
     GENERATED_BODY()
 
 public:
-	void Initialize(UFEBuildingComponent* InComponent, FGameplayTag InItemTag, const FText& InItemName);
-    void SetCounts(int32 InSupplied, int32 InRequired);
+	/** InVariantName: 재질 미정 패널에서 "돌 벽" 같은 변형 이름 (비우면 이름 없이 재료만). bInShowOr: 이 줄 위에 "또는" 표시 */
+	void Initialize(UFEBuildingComponent* InComponent, FGameplayTag InItemTag, const FText& InItemName, const FText& InVariantName, bool bInShowOr);
+
+	/** InCarried: 클라 소지품 스냅샷 기준 보유량. 0 이면 버튼 비활성 */
+	void SetCounts(int32 InSupplied, int32 InRequired, int32 InCarried);
 
     /** [Client Only] "넣기" 버튼 → 서버에 이 항목 투입 요청 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
@@ -77,9 +78,16 @@ public:
     /** 아직 덜 찼으면 true → 버튼 IsEnabled */
     UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
     bool bCanSupply = false;
+	
+	/** 재질 선택지 사이의 "또는". 첫 선택지와 잠긴 패널에서는 Collapsed */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	ESlateVisibility OrVisibility = ESlateVisibility::Collapsed;
 
 private:
     TWeakObjectPtr<UFEBuildingComponent> Component;
+	
+	/** 라벨 앞에 붙는 변형 이름 ("돌 벽"). 비어 있으면 생략 */
+	FText VariantName;
 };
 
 /**
@@ -154,6 +162,7 @@ public:
 	void SetMenuTabTitle(const FText& InTitle);
     void SetSupplyPanelOpen(bool bInOpen);
     void SetSupplyTitle(const FText& InTitle);
+	void SetSupplyHint(const FText& InHint); /** 투입 패널 안내 문구 ("재료를 하나 골라 넣으세요" / "다른 재료로 바꾸려면 철거하세요 ...") */
     void SetSupplyRows(const TArray<UObject*>& InRows);
 	void SetStoragePanelOpen(bool bInOpen);
 	void SetStorageTitle(const FText& InTitle);
@@ -163,15 +172,8 @@ public:
 	void SetFurnaceVisible(bool bInVisible);
 	void SetFurnaceState(bool bInIsLit, float InProgress);
 	
-	/** [Client Only] 메뉴 탭 버튼 4개. 인자 없는 함수라 View Bindings 이벤트로 바로 연결된다 */
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
-	void SelectWoodTab();
-
-	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
-	void SelectStoneTab();
-
-	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
-	void SelectMetalTab();
+	void SelectConstructionTab();
 
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
 	void SelectFurnitureTab();
@@ -220,6 +222,9 @@ public:
 
     UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
     FText SupplyTitle;
+	
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText SupplyHint;
 
     /** UFESupplyRowViewModel 배열 */
     UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")

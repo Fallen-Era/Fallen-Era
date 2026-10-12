@@ -32,9 +32,18 @@ public:
     static const FName RuntimeBundle;
 
     virtual FPrimaryAssetId GetPrimaryAssetId() const override;
+    
+    /** 재질 사슬: 자신부터 UpgradeTo 를 따라간 정의들 (예: 나무 → 돌 → 철). 투입 시 재질 선택·메뉴·프롬프트가 쓴다.
+     *  다음 단계 DA 를 동기 로드한다 (소프트 참조만 가진 작은 데이터라 메시는 따라오지 않음).
+     *  사슬이 길어지거나 DA 가 무거워지면 시작 DA 에 변형 목록을 Runtime 번들로 두는 방식으로 바꾼다 */
+    void GetMaterialChain(TArray<const UFEBuildPieceDefinition*>& OutChain) const;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
     FText DisplayName;
+	
+	/** 재질과 무관한 이름 ("벽"). 재질 사슬의 시작 DA 에만 넣는다 — 빌드 메뉴와 재질 선택 패널 제목에 쓴다. 비우면 DisplayName */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
+	FText BaseName;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (Categories = "Build.Piece"))
     FGameplayTag Category;

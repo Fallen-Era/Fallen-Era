@@ -44,30 +44,33 @@ namespace
         return FText::Join(FText::FromString(TEXT(", ")), Parts);
     }
     
-    /** 구조물은 재질별 탭, 그 외(가구·방어시설·이동)는 가구 탭 */
+    /** 구조물은 건설 탭, 그 외(가구·방어시설·이동)는 가구 탭 */
     bool MatchesMenuTab(const UFEBuildPieceDefinition& Definition, EFEBuildMenuTab Tab)
     {
-        if (Definition.Category != FEBuildingTags::Build_Piece_Structure)
-        {
-            return Tab == EFEBuildMenuTab::Furniture;
-        }
-        switch (Tab)
-        {
-        case EFEBuildMenuTab::Wood:  return Definition.Material == EFEBuildMaterial::Wood;
-        case EFEBuildMenuTab::Stone: return Definition.Material == EFEBuildMaterial::Stone;
-        case EFEBuildMenuTab::Metal: return Definition.Material == EFEBuildMaterial::Metal;
-        default:                     return false;
-        }
+        const bool bIsStructure = Definition.Category == FEBuildingTags::Build_Piece_Structure;
+        return Tab == (bIsStructure ? EFEBuildMenuTab::Construction : EFEBuildMenuTab::Furniture);
     }
 
     FText GetMenuTabTitle(EFEBuildMenuTab Tab)
     {
-        switch (Tab)
+        return Tab == EFEBuildMenuTab::Construction ? LOCTEXT("TabConstruction", "건설") : LOCTEXT("TabFurniture", "가구");
+    }
+
+    /** 투입 패널 선택지: 재질 미정이면 사슬 전체(나무·돌·철), 정해졌으면 현재 재질 하나.
+     *  RebuildSupplyRows 와 RefreshSupplyRows 가 같은 순서를 써야 줄과 숫자가 맞는다 */
+    void GetSupplyVariants(const AFEBuildPiece& Piece, TArray<const UFEBuildPieceDefinition*>& OutVariants)
+    {
+        OutVariants.Reset();
+        const UFEBuildPieceDefinition* Definition = Piece.GetDefinition();
+        if (Definition == nullptr) return;
+
+        if (Piece.IsMaterialLocked())
         {
-        case EFEBuildMenuTab::Wood:  return LOCTEXT("TabWood", "나무");
-        case EFEBuildMenuTab::Stone: return LOCTEXT("TabStone", "돌");
-        case EFEBuildMenuTab::Metal: return LOCTEXT("TabMetal", "철");
-        default:                     return LOCTEXT("TabFurniture", "가구");
+            OutVariants.Add(Definition);
+        }
+        else
+        {
+            Definition->GetMaterialChain(OutVariants);
         }
     }
 }
@@ -345,13 +348,29 @@ void UFEBuildingComponent::BuildPieceEntries()
         return A.PrimaryAssetName.LexicalLess(B.PrimaryAssetName);
     });
 
+    // 다른 정의의 UpgradeTo 대상(돌·철 변형)은 메뉴에 내지 않는다 — 재질은 재료를 넣을 때 고른다.
+    // 소프트 경로 비교라 추가 로드가 없다 (메뉴를 열 때 정의는 이미 전부 로드됨)
+    TSet<FSoftObjectPath> VariantPaths;
+    for (const FPrimaryAssetId& PieceId : PieceIds)
+    {
+        const UFEBuildPieceDefinition* Definition = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(PieceId));
+        if (Definition && !Definition->UpgradeTo.IsNull())
+        {
+            VariantPaths.Add(Definition->UpgradeTo.ToSoftObjectPath());
+        }
+    }
+
     TArray<UObject*> Entries;
     for (const FPrimaryAssetId& PieceId : PieceIds)
     {
         const UFEBuildPieceDefinition* Definition = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(PieceId));
-        if (Definition == nullptr || !MatchesMenuTab(*Definition, MenuTab)) continue; // 다른 탭의 피스
-        
-        const FText Name = Definition && !Definition->DisplayName.IsEmpty() ? Definition->DisplayName : FText::FromName(PieceId.PrimaryAssetName);
+        const bool bShow = Definition != nullptr && MatchesMenuTab(*Definition, MenuTab) && !VariantPaths.Contains(FSoftObjectPath(Definition));
+        if (!bShow) continue;
+
+        // 재질과 무관한 이름("벽")이 있으면 그것으로 — 재질은 투입할 때 고르므로
+        const FText Name = !Definition->BaseName.IsEmpty() ? Definition->BaseName
+            : !Definition->DisplayName.IsEmpty() ? Definition->DisplayName
+            : FText::FromName(PieceId.PrimaryAssetName);
 
         UFEBuildPieceEntryViewModel* Entry = NewObject<UFEBuildPieceEntryViewModel>(GetViewModel());
         Entry->Initialize(this, PieceId, Name);
@@ -375,23 +394,13 @@ void UFEBuildingComponent::OpenSupplyPanel(AFEBuildPiece* Piece)
     SupplyTarget->OnSupplyChangedNative.AddUObject(this, &UFEBuildingComponent::RefreshSupplyRows);
     SupplyTarget->OnDestroyed.AddDynamic(this, &UFEBuildingComponent::HandleSupplyTargetDestroyed);
 
-    const UFEBuildPieceDefinition* Definition = Piece->GetDefinition();
-    GetViewModel()->SetSupplyTitle(Definition ? Definition->DisplayName : FText::GetEmpty());
-
-    TArray<UObject*> Rows;
-    if (Definition)
-    {
-        for (const FFEBuildItemCost& Cost : Definition->RequiredItems)
-        {
-            UFESupplyRowViewModel* Row = NewObject<UFESupplyRowViewModel>(GetViewModel());
-            Row->Initialize(this, Cost.ItemTag, UFEBuildingSettings::Get()->GetItemDisplayName(Cost.ItemTag));
-            Rows.Add(Row);
-        }
-    }
-    GetViewModel()->SetSupplyRows(Rows);
+    RebuildSupplyRows();
     GetViewModel()->SetSupplyPanelOpen(true);
     RefreshSupplyRows();
     UpdateUIMode();
+
+    // [넣기] 활성은 소지품을 알아야 한다. 소지품은 리플리케이트되지 않으므로 스냅샷을 받는다 (보관함 패널과 같은 경로)
+    ServerRequestInventory();
 }
 
 void UFEBuildingComponent::CloseSupplyPanel()
@@ -402,6 +411,9 @@ void UFEBuildingComponent::CloseSupplyPanel()
         SupplyTarget->OnDestroyed.RemoveDynamic(this, &UFEBuildingComponent::HandleSupplyTargetDestroyed);
         SupplyTarget = nullptr;
     }
+    SupplyRowsDefinition = nullptr;
+    bSupplyRowsLocked = false;
+    
     GetViewModel()->SetSupplyPanelOpen(false);
     GetViewModel()->SetSupplyRows(TArray<UObject*>());
     UpdateUIMode();
@@ -649,14 +661,92 @@ void UFEBuildingComponent::RefreshSupplyRows()
         return;
     }
 
-    const TArray<TObjectPtr<UObject>>& Rows = GetViewModel()->SupplyRows;
-    for (int32 Index = 0; Index < Rows.Num() && Index < Definition->RequiredItems.Num(); ++Index)
+    // 재질이 정해졌으면(나 또는 다른 플레이어가 먼저) 선택지 → 한 재질로 줄 구성이 바뀐다. 그 외에는 숫자만 바꿔 깜빡이지 않게
+    if (Definition != SupplyRowsDefinition.Get() || SupplyTarget->IsMaterialLocked() != bSupplyRowsLocked)
     {
-        if (UFESupplyRowViewModel* Row = Cast<UFESupplyRowViewModel>(Rows[Index]))
+        RebuildSupplyRows();
+    }
+
+    TArray<const UFEBuildPieceDefinition*> Variants;
+    GetSupplyVariants(*SupplyTarget, Variants);
+
+    const TArray<TObjectPtr<UObject>>& Rows = GetViewModel()->SupplyRows;
+    int32 RowIndex = 0;
+    for (const UFEBuildPieceDefinition* Variant : Variants)
+    {
+        for (int32 ItemIndex = 0; ItemIndex < Variant->RequiredItems.Num(); ++ItemIndex, ++RowIndex)
         {
-            Row->SetCounts(SupplyTarget->GetSuppliedCount(Index), Definition->RequiredItems[Index].Count);
+            UFESupplyRowViewModel* Row = Rows.IsValidIndex(RowIndex) ? Cast<UFESupplyRowViewModel>(Rows[RowIndex]) : nullptr;
+            if (Row == nullptr) continue;
+
+            // 투입량은 현재 재질의 것만 의미가 있다 (재질 미정 선택지는 전부 0)
+            const FFEBuildItemCost& Cost = Variant->RequiredItems[ItemIndex];
+            const int32 Supplied = Variant == Definition ? SupplyTarget->GetSuppliedCount(ItemIndex) : 0;
+            Row->SetCounts(Supplied, Cost.Count, GetCarriedCount(Cost.ItemTag));
         }
     }
+}
+
+void UFEBuildingComponent::RebuildSupplyRows()
+{
+    TArray<const UFEBuildPieceDefinition*> Variants;
+    if (SupplyTarget)
+    {
+        GetSupplyVariants(*SupplyTarget, Variants);
+    }
+
+    const UFEBuildPieceDefinition* Definition = SupplyTarget ? SupplyTarget->GetDefinition() : nullptr;
+    SupplyRowsDefinition = Definition;
+    bSupplyRowsLocked = SupplyTarget && SupplyTarget->IsMaterialLocked();
+
+    // 선택지가 둘 이상이면 줄마다 변형 이름("돌 벽 — 돌 0 / 6")을 붙이고, 두 번째 선택지부터 첫 줄 위에 "또는"
+    const bool bIsChoice = Variants.Num() > 1;
+    TArray<UObject*> Rows;
+    for (int32 VariantIndex = 0; VariantIndex < Variants.Num(); ++VariantIndex)
+    {
+        const UFEBuildPieceDefinition* Variant = Variants[VariantIndex];
+        for (int32 ItemIndex = 0; ItemIndex < Variant->RequiredItems.Num(); ++ItemIndex)
+        {
+            const FGameplayTag ItemTag = Variant->RequiredItems[ItemIndex].ItemTag;
+            UFESupplyRowViewModel* Row = NewObject<UFESupplyRowViewModel>(GetViewModel());
+            Row->Initialize(this, ItemTag, UFEBuildingSettings::Get()->GetItemDisplayName(ItemTag),
+                bIsChoice ? Variant->DisplayName : FText::GetEmpty(),
+                bIsChoice && VariantIndex > 0 && ItemIndex == 0);
+            Rows.Add(Row);
+        }
+    }
+    GetViewModel()->SetSupplyRows(Rows);
+
+    if (Definition == nullptr) return;
+
+    if (bIsChoice)
+    {
+        const FText BaseName = Definition->BaseName.IsEmpty() ? Definition->DisplayName : Definition->BaseName;
+        GetViewModel()->SetSupplyTitle(FText::Format(LOCTEXT("SupplyChooseTitle", "{0} — 재질 선택"), BaseName));
+        GetViewModel()->SetSupplyHint(LOCTEXT("SupplyChooseHint", "재료를 하나 골라 넣으세요. 처음 넣은 재료로 재질이 정해집니다"));
+    }
+    else
+    {
+        GetViewModel()->SetSupplyTitle(Definition->DisplayName);
+        // 구조물은 다른 재질이 있다 → 바꾸는 방법을 알려 준다. 가구는 재질이 하나라 안내 없음
+        const bool bHasAlternatives = Definition->Category == FEBuildingTags::Build_Piece_Structure;
+        GetViewModel()->SetSupplyHint(bHasAlternatives
+            ? LOCTEXT("SupplyLockedHint", "다른 재료로 바꾸려면 철거하세요 (청사진은 100% 환불)")
+            : FText::GetEmpty());
+    }
+}
+
+int32 UFEBuildingComponent::GetCarriedCount(FGameplayTag ItemTag) const
+{
+    int32 Total = 0;
+    for (const FFEBuildItemCost& Item : CarriedItems)
+    {
+        if (Item.ItemTag == ItemTag)
+        {
+            Total += Item.Count;
+        }
+    }
+    return Total;
 }
 
 void UFEBuildingComponent::HandleSupplyTargetDestroyed(AActor* DestroyedActor)
@@ -1414,7 +1504,17 @@ void UFEBuildingComponent::ServerSupplyItem_Implementation(AFEBuildPiece* Piece,
         UE_LOG(LogFEBuilding, Warning, TEXT("%s has no IFEBuildInventoryProvider; cannot supply"), *GetNameSafe(GetOwner()));
         return;
     }
-    Piece->TrySupply(*Inventory, ItemTag);
+
+    // 실패 사유는 서버만 아는 것(다른 플레이어가 먼저 재질을 정함, 그새 재료가 없어짐)만 돌려준다
+    FText Reason;
+    if (!Piece->TrySupply(*Inventory, ItemTag, Reason) && !Reason.IsEmpty())
+    {
+        UE_LOG(LogFEBuilding, Log, TEXT("Supply rejected: %s (%s)"), *Piece->GetName(), *Reason.ToString());
+        ClientShowNotice(Reason);
+    }
+
+    // 넣은 뒤 남은 소지품으로 [넣기] 버튼 활성 상태를 갱신하도록 스냅샷을 다시 보낸다
+    SendInventorySnapshot();
 }
 
 bool UFEBuildingComponent::ServerStoreItem_Validate(AFEBuildStorage* Storage, FGameplayTag ItemTag, int32 Count)
@@ -1496,6 +1596,7 @@ void UFEBuildingComponent::ClientReceiveInventory_Implementation(const TArray<FF
 {
     CarriedItems = InItems;
     RefreshStorageSlots();
+    RefreshSupplyRows(); // 투입 패널이 열려 있으면 [넣기] 활성 갱신 (없으면 바로 빠져나감)
 }
 
 #undef LOCTEXT_NAMESPACE
