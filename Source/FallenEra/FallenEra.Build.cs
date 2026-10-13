@@ -19,9 +19,10 @@ public class FallenEra : ModuleRules
 			"GameplayTags",
 			"GameplayTasks",
 			"GameplayStateTreeModule",
-			"Niagara",
 			"StateTreeModule",
-			"Slate",
+			"Niagara",
+			"NavigationSystem",
+			"PhysicsCore",
 			"UMG",
 			"ModelViewViewModel",
 			"Slate",
@@ -30,7 +31,10 @@ public class FallenEra : ModuleRules
 			"AssetRegistry"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] 
+		{
+			"GameplayMessageRuntime",
+		});
 
 		PublicIncludePaths.AddRange(new string[] {
 			"FallenEra",

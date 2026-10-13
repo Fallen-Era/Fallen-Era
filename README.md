@@ -98,15 +98,12 @@ git checkout -b bugfix/fe-health-replication
 
 ```
 Content/
-├── _Common/                 ← 팀 공통 폴더 (완료된 에셋만)
+├── _Common/                 ← Unreal 자산은 에셋 내부 레퍼런스 문제로 바로 분류 후 작업
 │   ├── Characters/
 │   ├── AI/
 │   ├── UI/
 │   └── VFX/
-└── Work/                ← 개인 작업 폴더
-    ├── OBI/                 ← 본인 이니셜 폴더에서만 작업
-    ├── KSH/
-    └── .../
+
 ```
 
 ### Source 폴더 구조
