@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
 #include "GameplayTagContainer.h"
-#include "FallenEraItemBase.generated.h"
+#include "FEItemBase.generated.h"
 
 /**
  * FallenEraItemBase
@@ -49,7 +49,7 @@ struct FItemVisualData
 };
 
 UCLASS(Abstract, BlueprintType)
-class FALLENERA_API UFallenEraItemBase : public UPrimaryDataAsset
+class FALLENERA_API UFEItemBase : public UPrimaryDataAsset
 {
 	GENERATED_BODY()
 	

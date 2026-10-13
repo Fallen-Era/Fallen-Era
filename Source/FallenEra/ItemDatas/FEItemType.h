@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include "CoreMinimal.h"
-#include "FallenEraItemType.generated.h"
+#include "FEItemType.generated.h"
 
 /**
  * Runtime 동기화 데이터 구조화 

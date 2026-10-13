@@ -1,7 +1,7 @@
 ﻿#pragma once
 
-#include "FallenEraEquipmentItem.h"
-#include "FallenEraWeaponItem.generated.h"
+#include "FEEquipmentItem.h"
+#include "FEWeaponItem.generated.h"
 
 /**
  * FallenEraWeaponItem
@@ -9,7 +9,7 @@
  */
 
 UCLASS(BlueprintType)
-class FALLENERA_API UFallenEraWeaponItem : public UFallenEraEquipmentItem
+class FALLENERA_API UFEWeaponItem : public UFEEquipmentItem
 {
 	GENERATED_BODY()
 public:

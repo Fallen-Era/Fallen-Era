@@ -22,7 +22,7 @@ public class FallenEra : ModuleRules
 			"Niagara",
 			"StateTreeModule",
 			"Slate",
-			"UMG"
+			"UMG",
 			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",

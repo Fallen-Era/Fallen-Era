@@ -1,10 +1,10 @@
 ﻿#pragma once
 
-#include "FallenEraItemBase.h"
-#include "FallenEraConsumableItem.generated.h"
+#include "FEItemBase.h"
+#include "FEConsumableItem.generated.h"
 
 UCLASS(BlueprintType)
-class UFallenEraConsumableItem : public UFallenEraItemBase
+class UFEConsumableItem : public UFEItemBase
 {
 	GENERATED_BODY()
 	

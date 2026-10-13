@@ -1,12 +1,12 @@
 ﻿#pragma once
 
-#include "FallenEraItemBase.h"
-#include "FallenEraItemType.h"
-#include "FallenEraEquipmentItem.generated.h"
+#include "FEItemBase.h"
+#include "FEItemType.h"
+#include "FEEquipmentItem.generated.h"
 
 
 UCLASS(Abstract, BlueprintType)
-class FALLENERA_API UFallenEraEquipmentItem : public UFallenEraItemBase
+class FALLENERA_API UFEEquipmentItem : public UFEItemBase
 {
 	GENERATED_BODY()
 	

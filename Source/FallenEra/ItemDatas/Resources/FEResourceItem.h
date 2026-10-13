@@ -1,9 +1,9 @@
 ﻿#pragma once
-#include "FallenEraItemBase.h"
-#include "FallenEraResourceItem.generated.h"
+#include "FEItemBase.h"
+#include "FEResourceItem.generated.h"
 
 UCLASS(BlueprintType)
-class UFallenEraResourceItem : public UFallenEraItemBase
+class UFEResourceItem : public UFEItemBase
 {
 	GENERATED_BODY()
 public:
