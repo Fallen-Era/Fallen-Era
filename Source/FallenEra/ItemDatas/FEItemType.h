@@ -1,12 +1,14 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
+#include "GameplayTagContainer.h"
 #include "FEItemType.generated.h"
 
 /**
- * Runtime 동기화 데이터 구조화 
+ * Runtime 동기화 및 제작 연동 데이터 구조화 
  *  1. 장착 슬롯 Enum 정의
- *  2. 동적 데이터(런타임 인스턴스) 구조체 정의
+ *  2. 연산자 Enum 및 크래프팅 기여도 구조체 정의
+ *  3. 동적 데이터(런타임 인스턴스) 구조체 정의
  */
 
 // ----------------------------------------------------
@@ -23,6 +25,38 @@ enum class EEquipSlot : uint8
     Chest       UMETA(DisplayName = "Chest"),
     Legs        UMETA(DisplayName = "Legs"),
     Feet        UMETA(DisplayName = "Feet")
+};
+
+// ----------------------------------------------------
+// 2. 연산자 및 크래프팅 기여도 구조체 정의
+// ----------------------------------------------------
+UENUM(BlueprintType)
+enum class EModifierOp : uint8
+{
+    Add         UMETA(DisplayName = "Add (+)"),
+    Multiply    UMETA(DisplayName = "Multiply (*)")
+};
+
+USTRUCT(BlueprintType)
+struct FCraftingModifier
+{
+    GENERATED_BODY()
+
+    /** 어떤 카테고리의 제작 결과물에 적용할지 (예: Item.Category.Weapon, Item.Category.Armor) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crafting", meta = (Categories = "Item.Category"))
+    FGameplayTag TargetCategoryTag;
+
+    /** 변경할 스탯 태그 (예: Stat.Offense.PhysicalAttack, Stat.Durability.Max) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crafting", meta = (Categories = "Stat"))
+    FGameplayTag TargetStatTag;
+
+    /** 연산 방식 (더하기 or 곱하기) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crafting")
+    EModifierOp Operation = EModifierOp::Add;
+
+    /** 적용 수치 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crafting")
+    float Value = 0.0f;
 };
 
 // ----------------------------------------------------

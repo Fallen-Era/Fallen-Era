@@ -1,10 +1,10 @@
-﻿#pragma once
+#pragma once
 
 #include "FEItemBase.h"
 #include "FEConsumableItem.generated.h"
 
 UCLASS(BlueprintType)
-class UFEConsumableItem : public UFEItemBase
+class FALLENERA_API UFEConsumableItem : public UFEItemBase
 {
 	GENERATED_BODY()
 	

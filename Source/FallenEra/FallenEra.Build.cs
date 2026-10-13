@@ -26,7 +26,8 @@ public class FallenEra : ModuleRules
 			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",
-			"DeveloperSettings"
+			"DeveloperSettings",
+			"AssetRegistry"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

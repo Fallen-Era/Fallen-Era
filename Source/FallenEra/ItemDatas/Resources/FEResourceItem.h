@@ -1,11 +1,15 @@
-﻿#pragma once
+#pragma once
 #include "FEItemBase.h"
+#include "FEItemType.h"
 #include "FEResourceItem.generated.h"
 
 UCLASS(BlueprintType)
-class UFEResourceItem : public UFEItemBase
+class FALLENERA_API UFEResourceItem : public UFEItemBase
 {
 	GENERATED_BODY()
+
 public:
-	// TODO : 추후 확장성을 고려, 현재 부모 데이터만으로 충분
+	/** 장비 등 제작 시 결과물에 기여할 스탯 보정치 목록 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resource|Crafting")
+	TArray<FCraftingModifier> CraftingModifiers;
 };
