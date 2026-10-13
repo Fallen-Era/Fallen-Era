@@ -31,11 +31,22 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "FallenEra|Item")
 	const UFEItemBase* GetItemData(FName InItemID) const;
 
+	/** FPrimaryAssetId로 원본 ItemBase 데이터 에셋 검색 */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "FallenEra|Item")
+	const UFEItemBase* GetItemDataByPrimaryId(FPrimaryAssetId InAssetId) const;
+
 	/** ItemID로 특정 클래스 타입(예: UFEWeaponItem, UFEEquipmentItem)의 에셋 검색 (C++ 전용) */
 	template<typename T>
 	const T* GetItemData(FName InItemID) const
 	{
 		return Cast<T>(GetItemData(InItemID));
+	}
+
+	/** FPrimaryAssetId로 특정 클래스 타입의 에셋 검색 (C++ 전용) */
+	template<typename T>
+	const T* GetItemDataByPrimaryId(FPrimaryAssetId InAssetId) const
+	{
+		return Cast<T>(GetItemDataByPrimaryId(InAssetId));
 	}
 
 	/** 해당 ItemID가 등록되어 있는지 여부 */

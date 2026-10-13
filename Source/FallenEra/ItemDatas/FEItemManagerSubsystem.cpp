@@ -77,6 +77,16 @@ const UFEItemBase* UFEItemManagerSubsystem::GetItemData(FName InItemID) const
 	return Found ? Found->Get() : nullptr;
 }
 
+const UFEItemBase* UFEItemManagerSubsystem::GetItemDataByPrimaryId(FPrimaryAssetId InAssetId) const
+{
+	if (!InAssetId.IsValid())
+	{
+		return nullptr;
+	}
+
+	return GetItemData(InAssetId.PrimaryAssetName);
+}
+
 bool UFEItemManagerSubsystem::HasItemData(FName InItemID) const
 {
 	return !InItemID.IsNone() && ItemCache.Contains(InItemID);
