@@ -67,6 +67,13 @@ void UFE_PlayerAttackAbility::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
+	if (AActor* Avatar = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr)
+	{
+		if (UFE_CombatComponent* Combat = Avatar->FindComponentByClass<UFE_CombatComponent>())
+		{
+			Combat->ClearAttackStaggerProtection(this);
+		}
+	}
 	CachedAttackData = nullptr;
 	CachedWeaponData = nullptr;
 	CachedDamageEffectClass = nullptr;
@@ -126,6 +133,13 @@ void UFE_PlayerAttackAbility::CacheAttackContext(
 	CachedWeaponData = const_cast<UFE_WeaponItemData*>(WeaponData);
 	CachedAttackData = const_cast<UFE_WeaponAttackData*>(AttackData);
 	CachedDamageEffectClass = nullptr;
+	if (AActor* Avatar = GetAvatarActorFromActorInfo())
+	{
+		if (UFE_CombatComponent* Combat = Avatar->FindComponentByClass<UFE_CombatComponent>())
+		{
+			Combat->SetAttackStaggerProtection(this, AttackData ? AttackData->IgnoreStaggerUpTo : EFE_StaggerStrength::None);
+		}
+	}
 	if (!WeaponData || !AttackData)
 	{
 		return;

@@ -4,6 +4,7 @@
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
 #include "AbilitySystemComponent.h"
+#include "Combat/Weapon/Attachment/FEWeaponAttachmentData.h"
 #include "FEEquipmentComponent.generated.h"
 
 class UAnimInstance;
@@ -13,6 +14,9 @@ class UMeshComponent;
 class UFE_WeaponAttackData;
 class UFE_WeaponItemData;
 class UFE_ArmorItemData;
+class UFE_WeaponSightData;
+class UStaticMeshComponent;
+class USkeletalMeshComponent;
 struct FStreamableHandle;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEWeaponChanged, const UFE_WeaponItemData*);
@@ -33,6 +37,9 @@ public:
 	/** Call after initializing/replacing the owner's ASC actor info. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment")
 	void RefreshEquipment();
+
+	/** Enemy presets/initial attribute GEs must finish before component BeginPlay can apply armor. */
+	void SetInitialArmorInitializationDeferred(bool bDeferred) { bInitialArmorInitializationDeferred = bDeferred; }
 
 	/** Loads catalog metadata; only current/next weapon dependencies stay warm. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment|Loading")
@@ -63,6 +70,18 @@ public:
 	UMeshComponent* GetEquippedFirstPersonWeaponMesh() const { return EquippedFirstPersonWeaponMesh; }
 
 	FOnFEWeaponChanged& OnWeaponChanged() { return WeaponChangedDelegate; }
+	FOnFEWeaponChanged& OnWeaponAttachmentsChanged() { return WeaponAttachmentsChangedDelegate; }
+
+	/** Server inventory/item-instance entry point. Replaces parts of the currently equipped firearm. */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment|Attachments")
+	bool SetWeaponAttachments(const TArray<FFE_WeaponAttachmentInstance>& Attachments);
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Attachments")
+	const UFE_WeaponSightData* GetActiveSightData() const { return ActiveSightData; }
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Attachments")
+	bool AreWeaponAttachmentsReady() const { return bWeaponAttachmentsReady; }
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Attachments")
+	TArray<FFE_WeaponAttachmentInstance> GetWeaponAttachments() const { return WeaponAttachmentLoadout.Attachments; }
+	UMeshComponent* GetFirstPersonSightMesh() const;
 
 	/** Server only. Replaces just this armor's slot; does not alter weapon equipment. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment|Armor")
@@ -160,6 +179,35 @@ protected:
 	FOnFEWeaponChanged WeaponChangedDelegate;
 
 private:
+	TWeakObjectPtr<USkeletalMeshComponent> DefaultFirstPersonMesh;
+	FTransform UnequippedFirstPersonMeshTransform;
+	void RestoreFirstPersonMeshTransform();
+
+	UPROPERTY(ReplicatedUsing=OnRep_WeaponAttachments)
+	FFE_WeaponAttachmentLoadout WeaponAttachmentLoadout;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UFE_WeaponAttachmentData>> LoadedAttachmentDefinitions;
+	UPROPERTY(Transient)
+	TObjectPtr<UFE_WeaponSightData> ActiveSightData;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMeshComponent>> WeaponAttachmentMeshes;
+	UPROPERTY(Transient)
+	TObjectPtr<UMeshComponent> FirstPersonSightMesh;
+	TSharedPtr<FStreamableHandle> AttachmentLoadHandle;
+	FActiveGameplayEffectHandle AttachmentStatsEffectHandle;
+	TWeakObjectPtr<UAbilitySystemComponent> AttachmentAbilitySystem;
+	FOnFEWeaponChanged WeaponAttachmentsChangedDelegate;
+	bool bWeaponAttachmentsReady = false;
+	bool bLoadingAttachmentDependencies = false;
+	UFUNCTION()
+	void OnRep_WeaponAttachments();
+	void InitializeWeaponAttachments();
+	void RefreshWeaponAttachments();
+	void FinishLoadingWeaponAttachments();
+	void ClearWeaponAttachments();
+	void ApplyWeaponAttachmentVisuals();
+	void ApplyWeaponAttachmentStats();
+
 	UPROPERTY(Replicated, VisibleInstanceOnly, Category="Equipment|Armor")
 	TArray<TObjectPtr<UFE_ArmorItemData>> EquippedArmor;
 
@@ -168,6 +216,7 @@ private:
 	TSharedPtr<FStreamableHandle> ArmorLoadHandle;
 	bool bArmorLoadRequested = false;
 	bool bArmorEndingPlay = false;
+	bool bInitialArmorInitializationDeferred = false;
 
 	void RefreshArmorEquipment();
 	void FinishLoadingDefaultArmor();

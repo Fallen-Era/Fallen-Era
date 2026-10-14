@@ -14,7 +14,6 @@ class UFE_CombatComponent;
 class UFE_EquipmentComponent;
 class UFE_EnemyMeleeAttackAbility;
 class UFE_AISettingsDataAsset;
-class UFallenEraAbilitySet;
 class UFallenEraAbilitySystemComponent;
 class UFallenEraAttributeSet;
 class UAnimMontage;
@@ -128,13 +127,6 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI|Navigation")
 	TObjectPtr<UNavigationInvokerComponent> NavigationInvokerComponent;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Abilities")
-	TArray<TObjectPtr<UFallenEraAbilitySet>> DefaultAbilitySets;
-
-	/** Server-only, per-enemy attack ability. Granted automatically when it is not already in an ability set. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Abilities")
-	TSubclassOf<UFE_EnemyMeleeAttackAbility> AttackAbilityClass;
-
 	/** Available AI presets. All runtime systems read the selected preset's cached copy. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="FallenEra|AI|Settings")
 	TArray<TSoftObjectPtr<UFE_AISettingsDataAsset>> AISettingsDataAssets;
@@ -180,6 +172,8 @@ private:
 	TWeakObjectPtr<AActor> PendingAttackTarget;
 	UPROPERTY(Transient)
 	TSubclassOf<UGameplayEffect> CachedAttackDamageEffect;
+	UPROPERTY(Transient)
+	TSubclassOf<UFE_EnemyMeleeAttackAbility> CachedAttackAbilityClass;
 	bool bManagedBySpawnSubsystem = false;
 	bool bManagedSimulationActive = true;
 };

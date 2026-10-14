@@ -3,6 +3,7 @@
 #include "AbilitySystemComponent.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
 #include "Combat/FECombatGameplayTags.h"
 #include "Combat/GameplayEffect/FEMovementHandlingGameplayEffect.h"
 #include "GameFramework/Character.h"
@@ -75,6 +76,9 @@ void UFE_PlayerMovementStatsComponent::OnRep_Sprinting()
 
 void UFE_PlayerMovementStatsComponent::SetSprintingInternal(bool bNewSprinting)
 {
+	// Validate both local prediction and server RPC requests against the current ADS state.
+	const UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>();
+	bNewSprinting = bNewSprinting && (!Aiming || !Aiming->IsAiming());
 	if (bSprinting == bNewSprinting)
 	{
 		ApplyMovementSpeed();

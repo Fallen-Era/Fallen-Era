@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
 #include "GameplayTagContainer.h"
+#include "Combat/Reaction/FECombatReactionTypes.h"
 #include "FEWeaponItemData.generated.h"
 
 class UAnimInstance;
@@ -18,6 +19,8 @@ class UFE_ImpactEffectData;
 class UNiagaraSystem;
 class UParticleSystem;
 class UFE_CrossHairWidget;
+class UFE_WeaponAttachmentData;
+class UFE_WeaponSightData;
 
 UENUM(BlueprintType)
 enum class EFE_MeleeAttackSequenceMode : uint8
@@ -91,8 +94,40 @@ struct FALLENERA_API FFE_RecoilSettings
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(Units="deg"))
 	float MaxYaw = 0.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(ClampMin="0.01", Units="s"))
-	float RecoveryDuration = 0.15f;
+	/** Smooths the upward kick, not a return to the original aim. Zero applies it instantly. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(ClampMin="0.0", Units="s"))
+	float SmoothingTime = 0.04f;
+};
+
+/** Camera-local cosmetic motion kept separate from exact optic alignment and ballistic spread. */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FFE_WeaponAimSwaySettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway")
+	bool bEnabled = true;
+
+	/** Position lag per degree/second of camera rotation. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway", meta=(ClampMin="0.0"))
+	float LookLocationStrength = 0.002f;
+	/** Rotation lag per degree/second of camera rotation. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway", meta=(ClampMin="0.0"))
+	float LookRotationStrength = 0.002f;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway", meta=(ClampMin="0.0", Units="deg/s"))
+	float MaxLookSpeed = 360.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway", meta=(Units="cm"))
+	FVector MovementLocationAmplitude = FVector(0.0f, 0.3f, 0.2f);
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway", meta=(Units="deg"))
+	FRotator MovementRotationAmplitude = FRotator(0.15f, 0.1f, 0.2f);
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway", meta=(ClampMin="0.0", Units="Hz"))
+	float MovementFrequency = 1.8f;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway", meta=(ClampMin="0.0", Units="s"))
+	float SmoothingTime = 0.08f;
+	/** Applied to both positional and rotational sway while aiming. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Aim Sway", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float AimMultiplier = 0.15f;
 };
 
 /** Reaction values applied after a damage execution succeeds. */
@@ -100,6 +135,10 @@ USTRUCT(BlueprintType)
 struct FALLENERA_API FFE_AttackReactionData
 {
 	GENERATED_BODY()
+
+	/** None never interrupts or stuns; knockback is evaluated independently. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack Reaction")
+	EFE_StaggerStrength StaggerStrength = EFE_StaggerStrength::Light;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack Reaction", meta=(ClampMin="0.0"))
 	float KnockbackAmount = 0.0f;
@@ -135,6 +174,10 @@ public:
 	/** Hit-reaction values applied after DamageExecutionCalculation succeeds. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Reaction")
 	FFE_AttackReactionData AttackReactionData;
+
+	/** Protection while this attack ability is active, including combo-step changes. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Reaction")
+	EFE_StaggerStrength IgnoreStaggerUpTo = EFE_StaggerStrength::None;
 
 	/** If empty, the weapon's DefaultDamageEffect is used by the attack ability. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack", meta=(AllowedClasses="/Script/GameplayAbilities.GameplayEffect"))
@@ -456,6 +499,10 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation")
 	FTransform SocketOffset;
 
+	/** Absolute first-person arms transform relative to the camera, applied on equip. Not a weapon socket offset. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|FirstPerson")
+	FTransform FirstPersonMeshTransform = FTransform(FRotator(0.0f, -90.0f, 0.0f), FVector(0.0f, 0.0f, -160.0f));
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Damage", meta=(AllowedClasses="/Script/GameplayAbilities.GameplayEffect"))
 	TSoftClassPtr<UGameplayEffect> DefaultDamageEffect;
 
@@ -487,6 +534,21 @@ class FALLENERA_API UFE_RangedWeaponItemData : public UFE_WeaponItemData
 	GENERATED_BODY()
 
 public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Aim")
+	FFE_WeaponAimSwaySettings AimSwaySettings;
+
+	/** Opt in for firearms; bows/throwables keep their existing right-click behavior. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Attachments")
+	bool bSupportsAiming = false;
+
+	/** Default parts for the current DA-based test inventory. Runtime inventory uses SetWeaponAttachments. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Attachments")
+	TArray<TSoftObjectPtr<UFE_WeaponAttachmentData>> DefaultAttachments;
+
+	/** Built-in sight when no sight part is equipped. Applies its accuracy bonus, but does not mount a mesh. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Attachments")
+	TSoftObjectPtr<UFE_WeaponSightData> DefaultSight;
+
 	/** Optional muzzle flash spawned at the active ranged attack's socket. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Muzzle")
 	TSoftObjectPtr<UNiagaraSystem> MuzzleNiagaraSystem;

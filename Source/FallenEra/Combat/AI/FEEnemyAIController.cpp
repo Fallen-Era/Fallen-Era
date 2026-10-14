@@ -422,7 +422,7 @@ void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AAc
 
 	if (GetMoveStatus() != EPathFollowingStatus::Moving)
 	{
-		MoveToActor(&TargetActor, FMath::Max(50.0f, AttackRange * 0.8f), true, true, true);
+		MoveToActor(&TargetActor, FMath::Max(50.0f, AttackRange * 0.8f), false, true, true);
 	}
 }
 

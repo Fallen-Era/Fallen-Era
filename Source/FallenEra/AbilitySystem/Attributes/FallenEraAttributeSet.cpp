@@ -121,6 +121,8 @@ void UFallenEraAttributeSet::UpdateDeadStateTag()
 
 void UFallenEraAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
+	// Gameplay Debugger can query this before a NetDriver builds the property RepIndex values.
+	GetClass()->SetUpRuntimeReplicationData();
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, Health, COND_None, REPNOTIFY_Always);

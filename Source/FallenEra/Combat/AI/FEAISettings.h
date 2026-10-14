@@ -3,11 +3,30 @@
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Combat/Condition/FECharacterConditionTypes.h"
+#include "Combat/Reaction/FECombatReactionTypes.h"
 #include "FEAISettings.generated.h"
 
 class UAnimMontage;
 class UBlendSpace;
 class UGameplayEffect;
+class UFE_EnemyMeleeAttackAbility;
+class UFallenEraAbilitySet;
+class UFE_ArmorItemData;
+class UFE_HitZoneMappingData;
+class UFE_HitZoneMultiplierData;
+
+/** Startup GE: use Instant for initial attributes, Infinite/Duration for immunity and buffs. */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FSAIStartupEffect
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Abilities")
+	TSoftClassPtr<UGameplayEffect> GameplayEffect;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Abilities", meta=(ClampMin="0.0"))
+	float EffectLevel = 1.0f;
+};
 
 /** Data-driven scoring used when several players are valid combat targets. */
 USTRUCT(BlueprintType)
@@ -71,6 +90,10 @@ struct FALLENERA_API FSAIAttackMontageSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Attack")
 	TObjectPtr<UAnimMontage> AttackMontage;
 
+	/** Default zombie attacks resist light hits, but heavy hits interrupt the montage and trace. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Attack|Reaction")
+	EFE_StaggerStrength IgnoreStaggerUpTo = EFE_StaggerStrength::Light;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Trace")
 	FName TraceStartSocket = TEXT("hand_r");
 
@@ -101,6 +124,34 @@ struct FALLENERA_API FSAISettings
 	GENERATED_BODY()
 
 	FSAISettings();
+
+	/** Automatically granted once. Do not also grant a different attack GA in an AbilitySet. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Combat|Abilities")
+	TSoftClassPtr<UFE_EnemyMeleeAttackAbility> AttackAbilityClass;
+
+	/** Optional bundles for additional abilities/effects. Applied before StartupEffects. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Combat|Abilities")
+	TArray<TSoftObjectPtr<UFallenEraAbilitySet>> DefaultAbilitySets;
+
+	/** Configure initialization/immunity GEs here without creating an AbilitySet. Never duplicate a GE in both lists. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Combat|Abilities", meta=(TitleProperty="GameplayEffect"))
+	TArray<FSAIStartupEffect> StartupEffects;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Equipment")
+	TArray<TSoftObjectPtr<UFE_ArmorItemData>> DefaultArmorDataAssets;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Reaction")
+	TSoftObjectPtr<UAnimMontage> DeathMontage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Damage")
+	TSoftObjectPtr<UFE_HitZoneMappingData> HitZoneMappingData;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Damage")
+	TSoftObjectPtr<UFE_HitZoneMultiplierData> HitZoneMultiplierData;
+
+	/** Shared by runtime loading and spawn prewarming; server-only GAS assets are optional on clients. */
+	void GatherAssetPaths(TArray<FSoftObjectPath>& OutPaths, bool bIncludeServerAssets) const;
+	bool AreAssetsLoaded(bool bIncludeServerAssets) const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Combat", meta=(TitleProperty="AttackMontage"))
 	TArray<FSAIAttackMontageSettings> AttackMontages;

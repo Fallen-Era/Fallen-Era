@@ -32,6 +32,7 @@ public class FallenEra : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] 
 		{
+			"AnimGraphRuntime",
 		});
 
 		PublicIncludePaths.AddRange(new string[] {

@@ -1,6 +1,7 @@
 #include "Combat/Component/FEEquipmentComponent.h"
 
 #include "Combat/FECombatGameplayTags.h"
+#include "Combat/Ability/FEWeaponAimAbility.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Animation/AnimInstance.h"
@@ -39,6 +40,7 @@ void UFE_EquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(UFE_EquipmentComponent, CurrentItemTagIndex);
+	DOREPLIFETIME(UFE_EquipmentComponent, WeaponAttachmentLoadout);
 	DOREPLIFETIME(UFE_EquipmentComponent, EquippedArmor);
 	DOREPLIFETIME(UFE_EquipmentComponent, bInitialArmorApplied);
 }
@@ -46,6 +48,7 @@ void UFE_EquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	bArmorEndingPlay = true;
+	ClearWeaponAttachments();
 	if (WarmWeaponLoadHandle) { WarmWeaponLoadHandle->CancelHandle(); WarmWeaponLoadHandle.Reset(); }
 	if (ArmorLoadHandle)
 	{
@@ -66,6 +69,7 @@ void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	// PlayerState-owned ASCs may outlive the equipped character.
 	ClearEquippedWeaponOffense();
 	ClearWeaponAbilities();
+	RestoreFirstPersonMeshTransform();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -204,6 +208,7 @@ void UFE_EquipmentComponent::EquipCurrentWeapon()
 	ClearEquippedWeaponOffense();
 	ClearWeaponAbilities();
 	CurrentWeaponData = nullptr;
+	ClearWeaponAttachments();
 	PendingWeaponData = nullptr;
 	ClearWeaponVisuals();
 
@@ -265,6 +270,7 @@ void UFE_EquipmentComponent::InterruptWeaponActions()
 	{
 		FGameplayTagContainer AttackAbilityTags;
 		AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Attack);
+		AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim);
 		AbilitySystem->CancelAbilities(&AttackAbilityTags);
 		if (UFallenEraAbilitySystemComponent* FallenEraAbilitySystem =
 			Cast<UFallenEraAbilitySystemComponent>(AbilitySystem))
@@ -362,6 +368,7 @@ void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 
 	ApplyEquippedWeaponOffense();
 	ApplyWeaponVisuals();
+	InitializeWeaponAttachments();
 	CacheWeaponAbilities();
 	WeaponChangedDelegate.Broadcast(CurrentWeaponData);
 	if (bPreloadWeaponAssetsOnBeginPlay) { FinishPreloadingWeaponDataAssets(); }
@@ -492,6 +499,7 @@ void UFE_EquipmentComponent::ClearEquippedWeaponOffense()
 
 void UFE_EquipmentComponent::ClearWeaponVisuals()
 {
+	RestoreFirstPersonMeshTransform();
 	auto ClearMesh = [](UMeshComponent* MeshComponent)
 	{
 		if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(MeshComponent))
@@ -507,6 +515,14 @@ void UFE_EquipmentComponent::ClearWeaponVisuals()
 	ClearMesh(EquippedWorldWeaponMesh);
 	ClearMesh(EquippedFirstPersonWeaponMesh);
 	UpdateWeaponAnimLayers(nullptr);
+}
+
+void UFE_EquipmentComponent::RestoreFirstPersonMeshTransform()
+{
+	if (DefaultFirstPersonMesh.IsValid())
+	{
+		DefaultFirstPersonMesh->SetRelativeTransform(UnequippedFirstPersonMeshTransform);
+	}
 }
 
 void UFE_EquipmentComponent::EnsureWeaponMeshComponents(bool bUseSkeletalMesh)
@@ -603,6 +619,17 @@ void UFE_EquipmentComponent::ApplyWeaponVisuals()
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetOwner());
 	const bool bUseSkeletalMesh = !CurrentWeaponData->SkeletalMesh.IsNull();
 	EnsureWeaponMeshComponents(bUseSkeletalMesh);
+	if (USkeletalMeshComponent* Arms = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner()))
+	{
+		// Capture once per component, never from an equipped/aiming pose on a later swap.
+		if (DefaultFirstPersonMesh.Get() != Arms)
+		{
+			RestoreFirstPersonMeshTransform();
+			DefaultFirstPersonMesh = Arms;
+			UnequippedFirstPersonMeshTransform = Arms->GetRelativeTransform();
+		}
+		Arms->SetRelativeTransform(CurrentWeaponData->FirstPersonMeshTransform);
+	}
 
 	auto ApplyMeshAsset = [this, bUseSkeletalMesh](UMeshComponent* MeshComponent)
 	{
@@ -689,6 +716,14 @@ void UFE_EquipmentComponent::CacheWeaponAbilities()
 	WeaponAbilitySystem = AbilitySystem;
 
 	TSet<FGameplayTag> GrantedInputTags;
+	if (const UFE_RangedWeaponItemData* Ranged = Cast<UFE_RangedWeaponItemData>(CurrentWeaponData);
+		Ranged && Ranged->bSupportsAiming)
+	{
+		FGameplayAbilitySpec AimSpec(UFE_WeaponAimAbility::StaticClass(), 1, INDEX_NONE, CurrentWeaponData);
+		AimSpec.GetDynamicSpecSourceTags().AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
+		GrantedWeaponAbilityHandles.Add(AbilitySystem->GiveAbility(AimSpec));
+		GrantedInputTags.Add(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
+	}
 	for (const UFE_WeaponAttackData* AttackAction : CurrentWeaponData->AttackActions)
 	{
 		if (!AttackAction || (AttackAction->InputTag.IsValid() && GrantedInputTags.Contains(AttackAction->InputTag)))

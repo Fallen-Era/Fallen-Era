@@ -24,6 +24,7 @@ class UFE_CombatComponent;
 class UFE_EquipmentComponent;
 class UFE_CharacterStatusComponent;
 class UFE_PlayerMovementStatsComponent;
+class UFE_WeaponAimingComponent;
 class UNavigationInvokerComponent;
 class UAIPerceptionStimuliSourceComponent;
 struct FInputActionValue;
@@ -54,6 +55,10 @@ class AFallenEraCharacter : public ACharacter, public IAbilitySystemInterface,
 	/** Pawn mesh: first person view (arms; seen only by self) */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	USkeletalMeshComponent* FirstPersonMesh;
+
+	/** Owner-only lower body; shares the world mesh pose without following camera pitch. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<USkeletalMeshComponent> FirstPersonLegsMesh;
 
 	/** First person camera */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
@@ -96,11 +101,15 @@ public:
 	UFE_CombatComponent* GetCombatComponent() const { return CombatComponent; }
 
 	virtual void BeginPlay() override;
+	virtual void PostInitializeComponents() override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_PlayerState() override;
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Equipment")
 	UFE_EquipmentComponent* GetEquipmentComponent() const { return EquipmentComponent; }
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Aim")
+	UFE_WeaponAimingComponent* GetWeaponAimingComponent() const { return WeaponAimingComponent; }
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Status")
 	UFE_CharacterStatusComponent* GetCharacterStatusComponent() const { return CharacterStatusComponent; }
@@ -138,6 +147,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Equipment", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UFE_EquipmentComponent> EquipmentComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Aim")
+	TObjectPtr<UFE_WeaponAimingComponent> WeaponAimingComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Status", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UFE_CharacterStatusComponent> CharacterStatusComponent;
@@ -190,6 +202,10 @@ protected:
 
 protected:
 
+	/** Keep existing Copy Pose ABPs working after moving the arms below the camera. */
+	UFUNCTION()
+	void RefreshFirstPersonPoseSource();
+
 	/** Set up input action bindings */
 	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
 	virtual bool CanJumpInternal_Implementation() const override;
@@ -199,6 +215,9 @@ public:
 
 	/** Returns the first person mesh **/
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Presentation")
+	USkeletalMeshComponent* GetFirstPersonLegsMesh() const { return FirstPersonLegsMesh; }
 
 	/** Returns first person camera component **/
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCameraComponent; }

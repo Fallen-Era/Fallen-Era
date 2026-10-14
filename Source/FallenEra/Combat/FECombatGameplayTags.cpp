@@ -6,10 +6,15 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_RightClick, "Ability.Input.Combat.RightClick");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_Swap, "Ability.Input.Combat.Swap");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Combat_Attack, "Ability.Combat.Attack");
+	UE_DEFINE_GAMEPLAY_TAG(Ability_Combat_Aim, "Ability.Combat.Aim");
+	UE_DEFINE_GAMEPLAY_TAG(State_Combat_Aiming, "State.Combat.Aiming");
+	UE_DEFINE_GAMEPLAY_TAG(Equipment_WeaponSlot_Sight, "Equipment.WeaponSlot.Sight");
 
 	UE_DEFINE_GAMEPLAY_TAG(State_Condition_Bleeding, "State.Condition.Bleeding");
 	UE_DEFINE_GAMEPLAY_TAG(State_Condition_Infection, "State.Condition.Infection");
 	UE_DEFINE_GAMEPLAY_TAG(State_Immune_Knockback, "State.Immune.Knockback");
+	UE_DEFINE_GAMEPLAY_TAG(State_Immune_Stun, "State.Immune.Stun");
+	UE_DEFINE_GAMEPLAY_TAG(State_Immune_HitReaction, "State.Immune.HitReaction");
 	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Walking, "State.Movement.Walking");
 	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Sprinting, "State.Movement.Sprinting");
 

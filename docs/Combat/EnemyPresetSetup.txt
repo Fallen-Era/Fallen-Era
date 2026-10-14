@@ -1,0 +1,50 @@
+적 설정 통합: UFE_AISettingsDataAsset / AISettings
+================================================
+
+1. 적 BP의 AISettingsDataAssets에 UFE_AISettingsDataAsset을 지정합니다.
+   SelectedAISettingsIndex 또는 bRandomizeAISettings로 사용할 프리셋을 선택합니다.
+2. 아래 설정은 항상 프리셋에서 가져옵니다. 별도의 전환 플래그나 기존 BP 설정 fallback은 없습니다.
+   AISettingsDataAssets가 비었거나 선택 인덱스의 에셋이 없으면 AI 초기화를 완료하지 않습니다.
+
+Combat / Abilities
+- AttackAbilityClass: UFE_EnemyMeleeAttackAbility 또는 해당 클래스 기반 GA BP.
+  선택한 클래스가 AbilitySet에 이미 있으면 자동으로 중복 부여하지 않습니다.
+  비워두면 공격 GA를 자동 부여하지 않습니다. 공격 GA는 ServerOnly 정책을 유지합니다.
+- DefaultAbilitySets: 추가 능력/이펙트 묶음. 기존 DA_Enemy*_FallenEraCombatAbilitySet을 여기에 이동할 수 있습니다.
+- StartupEffects: 초기 스탯 GE, 면역 GE 등을 직접 등록합니다. 실행 순서는 배열 순서입니다.
+  초기 스탯은 기존 GE_InitializeAttributes 계열(Instant), 면역은 Infinite/HasDuration GE로 설정합니다.
+  같은 GE를 AbilitySet과 StartupEffects 양쪽에 넣지 마세요. 능력/이펙트 자체의 내용은 기존 GAS 에셋에서 관리합니다.
+  초기 HP, AttackPower, DefensePower 등은 직접 float 필드를 추가하지 않고 GE를 통해 초기화합니다.
+
+Combat
+- AttackMontages: 몽타주별 소켓, TraceRadius, MaxHitTargets, 시작/종료/리셋 EventTag,
+  IgnoreStaggerUpTo를 한 항목에서 설정합니다.
+- AttackRange / AttackCooldown / DamageEffect: 공격 개시 거리, 주기, 데미지 계산용 GE.
+  DamageEffect를 비우면 기본 UFE_DamageGameplayEffect를 사용합니다. 기존 CombatComponent의 GE는 읽지 않습니다.
+- ConditionApplicationChances: 공격자의 출혈/감염 부여 확률.
+
+Equipment / Reaction / Damage
+- DefaultArmorDataAssets: 초기 방어구. 초기 스탯 GE 적용 후 EquipmentComponent에서 적용합니다.
+- HitReactionMontages / DeathMontage: 피격/사망 연출.
+- HitZoneMappingData / HitZoneMultiplierData: 스켈레톤의 Bone->Zone 매핑과 Zone->배율.
+  프리셋에서 비워두면 기존 컴포넌트 값은 사용하지 않습니다.
+
+Animation / Movement / Perception
+- LocomotionBlendSpace, PatrolMovementSpeed, ChaseMovementSpeed, TargetSelection은 기존대로 같은 프리셋에서 설정합니다.
+- SkeletalMesh, AnimBP, Collision, AIController의 감각 반경/순찰 반경은 기존 BP 설정을 유지합니다.
+  스켈레톤에 종속된 몽타주/BlendSpace/부위 매핑은 해당 적 Mesh에 맞는 에셋을 지정합니다.
+
+기존 BP 이전
+- 기존 Character.DefaultAbilitySets / AttackAbilityClass 및 컴포넌트의 방어구/사망/부위 설정은 프리셋에 지정해야 합니다.
+- 캐릭터의 개별 GAS 설정 변수와 기존 설정 읽기 경로를 삭제했습니다. 기존 파일의 값은 자동 이전하지 않았습니다.
+- 기존 BP가 삭제된 변수 노드를 사용했다면 해당 노드를 제거하고, BP를 컴파일/저장합니다.
+- 공통 CombatComponent/EquipmentComponent 설정은 플레이어 등 다른 객체를 위해 유지하지만, 적은 그 값을 사용하지 않습니다.
+- 프리셋 선택은 BeginPlay 전용입니다. 런타임에 다른 프리셋으로 교체하여 스탯/장비를 다시 초기화하는 기능은 지원하지 않습니다.
+
+초기화와 로딩
+- 선택 프리셋 -> Soft dependency 비동기 로드 -> 사망/부위 설정 캐시 -> ASC 초기화
+  -> AbilitySets -> StartupEffects -> 공격 GA 보장 -> 초기 방어구 -> AI 준비 완료.
+- 서버에서만 능력/초기 GE/방어구를 적용하고, 클라이언트는 선택 인덱스를 통해 연출 설정을 캐시합니다.
+- 스폰 서브시스템의 기존 2단계 프리로드에도 공격 GA, AbilitySet, 초기 GE, 방어구, 사망/부위 데이터를 포함합니다.
+- 유효하지 않은 필수 에셋이 있으면 경고 로그를 남기고 AI 준비를 완료하지 않습니다.
+- 공격마다 프리셋을 읽거나 LoadSynchronous를 호출하지 않습니다. 공격은 캐시된 클래스/설정을 사용합니다.

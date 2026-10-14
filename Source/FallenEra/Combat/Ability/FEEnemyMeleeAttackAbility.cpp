@@ -73,6 +73,10 @@ void UFE_EnemyMeleeAttackAbility::ActivateAbility(
 	}
 
 	DamagedActors.Reset();
+	if (UFE_CombatComponent* Combat = CachedEnemyCharacter->GetCombatComponent())
+	{
+		Combat->SetAttackStaggerProtection(this, ActiveAttackSettings.IgnoreStaggerUpTo);
+	}
 	NextActivationAllowedTime = CachedEnemyCharacter->GetWorld()->GetTimeSeconds() +
 		FMath::Max(0.01f, CachedEnemyCharacter->GetAttackCooldown());
 
@@ -127,6 +131,10 @@ void UFE_EnemyMeleeAttackAbility::EndAbility(
 	StopTrace();
 	if (CachedEnemyCharacter)
 	{
+		if (UFE_CombatComponent* Combat = CachedEnemyCharacter->GetCombatComponent())
+		{
+			Combat->ClearAttackStaggerProtection(this);
+		}
 		CachedEnemyCharacter->ClearPendingAttackTarget();
 	}
 	DamagedActors.Reset();
@@ -246,9 +254,7 @@ void UFE_EnemyMeleeAttackAbility::ExecuteTrace()
 
 		const TSubclassOf<UGameplayEffect> DamageEffect = CachedEnemyCharacter->GetCachedAttackDamageEffect();
 		const FHitResult BodyHit = UFE_CombatComponent::RefineDirectDamageHit(Hit, ActiveAttackSettings.TraceRadius);
-		const bool bApplied = DamageEffect
-			? CombatComponent->ApplyDamageWithEffectFromHit(TargetActor, DamageEffect, BodyHit, nullptr)
-			: CombatComponent->ApplyDamageFromHit(TargetActor, BodyHit, nullptr);
+		const bool bApplied = CombatComponent->ApplyDamageWithEffectFromHit(TargetActor, DamageEffect, BodyHit, nullptr);
 		if (!bApplied)
 		{
 			continue;

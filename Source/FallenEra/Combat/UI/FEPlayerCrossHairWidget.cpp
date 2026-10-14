@@ -3,6 +3,7 @@
 #include "Components/Overlay.h"
 #include "GameFramework/Pawn.h"
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
 #include "Combat/UI/FECrossHairWidget.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
 
@@ -54,6 +55,13 @@ void UFE_PlayerCrossHairWidget::BindToEquipment(UFE_EquipmentComponent* Equipmen
 	UnbindFromEquipment();
 	BoundEquipment = Equipment;
 	WeaponChangedHandle = Equipment->OnWeaponChanged().AddUObject(this, &UFE_PlayerCrossHairWidget::OnWeaponChanged);
+	BoundAiming = Equipment->GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>();
+	NonAimingVisibility = GetVisibility();
+	if (BoundAiming.IsValid())
+	{
+		AimChangedHandle = BoundAiming->OnAimAlphaChanged().AddUObject(this, &ThisClass::OnAimAlphaChanged);
+		OnAimAlphaChanged(BoundAiming->GetAimAlpha());
+	}
 }
 
 void UFE_PlayerCrossHairWidget::UnbindFromEquipment()
@@ -65,6 +73,18 @@ void UFE_PlayerCrossHairWidget::UnbindFromEquipment()
 
 	WeaponChangedHandle.Reset();
 	BoundEquipment.Reset();
+	if (BoundAiming.IsValid() && AimChangedHandle.IsValid())
+	{
+		BoundAiming->OnAimAlphaChanged().Remove(AimChangedHandle);
+		SetVisibility(NonAimingVisibility);
+	}
+	BoundAiming.Reset();
+	AimChangedHandle.Reset();
+}
+
+void UFE_PlayerCrossHairWidget::OnAimAlphaChanged(float Alpha)
+{
+	SetVisibility(Alpha > KINDA_SMALL_NUMBER ? ESlateVisibility::Hidden : NonAimingVisibility);
 }
 
 void UFE_PlayerCrossHairWidget::OnWeaponChanged(const UFE_WeaponItemData* WeaponData)

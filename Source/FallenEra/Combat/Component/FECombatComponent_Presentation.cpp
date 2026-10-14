@@ -84,17 +84,17 @@ void UFE_CombatComponent::PlayAttackMontageLocal(UAnimMontage* Montage)
 			Anim->Montage_Play(Montage);
 		}
 	}
-	// if (Character->IsLocallyControlled())
-	// {
-	// 	USkeletalMeshComponent* FirstPersonMesh = IFE_CombatPresentation::FindFirstPersonMesh(Character);
-	// 	if (FirstPersonMesh && FirstPersonMesh != Character->GetMesh())
-	// 	{
-	// 		if (UAnimInstance* Anim = FirstPersonMesh->GetAnimInstance())
-	// 		{
-	// 			Anim->Montage_Play(Montage);
-	// 		}
-	// 	}
-	// }
+	if (Character->IsLocallyControlled())
+	{
+		USkeletalMeshComponent* FirstPersonMesh = IFE_CombatPresentation::FindFirstPersonMesh(Character);
+		if (FirstPersonMesh && FirstPersonMesh != Character->GetMesh())
+		{
+			if (UAnimInstance* Anim = FirstPersonMesh->GetAnimInstance())
+			{
+				Anim->Montage_Play(Montage);
+			}
+		}
+	}
 }
 
 void UFE_CombatComponent::PlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner)
@@ -183,8 +183,7 @@ void UFE_CombatComponent::ApplyLocalWeaponRecoil(
 {
 	APawn* Pawn = Cast<APawn>(GetOwner());
 	APlayerController* PlayerController = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
-	UWorld* World = GetWorld();
-	if (!Pawn || !Pawn->IsLocallyControlled() || !PlayerController || !World)
+	if (!Pawn || !Pawn->IsLocallyControlled() || !PlayerController)
 	{
 		return;
 	}
@@ -208,66 +207,60 @@ void UFE_CombatComponent::ApplyLocalWeaponRecoil(
 		return;
 	}
 
-	PlayerController->SetControlRotation((PlayerController->GetControlRotation() + Kick).GetNormalized());
-	PendingRecoilRecovery += FRotator(-Kick.Pitch, -Kick.Yaw, 0.0);
-
-	const float RecoveryDuration = FMath::Max(0.01f, RecoilSettings.RecoveryDuration);
-	RecoilPitchRecoverySpeed = FMath::Max(
-		RecoilPitchRecoverySpeed,
-		FMath::Abs(PendingRecoilRecovery.Pitch) / RecoveryDuration);
-	RecoilYawRecoverySpeed = FMath::Max(
-		RecoilYawRecoverySpeed,
-		FMath::Abs(PendingRecoilRecovery.Yaw) / RecoveryDuration);
-	LastRecoilRecoveryTime = World->GetTimeSeconds();
-	if (!World->GetTimerManager().IsTimerActive(RecoilRecoveryTimer))
+	if (RecoilController.Get() != PlayerController)
 	{
-		World->GetTimerManager().SetTimer(
-			RecoilRecoveryTimer,
-			this,
-			&UFE_CombatComponent::HandleRecoilRecovery,
-			LocalPresentationUpdateInterval,
-			true);
+		StopLocalWeaponRecoil();
+		RecoilController = PlayerController;
+		AddTickPrerequisiteActor(PlayerController);
 	}
-}
-
-void UFE_CombatComponent::HandleRecoilRecovery()
-{
-	APawn* Pawn = Cast<APawn>(GetOwner());
-	APlayerController* PlayerController = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
-	UWorld* World = GetWorld();
-	if (!Pawn || !Pawn->IsLocallyControlled() || !PlayerController || !World)
+	if (RecoilSettings.SmoothingTime <= KINDA_SMALL_NUMBER)
 	{
-		if (World)
-		{
-			World->GetTimerManager().ClearTimer(RecoilRecoveryTimer);
-		}
-		PendingRecoilRecovery = FRotator::ZeroRotator;
+		PlayerController->SetControlRotation((PlayerController->GetControlRotation() + Kick).GetNormalized());
+		if (PendingRecoilKick.IsNearlyZero() && RecoilVelocity.IsNearlyZero()) { StopLocalWeaponRecoil(); }
 		return;
 	}
+	// Queue only the unapplied kick, never an absolute view target that would overwrite mouse input.
+	PendingRecoilKick += FVector2D(Kick.Pitch, Kick.Yaw);
+	RecoilSmoothingTime = RecoilSettings.SmoothingTime;
+	SetComponentTickEnabled(true);
+}
 
-	const float CurrentTime = World->GetTimeSeconds();
-	const float DeltaTime = FMath::Max(0.0f, CurrentTime - LastRecoilRecoveryTime);
-	LastRecoilRecoveryTime = CurrentTime;
-	const auto ConsumeAxis = [DeltaTime](double& Remaining, double Speed)
+void UFE_CombatComponent::TickComponent(float DeltaTime, ELevelTick TickType,
+	FActorComponentTickFunction* TickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, TickFunction);
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	APlayerController* Controller = RecoilController.Get();
+	if (!Pawn || !Pawn->IsLocallyControlled() || !Controller || Pawn->GetController() != Controller || !IsActorAlive(GetOwner()))
 	{
-		const double Step = FMath::Min(FMath::Abs(Remaining), Speed * DeltaTime);
-		const double Applied = FMath::Sign(Remaining) * Step;
-		Remaining -= Applied;
-		return Applied;
-	};
-
-	const double PitchStep = ConsumeAxis(PendingRecoilRecovery.Pitch, RecoilPitchRecoverySpeed);
-	const double YawStep = ConsumeAxis(PendingRecoilRecovery.Yaw, RecoilYawRecoverySpeed);
-	PlayerController->SetControlRotation(
-		(PlayerController->GetControlRotation() + FRotator(PitchStep, YawStep, 0.0f)).GetNormalized());
-
-	if (PendingRecoilRecovery.IsNearlyZero(0.001f))
-	{
-		PendingRecoilRecovery = FRotator::ZeroRotator;
-		RecoilPitchRecoverySpeed = 0.0f;
-		RecoilYawRecoverySpeed = 0.0f;
-		World->GetTimerManager().ClearTimer(RecoilRecoveryTimer);
+		StopLocalWeaponRecoil();
+		return;
 	}
+	if (DeltaTime <= 0.0f) { return; }
+	FVector2D AppliedKick = FVector2D::ZeroVector;
+	FMath::CriticallyDampedSmoothing(AppliedKick, RecoilVelocity, PendingRecoilKick,
+		FVector2D::ZeroVector, DeltaTime, RecoilSmoothingTime);
+	PendingRecoilKick -= AppliedKick;
+	const bool bFinished = PendingRecoilKick.IsNearlyZero(0.0001f) && RecoilVelocity.IsNearlyZero(0.005f);
+	if (bFinished) { AppliedKick += PendingRecoilKick; }
+	// SetControlRotation ignores changes below 0.001 degrees. Accumulate those instead of losing them at high FPS.
+	BufferedRecoilKick += AppliedKick;
+	const FRotator CurrentRotation = Controller->GetControlRotation();
+	Controller->SetControlRotation((CurrentRotation +
+		FRotator(BufferedRecoilKick.X, BufferedRecoilKick.Y, 0.0f)).GetNormalized());
+	if (!Controller->GetControlRotation().Equals(CurrentRotation, UE_SMALL_NUMBER))
+	{
+		BufferedRecoilKick = FVector2D::ZeroVector;
+	}
+	if (bFinished) { StopLocalWeaponRecoil(); }
+}
+
+void UFE_CombatComponent::StopLocalWeaponRecoil()
+{
+	if (APlayerController* Controller = RecoilController.Get()) { RemoveTickPrerequisiteActor(Controller); }
+	RecoilController.Reset();
+	PendingRecoilKick = RecoilVelocity = BufferedRecoilKick = FVector2D::ZeroVector;
+	SetComponentTickEnabled(false);
 }
 
 void UFE_CombatComponent::StartChargeCameraPresentation(
@@ -677,6 +670,7 @@ void UFE_CombatComponent::OnRep_ChargeState(const FFE_ChargePresentationState& P
 
 void UFE_CombatComponent::HandleWeaponChanged(const UFE_WeaponItemData* WeaponData)
 {
+	StopLocalWeaponRecoil();
 	const APawn* Pawn = Cast<APawn>(GetOwner());
 	if (WeaponData && Pawn && !Pawn->IsLocallyControlled()) { RestoreChargePresentation(); }
 }

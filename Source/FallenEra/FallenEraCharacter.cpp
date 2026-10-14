@@ -2,6 +2,8 @@
 
 #include "FallenEraCharacter.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimClassInterface.h"
+#include "AnimNodes/AnimNode_CopyPoseFromMesh.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -22,10 +24,12 @@
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Component/FECharacterStatusComponent.h"
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
 #include "Combat/Component/FEPlayerMovementStatsComponent.h"
 #include "NavigationInvokerComponent.h"
 #include "Perception/AIPerceptionStimuliSourceComponent.h"
 #include "Perception/AISense_Sight.h"
+#include "UObject/UnrealType.h"
 
 AFallenEraCharacter::AFallenEraCharacter()
 {
@@ -35,20 +39,33 @@ AFallenEraCharacter::AFallenEraCharacter()
 	// Create the first person mesh that will be viewed only by this character's owner
 	FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));
 
-	FirstPersonMesh->SetupAttachment(GetMesh());
 	FirstPersonMesh->SetOnlyOwnerSee(true);
 	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
 	// Create the Camera Component	
 	FirstPersonCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("First Person Camera"));
-	FirstPersonCameraComponent->SetupAttachment(FirstPersonMesh, FName("head"));
-	FirstPersonCameraComponent->SetRelativeLocationAndRotation(FVector(-2.8f, 5.89f, 0.0f), FRotator(0.0f, 90.0f, -90.0f));
+	FirstPersonCameraComponent->SetupAttachment(GetCapsuleComponent());
+	FirstPersonCameraComponent->SetRelativeLocation(FVector(0.0f, 0.0f, BaseEyeHeight));
 	FirstPersonCameraComponent->bUsePawnControlRotation = true;
 	FirstPersonCameraComponent->bEnableFirstPersonFieldOfView = true;
 	FirstPersonCameraComponent->bEnableFirstPersonScale = true;
 	FirstPersonCameraComponent->FirstPersonFieldOfView = 70.0f;
 	FirstPersonCameraComponent->FirstPersonScale = 0.6f;
+
+	// The mesh skeleton origin remains at foot level, relative to the camera's eye height.
+	FirstPersonMesh->SetupAttachment(FirstPersonCameraComponent);
+	FirstPersonMesh->SetRelativeLocationAndRotation(
+		FVector(0.0f, 0.0f, -96.0f - BaseEyeHeight), FRotator(0.0f, -90.0f, 0.0f));
+
+	FirstPersonLegsMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Legs"));
+	FirstPersonLegsMesh->SetupAttachment(GetCapsuleComponent());
+	FirstPersonLegsMesh->SetRelativeLocationAndRotation(FVector(0.0f, 0.0f, -96.0f), FRotator(0.0f, -90.0f, 0.0f));
+	FirstPersonLegsMesh->SetOnlyOwnerSee(true);
+	FirstPersonLegsMesh->SetCollisionProfileName(TEXT("NoCollision"));
+	FirstPersonLegsMesh->SetGenerateOverlapEvents(false);
+	FirstPersonLegsMesh->SetCastShadow(false);
+	FirstPersonLegsMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
 
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);
@@ -63,6 +80,7 @@ AFallenEraCharacter::AFallenEraCharacter()
 
 	CombatComponent = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("CombatComponent"));
 	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
+	WeaponAimingComponent = CreateDefaultSubobject<UFE_WeaponAimingComponent>(TEXT("WeaponAimingComponent"));
 	CharacterStatusComponent = CreateDefaultSubobject<UFE_CharacterStatusComponent>(TEXT("CharacterStatusComponent"));
 	PlayerMovementStatsComponent =
 		CreateDefaultSubobject<UFE_PlayerMovementStatsComponent>(TEXT("PlayerMovementStatsComponent"));
@@ -95,6 +113,35 @@ FFE_CombatDamageResult AFallenEraCharacter::ReceiveCombatDamage_Implementation(
 	return CombatComponent
 		? CombatComponent->ApplyGameplayEffectDamage(DamageRequest)
 		: FFE_CombatDamageResult();
+}
+
+void AFallenEraCharacter::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+	FirstPersonMesh->AddTickPrerequisiteComponent(GetMesh());
+	FirstPersonMesh->OnAnimInitialized.AddUniqueDynamic(this, &AFallenEraCharacter::RefreshFirstPersonPoseSource);
+	RefreshFirstPersonPoseSource();
+	// Legs need no separate locomotion evaluation while sharing the same skeleton.
+	FirstPersonLegsMesh->SetLeaderPoseComponent(GetMesh());
+}
+
+void AFallenEraCharacter::RefreshFirstPersonPoseSource()
+{
+	UAnimInstance* AnimInstance = FirstPersonMesh->GetAnimInstance();
+	const IAnimClassInterface* AnimClass = AnimInstance
+		? IAnimClassInterface::GetFromClass(AnimInstance->GetClass()) : nullptr;
+	if (!AnimClass)
+	{
+		return;
+	}
+	// Bind once per animation initialization, not every frame. Independent arm ABPs are untouched.
+	for (const FStructProperty* NodeProperty : AnimClass->GetAnimNodeProperties())
+	{
+		if (NodeProperty->Struct == FAnimNode_CopyPoseFromMesh::StaticStruct())
+		{
+			NodeProperty->ContainerPtrToValuePtr<FAnimNode_CopyPoseFromMesh>(AnimInstance)->SourceMeshComponent = GetMesh();
+		}
+	}
 }
 
 void AFallenEraCharacter::BeginPlay()

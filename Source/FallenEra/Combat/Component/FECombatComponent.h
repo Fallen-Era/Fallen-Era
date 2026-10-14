@@ -16,6 +16,7 @@ class UNiagaraSystem;
 class UParticleSystem;
 class USoundBase;
 class AFE_CombatProjectile;
+class APlayerController;
 class UCameraComponent;
 class UFE_HitZoneMappingData;
 class UFE_HitZoneMultiplierData;
@@ -51,6 +52,7 @@ public:
 	/** Rebind after PlayerState ASC actor info becomes available. */
 	void RefreshAbilitySystem();
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* TickFunction) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Authority multicasts; a predicting client only plays its local presentation. */
@@ -90,7 +92,7 @@ public:
 	/** Applies an animation-curve value to both equipped bow meshes without replication. */
 	void SetBowVisualAlpha(float NewVisualAlpha);
 
-	/** Applies and smoothly recovers owning-player control rotation. Never replicated or multicast. */
+	/** Smoothly adds owning-player aim recoil without automatic recovery or recoil-specific RPCs. */
 	void ApplyLocalWeaponRecoil(const FFE_RecoilSettings& RecoilSettings, float RecoilControl);
 
 	/** Cancels montage/preview presentation before equipment data is replaced. */
@@ -146,6 +148,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat|Reaction")
 	void ApplyDamageReaction(const AActor* DamageSource, const FFE_AttackReactionData& ReactionData);
 
+	/** Ability-owned, authority-only protection. Ending one ability cannot clear another's protection. */
+	void SetAttackStaggerProtection(UObject* Source, EFE_StaggerStrength Strength);
+	void ClearAttackStaggerProtection(UObject* Source);
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Reaction")
+	EFE_StaggerStrength GetIgnoredStaggerStrength() const;
+
+	FFE_DamageReactionDecision ResolveDamageReaction(const FFE_AttackReactionData& ReactionData) const;
+
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Reaction")
 	float CalculateReceivedKnockback(float IncomingKnockback) const;
 
@@ -154,6 +165,14 @@ public:
 	{
 		HitReactionMontages = NewMontages;
 	}
+
+	/** Called during construction when an external preset owns combat defaults. */
+	void DeferCombatConfiguration() { bCombatConfigurationPending = true; }
+	/** Replace component defaults with already-loaded preset assets, including explicit empty values. */
+	void SetPreloadedCombatConfiguration(
+		TSoftClassPtr<UGameplayEffect> NewDamageEffect, TSoftObjectPtr<UAnimMontage> NewDeathMontage,
+		TSoftObjectPtr<UFE_HitZoneMappingData> NewHitZoneMapping,
+		TSoftObjectPtr<UFE_HitZoneMultiplierData> NewHitZoneMultipliers);
 
 	/** Plays the configured death montage once when this actor's Health reaches zero. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat|Death")
@@ -177,6 +196,12 @@ protected:
 	TSoftObjectPtr<UAnimMontage> DeathMontage;
 
 private:
+	void StopLocalWeaponRecoil();
+	TWeakObjectPtr<APlayerController> RecoilController;
+	FVector2D PendingRecoilKick = FVector2D::ZeroVector;
+	FVector2D RecoilVelocity = FVector2D::ZeroVector;
+	FVector2D BufferedRecoilKick = FVector2D::ZeroVector;
+	float RecoilSmoothingTime = 0.04f;
 	static constexpr float LocalPresentationUpdateInterval = 1.0f / 60.0f;
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayAttackMontage(UAnimMontage* Montage, bool bPredictedByOwner);
@@ -223,7 +248,6 @@ private:
 	void StopWeaponActionPresentationLocal();
 	void StartCameraTransition(const FTransform& TargetTransform, float Duration, bool bReturning);
 	void HandleCameraTransition();
-	void HandleRecoilRecovery();
 	void PlayWeaponAttackEffectsLocal(
 		USoundBase* AttackSound,
 		float SoundVolume,
@@ -257,12 +281,13 @@ private:
 	void OnRep_DeathCollisionDisabled();
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayHitReaction(UAnimMontage* HitMontage);
+	void MulticastPlayDamageReaction(UAnimMontage* HitMontage);
 
 	UPROPERTY(Replicated)
 	float DeathStartServerTime = 0.0f;
 
 	FTimerHandle StunTimerHandle;
+	TMap<TWeakObjectPtr<UObject>, EFE_StaggerStrength> AttackStaggerProtections;
 
 	UPROPERTY(Transient)
 	TObjectPtr<AFE_CombatProjectile> ChargeProjectilePreview;
@@ -282,20 +307,16 @@ private:
 	FTransform CameraTransitionStartTransform;
 	FTransform CameraTransitionTargetTransform;
 	FTimerHandle CameraTransitionTimer;
-	FTimerHandle RecoilRecoveryTimer;
 	float CameraTransitionStartTime = 0.0f;
 	float CameraTransitionDuration = 0.0f;
 	float CameraBlendOutDuration = 0.2f;
 	bool bOriginalCameraTransformCached = false;
 	bool bChargeCameraPresentationActive = false;
 	bool bCameraTransitionReturning = false;
-	FRotator PendingRecoilRecovery = FRotator::ZeroRotator;
-	float RecoilPitchRecoverySpeed = 0.0f;
-	float RecoilYawRecoverySpeed = 0.0f;
-	float LastRecoilRecoveryTime = 0.0f;
 
 	bool bReactionStunActive = false;
 	bool bDeathMontagePlayed = false;
+	bool bCombatConfigurationPending = false;
 
 	UPROPERTY(ReplicatedUsing=OnRep_DeathCollisionDisabled)
 	bool bDeathCollisionDisabled = false;

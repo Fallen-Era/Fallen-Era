@@ -10,7 +10,7 @@
 
 void UFE_EquipmentComponent::RefreshArmorEquipment()
 {
-	if (bArmorEndingPlay || !GetOwner() || !GetOwner()->HasAuthority())
+	if (bArmorEndingPlay || bInitialArmorInitializationDeferred || !GetOwner() || !GetOwner()->HasAuthority())
 	{
 		return;
 	}
@@ -42,14 +42,16 @@ void UFE_EquipmentComponent::RefreshArmorEquipment()
 	}
 	bArmorLoadRequested = true;
 	TArray<FSoftObjectPath> Paths;
+	bool bAllArmorLoaded = true;
 	for (const TSoftObjectPtr<UFE_ArmorItemData>& Armor : DefaultArmorDataAssets)
 	{
 		if (!Armor.IsNull())
 		{
 			Paths.AddUnique(Armor.ToSoftObjectPath());
+			bAllArmorLoaded &= Armor.IsValid();
 		}
 	}
-	if (Paths.IsEmpty())
+	if (bAllArmorLoaded)
 	{
 		FinishLoadingDefaultArmor();
 		return;

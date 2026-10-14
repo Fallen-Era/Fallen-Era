@@ -1,4 +1,5 @@
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
@@ -53,7 +54,9 @@ static TAutoConsoleVariable<int32> CVarFEHitDamageDebug(
 
 UFE_CombatComponent::UFE_CombatComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
+	PrimaryComponentTick.TickGroup = TG_PrePhysics;
 	SetIsReplicatedByDefault(true);
 	DamageEffectClass = UFE_DamageGameplayEffect::StaticClass();
 }
@@ -61,12 +64,13 @@ UFE_CombatComponent::UFE_CombatComponent()
 void UFE_CombatComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	RefreshHitZoneData();
+	if (!bCombatConfigurationPending) { RefreshHitZoneData(); }
 	RefreshAbilitySystem();
 	if (UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>())
 	{
 		WeaponChangedHandle = Equipment->OnWeaponChanged().AddUObject(this, &ThisClass::HandleWeaponChanged);
 	}
+	if (bCombatConfigurationPending) { return; }
 	TArray<FSoftObjectPath> Paths;
 	if (!DamageEffectClass.IsNull()) { Paths.Add(DamageEffectClass.ToSoftObjectPath()); }
 	if (!DeathMontage.IsNull()) { Paths.Add(DeathMontage.ToSoftObjectPath()); }
@@ -80,12 +84,28 @@ void UFE_CombatComponent::BeginPlay()
 
 void UFE_CombatComponent::FinishLoadingCombatAssets()
 {
+	if (bCombatConfigurationPending) { return; }
 	CachedDamageEffectClass = DamageEffectClass.IsNull()
 		? UFE_DamageGameplayEffect::StaticClass() : DamageEffectClass.Get();
 	if (bDeathCollisionDisabled && !bDeathMontagePlayed && DeathMontage.IsValid())
 	{
 		PlayDeathMontage(DeathMontage.Get());
 	}
+}
+
+void UFE_CombatComponent::SetPreloadedCombatConfiguration(
+	TSoftClassPtr<UGameplayEffect> NewDamageEffect, TSoftObjectPtr<UAnimMontage> NewDeathMontage,
+	TSoftObjectPtr<UFE_HitZoneMappingData> NewHitZoneMapping,
+	TSoftObjectPtr<UFE_HitZoneMultiplierData> NewHitZoneMultipliers)
+{
+	if (CombatAssetLoadHandle) { CombatAssetLoadHandle->CancelHandle(); CombatAssetLoadHandle.Reset(); }
+	DamageEffectClass = NewDamageEffect;
+	DeathMontage = NewDeathMontage;
+	HitZoneMappingData = NewHitZoneMapping;
+	HitZoneMultiplierData = NewHitZoneMultipliers;
+	bCombatConfigurationPending = false;
+	RefreshHitZoneData();
+	FinishLoadingCombatAssets();
 }
 
 void UFE_CombatComponent::RefreshAbilitySystem()
@@ -122,9 +142,15 @@ bool UFE_CombatComponent::IsActorAlive(AActor* Actor)
 
 void UFE_CombatComponent::CancelAttackActions()
 {
+	StopLocalWeaponRecoil();
+	if (UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>())
+	{
+		Aiming->EndAim(true);
+	}
 	if (UAbilitySystemComponent* ASC = FindAbilitySystemComponent(GetOwner()))
 	{
 		FGameplayTagContainer AttackTags(FallenEraCombatGameplayTags::Ability_Combat_Attack);
+		AttackTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim);
 		ASC->CancelAbilities(&AttackTags);
 		if (UFallenEraAbilitySystemComponent* FEASC = Cast<UFallenEraAbilitySystemComponent>(ASC))
 		{
@@ -167,7 +193,9 @@ bool UFE_CombatComponent::IsBowCharging() const
 
 void UFE_CombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	StopLocalWeaponRecoil();
 	ClearStunState();
+	AttackStaggerProtections.Reset();
 	if (UAbilitySystemComponent* ASC = BoundAbilitySystem.Get())
 	{
 		ASC->RegisterGameplayTagEvent(FallenEraGameplayTags::State_Dead).Remove(DeathTagHandle);
@@ -187,7 +215,6 @@ void UFE_CombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		World->GetTimerManager().ClearTimer(StunTimerHandle);
 		World->GetTimerManager().ClearTimer(CameraTransitionTimer);
-		World->GetTimerManager().ClearTimer(RecoilRecoveryTimer);
 	}
 	if (UCameraComponent* Camera = ChargeCamera.Get(); Camera && bOriginalCameraTransformCached)
 	{
@@ -257,6 +284,7 @@ bool UFE_CombatComponent::ApplyDamageWithEffectFromHit(
 
 void UFE_CombatComponent::RefreshHitZoneData()
 {
+	if (bCombatConfigurationPending) { return; }
 	if (HitZoneLoadHandle) { HitZoneLoadHandle->CancelHandle(); HitZoneLoadHandle.Reset(); }
 	CachedHitZoneMappingData = HitZoneMappingData.Get();
 	CachedHitZoneMultiplierData = HitZoneMultiplierData.Get();
@@ -294,6 +322,7 @@ void UFE_CombatComponent::PrepareHitZoneHierarchy()
 
 bool UFE_CombatComponent::IsHitZoneDataReady() const
 {
+	if (bCombatConfigurationPending) { return false; }
 	USkeletalMesh* Mesh = HitZoneMeshComponent.IsValid() ? HitZoneMeshComponent->GetSkeletalMeshAsset() : nullptr;
 	return (HitZoneMappingData.IsNull() || (CachedHitZoneMappingData && CachedHitZoneMappingData == HitZoneMappingData.Get() &&
 		CachedHitZoneMappingData->IsPreparedForMesh(Mesh))) &&
@@ -374,79 +403,72 @@ void UFE_CombatComponent::ApplyDamageReaction(const AActor* DamageSource, const 
 	}
 
 	UAbilitySystemComponent* VictimAbilitySystem = FindAbilitySystemComponent(Victim);
-	const bool bVictimDead = VictimAbilitySystem
-		&& VictimAbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead);
-
 	// A lethal hit already triggered the death montage from the AttributeSet.
 	// Do not overwrite it with a knockback or hit-reaction montage afterwards.
-	if (!bVictimDead)
-	{
-		if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
-		{
-			const float FinalKnockback = CalculateReceivedKnockback(ReactionData.KnockbackAmount);
-			if (FinalKnockback > 0.0f && DamageSource && DamageSource != Victim)
-			{
-				FVector KnockbackDirection = Victim->GetActorLocation() - DamageSource->GetActorLocation();
-				KnockbackDirection.Z = 0.0f;
-				KnockbackDirection = KnockbackDirection.GetSafeNormal();
-				if (KnockbackDirection.IsNearlyZero())
-				{
-					KnockbackDirection = Victim->GetActorForwardVector();
-				}
-				VictimCharacter->LaunchCharacter(KnockbackDirection * FinalKnockback, true, true);
-			}
+	if (bDeathCollisionDisabled || !IsActorAlive(Victim)) { return; }
 
-			if (!HitReactionMontages.IsEmpty())
-			{
-				const int32 MontageIndex = FMath::RandHelper(HitReactionMontages.Num());
-				if (UAnimMontage* HitMontage = HitReactionMontages[MontageIndex])
-				{
-					MulticastPlayHitReaction(HitMontage);
-				}
-			}
-		}
-	}
-
-	if (!bVictimDead && ReactionData.StunDuration > 0.0f && FMath::IsFinite(ReactionData.StunDuration))
+	// Snapshot before EndAbility removes the cancelled attack's protection.
+	const FFE_DamageReactionDecision Decision = ResolveDamageReaction(ReactionData);
+	if (Decision.bInterruptAttack)
 	{
 		if (VictimAbilitySystem)
 		{
-			if (!bReactionStunActive)
+			FGameplayTagContainer Tags(FallenEraCombatGameplayTags::Ability_Combat_Attack);
+			if (Decision.bApplyStun) { Tags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim); }
+			VictimAbilitySystem->CancelAbilities(&Tags);
+		}
+		if (Decision.bApplyStun)
+		{
+			if (UFE_WeaponAimingComponent* Aiming = Victim->FindComponentByClass<UFE_WeaponAimingComponent>())
 			{
-				// Stop an ability that was already active before State.Stunned was added.
-				// ActivationBlockedTags only prevents new activations.
-				VictimAbilitySystem->CancelAllAbilities();
-				if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
-				{
-					if (UCharacterMovementComponent* MovementComponent = VictimCharacter->GetCharacterMovement())
-					{
-						MovementComponent->StopMovementImmediately();
-					}
-					if (AController* Controller = VictimCharacter->GetController())
-					{
-						Controller->StopMovement();
-					}
-				}
-
-				VictimAbilitySystem->AddLooseGameplayTag(
-					FallenEraGameplayTags::State_Stunned,
-					1,
-					EGameplayTagReplicationState::TagAndCountToAll);
-				bReactionStunActive = true;
-			}
-
-			if (UWorld* World = GetWorld())
-			{
-				World->GetTimerManager().ClearTimer(StunTimerHandle);
-				World->GetTimerManager().SetTimer(
-					StunTimerHandle,
-					this,
-					&UFE_CombatComponent::ClearStunState,
-					ReactionData.StunDuration,
-					false);
+				Aiming->EndAim(true);
 			}
 		}
+		StopChargeProjectilePresentation(false);
 	}
+
+	if (Decision.bApplyStun)
+	{
+		if (!bReactionStunActive)
+		{
+			if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
+			{
+				if (UCharacterMovementComponent* MovementComponent = VictimCharacter->GetCharacterMovement())
+				{
+					MovementComponent->StopMovementImmediately();
+				}
+				if (AController* Controller = VictimCharacter->GetController()) { Controller->StopMovement(); }
+			}
+			VictimAbilitySystem->AddLooseGameplayTag(
+				FallenEraGameplayTags::State_Stunned, 1, EGameplayTagReplicationState::TagAndCountToAll);
+			bReactionStunActive = true;
+		}
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimer(
+				StunTimerHandle, this, &UFE_CombatComponent::ClearStunState, ReactionData.StunDuration, false);
+		}
+	}
+
+	// Knockback is independent of stagger protection and hit-montage immunity.
+	UAnimMontage* HitMontage = nullptr;
+	if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
+	{
+		const float FinalKnockback = CalculateReceivedKnockback(ReactionData.KnockbackAmount);
+		if (FinalKnockback > 0.0f && DamageSource && DamageSource != Victim)
+		{
+			FVector Direction = Victim->GetActorLocation() - DamageSource->GetActorLocation();
+			Direction.Z = 0.0f;
+			Direction = Direction.GetSafeNormal();
+			if (Direction.IsNearlyZero()) { Direction = Victim->GetActorForwardVector(); }
+			VictimCharacter->LaunchCharacter(Direction * FinalKnockback, true, true);
+		}
+		if (Decision.bPlayHitReaction && !HitReactionMontages.IsEmpty())
+		{
+			HitMontage = HitReactionMontages[FMath::RandHelper(HitReactionMontages.Num())];
+		}
+	}
+	if (Decision.bInterruptAttack) { MulticastPlayDamageReaction(HitMontage); }
 }
 
 void UFE_CombatComponent::HandleDeath()
@@ -501,14 +523,16 @@ void UFE_CombatComponent::ApplyDeathCollisionState()
 	}
 }
 
-void UFE_CombatComponent::MulticastPlayHitReaction_Implementation(UAnimMontage* HitMontage)
+void UFE_CombatComponent::MulticastPlayDamageReaction_Implementation(UAnimMontage* HitMontage)
 {
+	// One message preserves stop-before-play ordering; a null montage still stops the old attack.
+	StopWeaponActionPresentationLocal();
 	PlayHitReactionMontage(HitMontage);
 }
 
 void UFE_CombatComponent::PlayHitReactionMontage(UAnimMontage* HitMontage)
 {
-	if (!HitMontage)
+	if (!HitMontage || bDeathCollisionDisabled)
 	{
 		return;
 	}
