@@ -9,26 +9,28 @@ public class FallenEra : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
 		PublicDependencyModuleNames.AddRange(new string[] {
+			"AIModule",
 			"Core",
 			"CoreUObject",
 			"Engine",
-			"InputCore",
 			"EnhancedInput",
+			"InputCore",
 			"GameplayAbilities",
 			"GameplayTags",
 			"GameplayTasks",
-			"AIModule",
-			"NavigationSystem",
-			"DeveloperSettings",
-			"StateTreeModule",
 			"GameplayStateTreeModule",
+			"StateTreeModule",
 			"Niagara",
+			"NavigationSystem",
+			"PhysicsCore",
 			"UMG",
+			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",
 			"PhysicsCore",
 			"ModelViewViewModel",
-			"DeveloperSettings"
+			"DeveloperSettings",
+			"AssetRegistry"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] 
@@ -41,6 +43,8 @@ public class FallenEra : ModuleRules
 			"FallenEra/AbilitySystem",
 			"FallenEra/AbilitySystem/Abilities",
 			"FallenEra/AbilitySystem/Attributes",
+			"FallenEra/GameplayTag",
+			"FallenEra/ItemDatas",
 			"FallenEra/Building",
 			"FallenEra/Interaction",
 		});
