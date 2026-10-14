@@ -45,6 +45,7 @@ public class FallenEra : ModuleRules
 			"FallenEra/ItemDatas",
 			"FallenEra/Building",
 			"FallenEra/Interaction",
+			"FallenEra/Inventory",
 		});
 
 		// Uncomment if you are using Slate UI
