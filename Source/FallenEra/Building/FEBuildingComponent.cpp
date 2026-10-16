@@ -343,9 +343,16 @@ void UFEBuildingComponent::BuildPieceEntries()
 
     TArray<FPrimaryAssetId> PieceIds;
     UAssetManager::Get().GetPrimaryAssetIdList(UFEBuildPieceDefinition::AssetType, PieceIds);
-    PieceIds.Sort([](const FPrimaryAssetId& A, const FPrimaryAssetId& B)
+    
+    // 메뉴 순서값 → 에셋 이름순. 메뉴를 열 때 정의는 이미 전부 로드돼 있다
+    UAssetManager& AssetManager = UAssetManager::Get();
+    PieceIds.Sort([&AssetManager](const FPrimaryAssetId& A, const FPrimaryAssetId& B)
     {
-        return A.PrimaryAssetName.LexicalLess(B.PrimaryAssetName);
+        const UFEBuildPieceDefinition* DefinitionA = Cast<UFEBuildPieceDefinition>(AssetManager.GetPrimaryAssetObject(A));
+        const UFEBuildPieceDefinition* DefinitionB = Cast<UFEBuildPieceDefinition>(AssetManager.GetPrimaryAssetObject(B));
+        const int32 OrderA = DefinitionA ? DefinitionA->MenuOrder : 0;
+        const int32 OrderB = DefinitionB ? DefinitionB->MenuOrder : 0;
+        return OrderA != OrderB ? OrderA < OrderB : A.PrimaryAssetName.LexicalLess(B.PrimaryAssetName);
     });
 
     // 다른 정의의 UpgradeTo 대상(돌·철 변형)은 메뉴에 내지 않는다 — 재질은 재료를 넣을 때 고른다.
@@ -1020,26 +1027,29 @@ bool UFEBuildingComponent::FindSnapPlacement(const FVector& CursorPoint, FVector
         {
             const FTransform TargetSocketWorld = TargetSocket.LocalTransform * TargetXf;
             const float DistSq = FVector::DistSquared(TargetSocketWorld.GetLocation(), CursorPoint);
-            if (DistSq >= BestDistSq)
-            {
-                continue;
-            }
+            if (DistSq >= BestDistSq) continue;
+            
+            // 이 대상 소켓에 붙을 수 있는 프리뷰 소켓이 여럿이면 회전 입력(Q/E)으로 고른다
+            // (삼각 벽 좌우 반전, 계단 내려오기/올라가기). 하나뿐이면 지금처럼 그 소켓
+            TArray<const FFEBuildSocket*, TInlineAllocator<4>> Candidates;
             for (const FFEBuildSocket& PieceSocket : SelectedPiece->Sockets)
             {
-                if (!PieceSocket.AcceptTypes.HasTag(TargetSocket.Type))
+                if (PieceSocket.AcceptTypes.HasTag(TargetSocket.Type))
                 {
-                    continue;
+                    Candidates.Add(&PieceSocket);
                 }
-                BestDistSq = DistSq;
-                BestTransform = PieceSocket.LocalTransform.Inverse() * GetFlip180() * TargetSocketWorld;
-                bFound = true;
-                
-                BestTarget = Target;
-                BestTargetSocketType = TargetSocket.Type;
-                BestPieceSocketType = PieceSocket.Type;
-                
-                break;
             }
+            if (Candidates.Num() == 0) continue;
+
+            const FFEBuildSocket& PieceSocket = *Candidates[YawStepOffset % Candidates.Num()];
+
+            BestDistSq = DistSq;
+            BestTransform = PieceSocket.LocalTransform.Inverse() * GetFlip180() * TargetSocketWorld;
+            bFound = true;
+
+            BestTarget = Target;
+            BestTargetSocketType = TargetSocket.Type;
+            BestPieceSocketType = PieceSocket.Type;
         }
     }
 
@@ -1206,12 +1216,27 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
 
     // 소켓 배치(bIsSnapped)는 코너 기둥+벽처럼 구조물끼리 겹치는 게 정상이라 BuildPiece 를 오버랩에서 뺀다.
     // 대신 같은 자리 중복만 따로 막는다. 지형 배치(토대·가구)는 구조물과 겹치면 안 되므로 그대로.
-    if (bIsSnapped)
+    if (bIsSnapped && Piece->DuplicateCoreScale <= 0.f)
+    {
+        // 심 상자를 쓸 수 없는 모양(직각 삼각 벽)은 같은 소켓 자리 — 피벗이 같은 곳 — 에 이미 피스가 있으면 중복으로 본다.
+        // 반대로 뒤집은 삼각 벽, 같은 천장 가장자리의 벽·난간도 여기서 걸린다. 받치는 벽은 피벗이 아래라 걸리지 않는다
+        TArray<AFEBuildPiece*> Nearby;
+        UFEBuildingSubsystem::GatherNearbyPieces(World, Transform.GetLocation(), 50.f, Instigator, Nearby);
+        const bool bIsOccupied = Nearby.ContainsByPredicate([&Transform](const AFEBuildPiece* Other)
+        {
+            return Other->GetActorLocation().Equals(Transform.GetLocation(), 5.f);
+        });
+        if (bIsOccupied)
+        {
+            return Fail(LOCTEXT("Duplicate", "Already placed here"));
+        }
+    }
+    else if (bIsSnapped)
     {
         // 소켓 배치는 구조물끼리의 접촉·코너 겹침이 정상이므로 전체 상자로는 검사하지 않는다.
-        // 대신 바운드를 40% 로 줄인 "심" 상자가 다른 구조물과 겹치면 같은 자리/포개기로 보고 거부한다.
-        // 코너 기둥(40cm)의 심은 벽 두께(20cm) 안으로 들어오지 않는다.
-        const FVector CoreExtent = LocalBounds.GetExtent() * 0.4f;
+        // 대신 바운드를 DuplicateCoreScale(기본 40%) 로 줄인 "심" 상자가 다른 구조물과 겹치면 같은 자리/포개기로 보고 거부한다.
+        // 코너 기둥(40cm)의 심은 벽 두께(20cm) 안으로 들어오지 않는다. 바운드가 모양보다 큰 피스(삼각 벽)는 DA 에서 줄인다.
+        const FVector CoreExtent = LocalBounds.GetExtent() * Piece->DuplicateCoreScale;
         const FVector CoreCenter = Transform.TransformPosition(LocalBounds.GetCenter());
         FCollisionQueryParams CoreParams(SCENE_QUERY_STAT(FEBuildDuplicate), false, Instigator);
         TArray<FOverlapResult> CoreOverlaps;

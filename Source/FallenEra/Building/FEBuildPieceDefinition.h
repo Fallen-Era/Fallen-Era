@@ -44,6 +44,10 @@ public:
 	/** 재질과 무관한 이름 ("벽"). 재질 사슬의 시작 DA 에만 넣는다 — 빌드 메뉴와 재질 선택 패널 제목에 쓴다. 비우면 DisplayName */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
 	FText BaseName;
+	
+	/** 빌드 메뉴 순서. 작은 값이 먼저, 같으면 에셋 이름순. 메뉴에는 재질 사슬의 시작 DA 만 나오므로 시작 DA 의 값만 쓰인다 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
+	int32 MenuOrder = 0;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (Categories = "Build.Piece"))
     FGameplayTag Category;
@@ -111,6 +115,12 @@ public:
     /** 지형 배치 시 바닥 4코너와 지면 사이 허용 높이차 (cm). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (EditCondition = "bCanPlaceOnGround", ClampMin = 0))
     float MaxGroundHeightDelta = 50.f;
+	
+	/** 소켓 배치 때 "같은 자리 중복" 검사 상자 = 바운드 × 이 값. 0 이면 검사하지 않는다 —
+	 *  직각 삼각 벽은 바운드 중심이 빗변 위라 어떤 크기로 줄여도 위에 얹힌 지붕에 닿는다.
+	 *  ponytail: 같은 자리에 삼각 벽 2장을 겹쳐 놓을 수 있음. 문제가 되면 같은 위치·방향 피스 비교로 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (ClampMin = 0, ClampMax = 1))
+	float DuplicateCoreScale = 0.4f;
     
     /** 스냅 지점. 토대: Edge×4(붙는 쪽+상대) + Top×4(상대 전용). 벽: Bottom×1(붙는 쪽). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Snap")

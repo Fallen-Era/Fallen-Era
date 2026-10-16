@@ -42,6 +42,9 @@ namespace FEBuildingTags
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_Top);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_Corner);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_CornerTop);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_Seat);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Roof_Bottom);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Roof_Top);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Furniture_Base);
 
     // 아이템 담당이 Item.* 태그를 정의하면 이 줄과 DA 의 재료 태그를 교체하고 삭제

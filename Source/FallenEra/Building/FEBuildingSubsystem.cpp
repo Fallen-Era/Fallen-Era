@@ -141,10 +141,8 @@ void UFEBuildingSubsystem::FindConnectedPieces(const UWorld* World, const UFEBui
             const FTransform TargetXf = Target->GetActorTransform();
             for (const FFEBuildSocket& TargetSocket : Target->GetDefinition()->Sockets)
             {
-                if (!PieceSocket.AcceptTypes.HasTag(TargetSocket.Type))
-                {
-                    continue;
-                }
+                if (!PieceSocket.AcceptTypes.HasTag(TargetSocket.Type)) continue;
+
                 const FTransform TargetSocketWorld = TargetSocket.LocalTransform * TargetXf;
                 const bool bIsClose = FVector::DistSquared(PieceSocketWorld.GetLocation(), TargetSocketWorld.GetLocation()) <= SnapTolerance * SnapTolerance;
                 const bool bIsFacing = FVector::DotProduct(PieceSocketForward, TargetSocketWorld.GetUnitAxis(EAxis::X)) < FacingDotThreshold;
@@ -160,27 +158,19 @@ void UFEBuildingSubsystem::FindConnectedPieces(const UWorld* World, const UFEBui
 
 uint8 UFEBuildingSubsystem::PredictSupportDistance(const UFEBuildPieceDefinition* Piece, const TArray<AFEBuildPiece*>& Connected, bool bBuiltOnly)
 {
-    if (Piece == nullptr)
-    {
-        return Unreachable;
-    }
-    if (Piece->bCanPlaceOnGround)
-    {
-        return 0; // anchor
-    }
+    if (Piece == nullptr) return Unreachable;
+    // 땅에 놓이는 피스는 토대(지지 비용 0)이거나 아무것에도 안 붙었을 때만 anchor — 천장에 매단 계단이 천장을 받치지 않게
+    if (Piece->bCanPlaceOnGround && (Piece->SupportCost == 0 || Connected.Num() == 0)) return 0; // anchor
+
 
     int32 Best = Unreachable;
     for (const AFEBuildPiece* Neighbor : Connected)
     {
-        if (bBuiltOnly && Neighbor->GetState() != EFEBuildPieceState::Built)
-        {
-            continue;
-        }
+        if (bBuiltOnly && Neighbor->GetState() != EFEBuildPieceState::Built) continue;
+
         const uint8 NeighborDistance = bBuiltOnly ? Neighbor->GetSupportDistance() : Neighbor->GetDesignSupportDistance();
-        if (NeighborDistance == Unreachable)
-        {
-            continue;
-        }
+        if (NeighborDistance == Unreachable) continue;
+
         Best = FMath::Min(Best, NeighborDistance + Piece->SupportCost);
     }
     return static_cast<uint8>(FMath::Min(Best, static_cast<int32>(Unreachable)));
@@ -335,10 +325,7 @@ void UFEBuildingSubsystem::RestoreRecords(const TArray<FFEBuildPieceRecord>& Rec
     RespawnBeds.Reset();
 
     PendingRestore = Records;
-    if (PendingRestore.Num() == 0)
-    {
-        return;
-    }
+    if (PendingRestore.Num() == 0) return;
 
     TArray<FPrimaryAssetId> Ids;
     for (const FFEBuildPieceRecord& Record : PendingRestore)
@@ -419,10 +406,8 @@ void UFEBuildingSubsystem::Recalculate()
         FindConnectedPieces(GetWorld(), Piece->GetDefinition(), Piece->GetActorTransform(), Piece, Connected);
         for (AFEBuildPiece* Neighbor : Connected)
         {
-            if (!Adjacency.Contains(Neighbor))
-            {
-                continue;
-            }
+            if (!Adjacency.Contains(Neighbor)) continue;
+
             Adjacency[Piece].AddUnique(Neighbor);
             Adjacency[Neighbor].AddUnique(Piece);
         }
@@ -490,11 +475,10 @@ void UFEBuildingSubsystem::ComputeDistances(const TMap<AFEBuildPiece*, TArray<AF
     for (const TPair<AFEBuildPiece*, TArray<AFEBuildPiece*>>& Pair : Adjacency)
     {
         AFEBuildPiece* Piece = Pair.Key;
-        if (bBuiltOnly && Piece->GetState() != EFEBuildPieceState::Built)
-        {
-            continue;
-        }
-        const bool bIsAnchor = Piece->IsAnchor();
+        if (bBuiltOnly && Piece->GetState() != EFEBuildPieceState::Built) continue;
+
+        // PredictSupportDistance 와 같은 규칙: 땅 피스는 토대이거나 이웃이 없을 때만 anchor (맨땅 계단·가구는 anchor, 매단 계단은 아님)
+        const bool bIsAnchor = Piece->IsAnchor() && (Piece->GetSupportCost() == 0 || Pair.Value.Num() == 0);
         OutDistance.Add(Piece, bIsAnchor ? 0 : Unreachable);
         if (bIsAnchor)
         {
@@ -521,10 +505,8 @@ void UFEBuildingSubsystem::ComputeDistances(const TMap<AFEBuildPiece*, TArray<AF
         for (AFEBuildPiece* Neighbor : Adjacency[Current])
         {
             uint8* NeighborDistance = OutDistance.Find(Neighbor);
-            if (NeighborDistance == nullptr)
-            {
-                continue;
-            }
+            if (NeighborDistance == nullptr) continue;
+
             const int32 Candidate = FMath::Min<int32>(CurrentDistance + Neighbor->GetSupportCost(), Unreachable);
             if (Candidate < *NeighborDistance)
             {
