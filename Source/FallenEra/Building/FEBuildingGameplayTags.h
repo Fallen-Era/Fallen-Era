@@ -19,6 +19,9 @@ namespace FEBuildingTags
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Build_Demolish);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Build_Menu);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Interact);
+    
+    // 상태 (로컬 loose 태그. 다른 시스템이 "빌드 중"을 알아야 할 때 이 태그만 본다)
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Building);
 
     // 피스 분류 (UFEBuildPieceDefinition::Category)
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Piece_Structure);
@@ -39,9 +42,21 @@ namespace FEBuildingTags
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_Top);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_Corner);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_CornerTop);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Ceiling_Seat);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Roof_Bottom);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Roof_Top);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Socket_Furniture_Base);
 
     // 아이템 담당이 Item.* 태그를 정의하면 이 줄과 DA 의 재료 태그를 교체하고 삭제
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_Wood);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_Stone);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_IronOre);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_IronIngot);
+    
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Food_RawMeat);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Food_CookedMeat);
+    
+    // 수리 도구. 이 태그가 ItemTags 에 있는 무기를 들고 있어야 서버가 수리를 허용한다
+    // ponytail: 아이템 식별이 FPrimaryAssetId 로 바뀌면 아이템 ID 비교로 교체
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Tool_Hammer);
 }

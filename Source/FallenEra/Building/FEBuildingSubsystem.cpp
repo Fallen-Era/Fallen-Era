@@ -13,6 +13,9 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerState.h"
 #include "TimerManager.h"
+#include "FEBuildingComponent.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 
 namespace
 {
@@ -53,6 +56,33 @@ static FAutoConsoleCommandWithWorld CmdBuildSnapshotLoad(
         }
     }));
 
+static FAutoConsoleCommandWithWorldAndArgs CmdBuildDamageAimed(
+    TEXT("fe.Build.DamageAimed"),
+    TEXT("[Server] Damage the build piece under the host player's crosshair. Usage: fe.Build.DamageAimed <amount=100>"),
+    FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+    {
+        if (World == nullptr || World->GetNetMode() == NM_Client)
+        {
+            UE_LOG(LogFEBuilding, Warning, TEXT("fe.Build.DamageAimed is server-only. Run it in the host window."));
+            return;
+        }
+
+        const float Amount = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 100.f;
+        const APlayerController* PlayerController = World->GetFirstPlayerController();
+        const APawn* Pawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+        const UFEBuildingComponent* Building = Pawn ? Pawn->FindComponentByClass<UFEBuildingComponent>() : nullptr;
+        AFEBuildPiece* Piece = Building ? Building->FindPieceUnderCrosshair() : nullptr;
+        if (Piece == nullptr)
+        {
+            UE_LOG(LogFEBuilding, Warning, TEXT("fe.Build.DamageAimed: no build piece under the crosshair"));
+            return;
+        }
+
+        // 팀 검사를 거치지 않도록 ReceiveCombatDamage 가 아니라 실제 감소 함수를 직접 부른다
+        Piece->ApplyStructureDamage(Amount, Pawn);
+        UE_LOG(LogFEBuilding, Log, TEXT("DamageAimed %s -%.0f (now %d%%)"), *Piece->GetName(), Amount, FMath::RoundToInt(Piece->GetHealthPercent() * 100.f));
+    }));
+
 UFEBuildingSubsystem* UFEBuildingSubsystem::Get(const UWorld* World)
 {
     return World ? World->GetSubsystem<UFEBuildingSubsystem>() : nullptr;
@@ -65,10 +95,8 @@ bool UFEBuildingSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType
 
 IFEBuildInventoryProvider* UFEBuildingSubsystem::FindInventoryProvider(const AActor* Actor)
 {
-    if (Actor == nullptr)
-    {
-        return nullptr;
-    }
+    if (Actor == nullptr) return nullptr;
+
     const TArray<UActorComponent*> Providers = Actor->GetComponentsByInterface(UFEBuildInventoryProvider::StaticClass());
     return Providers.Num() > 0 ? Cast<IFEBuildInventoryProvider>(Providers[0]) : nullptr;
 }
@@ -92,10 +120,8 @@ void UFEBuildingSubsystem::GatherNearbyPieces(const UWorld* World, const FVector
 
 void UFEBuildingSubsystem::FindConnectedPieces(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* IgnoreActor, TArray<AFEBuildPiece*>& OutConnected)
 {
-    if (World == nullptr || Piece == nullptr)
-    {
-        return;
-    }
+    if (World == nullptr || Piece == nullptr) return;
+
     const float SearchRadius = UFEBuildingSettings::Get()->SnapRadius;
 
     for (const FFEBuildSocket& PieceSocket : Piece->Sockets)
@@ -115,10 +141,8 @@ void UFEBuildingSubsystem::FindConnectedPieces(const UWorld* World, const UFEBui
             const FTransform TargetXf = Target->GetActorTransform();
             for (const FFEBuildSocket& TargetSocket : Target->GetDefinition()->Sockets)
             {
-                if (!PieceSocket.AcceptTypes.HasTag(TargetSocket.Type))
-                {
-                    continue;
-                }
+                if (!PieceSocket.AcceptTypes.HasTag(TargetSocket.Type)) continue;
+
                 const FTransform TargetSocketWorld = TargetSocket.LocalTransform * TargetXf;
                 const bool bIsClose = FVector::DistSquared(PieceSocketWorld.GetLocation(), TargetSocketWorld.GetLocation()) <= SnapTolerance * SnapTolerance;
                 const bool bIsFacing = FVector::DotProduct(PieceSocketForward, TargetSocketWorld.GetUnitAxis(EAxis::X)) < FacingDotThreshold;
@@ -134,27 +158,19 @@ void UFEBuildingSubsystem::FindConnectedPieces(const UWorld* World, const UFEBui
 
 uint8 UFEBuildingSubsystem::PredictSupportDistance(const UFEBuildPieceDefinition* Piece, const TArray<AFEBuildPiece*>& Connected, bool bBuiltOnly)
 {
-    if (Piece == nullptr)
-    {
-        return Unreachable;
-    }
-    if (Piece->bCanPlaceOnGround)
-    {
-        return 0; // anchor
-    }
+    if (Piece == nullptr) return Unreachable;
+    // 땅에 놓이는 피스는 토대(지지 비용 0)이거나 아무것에도 안 붙었을 때만 anchor — 천장에 매단 계단이 천장을 받치지 않게
+    if (Piece->bCanPlaceOnGround && (Piece->SupportCost == 0 || Connected.Num() == 0)) return 0; // anchor
+
 
     int32 Best = Unreachable;
     for (const AFEBuildPiece* Neighbor : Connected)
     {
-        if (bBuiltOnly && Neighbor->GetState() != EFEBuildPieceState::Built)
-        {
-            continue;
-        }
+        if (bBuiltOnly && Neighbor->GetState() != EFEBuildPieceState::Built) continue;
+
         const uint8 NeighborDistance = bBuiltOnly ? Neighbor->GetSupportDistance() : Neighbor->GetDesignSupportDistance();
-        if (NeighborDistance == Unreachable)
-        {
-            continue;
-        }
+        if (NeighborDistance == Unreachable) continue;
+
         Best = FMath::Min(Best, NeighborDistance + Piece->SupportCost);
     }
     return static_cast<uint8>(FMath::Min(Best, static_cast<int32>(Unreachable)));
@@ -162,20 +178,16 @@ uint8 UFEBuildingSubsystem::PredictSupportDistance(const UFEBuildPieceDefinition
 
 bool UFEBuildingSubsystem::IsSupported(const UFEBuildPieceDefinition* Piece, uint8 Distance)
 {
-    if (Piece == nullptr || Distance == Unreachable)
-    {
-        return false;
-    }
+    if (Piece == nullptr || Distance == Unreachable) return false;
+
     return Distance <= UFEBuildingSettings::Get()->GetMaxSupportDistance(Piece->Material);
 }
 
 bool UFEBuildingSubsystem::CanComplete(const AFEBuildPiece* Piece)
 {
     const UFEBuildPieceDefinition* Definition = Piece ? Piece->GetDefinition() : nullptr;
-    if (Definition == nullptr)
-    {
-        return false;
-    }
+    if (Definition == nullptr) return false;
+
     TArray<AFEBuildPiece*> Connected;
     FindConnectedPieces(Piece->GetWorld(), Definition, Piece->GetActorTransform(), Piece, Connected);
     return IsSupported(Definition, PredictSupportDistance(Definition, Connected, true));
@@ -183,10 +195,8 @@ bool UFEBuildingSubsystem::CanComplete(const AFEBuildPiece* Piece)
 
 void UFEBuildingSubsystem::RegisterPiece(AFEBuildPiece* Piece)
 {
-    if (Piece == nullptr)
-    {
-        return;
-    }
+    if (Piece == nullptr) return;
+
     Pieces.AddUnique(Piece);
     MarkDirty();
 }
@@ -206,10 +216,8 @@ void UFEBuildingSubsystem::UnregisterPiece(AFEBuildPiece* Piece)
 void UFEBuildingSubsystem::MarkDirty()
 {
     UWorld* World = GetWorld();
-    if (World == nullptr || RecalculateTimer.IsValid())
-    {
-        return; // 이미 예약됨
-    }
+    if (World == nullptr || RecalculateTimer.IsValid()) return; // 이미 예약됨
+
     RecalculateTimer = World->GetTimerManager().SetTimerForNextTick(this, &UFEBuildingSubsystem::Recalculate);
 }
 
@@ -224,10 +232,7 @@ FString UFEBuildingSubsystem::GetStablePlayerId(const APlayerState* PlayerState)
 void UFEBuildingSubsystem::SetRespawnBed(APlayerState* PlayerState, AFEBuildBed* Bed)
 {
     const FString PlayerId = GetStablePlayerId(PlayerState);
-    if (PlayerId.IsEmpty() || Bed == nullptr)
-    {
-        return;
-    }
+    if (PlayerId.IsEmpty() || Bed == nullptr) return;
 
     // 플레이어당 침구 하나: 이전 침구 해제
     if (TObjectPtr<AFEBuildBed>* Previous = RespawnBeds.Find(PlayerId))
@@ -251,10 +256,8 @@ void UFEBuildingSubsystem::SetRespawnBed(APlayerState* PlayerState, AFEBuildBed*
 
 void UFEBuildingSubsystem::ClearRespawnBed(AFEBuildBed* Bed)
 {
-    if (Bed == nullptr)
-    {
-        return;
-    }
+    if (Bed == nullptr) return;
+
     for (auto It = RespawnBeds.CreateIterator(); It; ++It)
     {
         if (It.Value() == Bed)
@@ -266,19 +269,16 @@ void UFEBuildingSubsystem::ClearRespawnBed(AFEBuildBed* Bed)
 
 bool UFEBuildingSubsystem::GetRespawnTransform(const APlayerState* PlayerState, FTransform& OutTransform) const
 {
-    if (PlayerState == nullptr)
-    {
-        return false;
-    }
+    if (PlayerState == nullptr) return false;
+    
     const TObjectPtr<AFEBuildBed>* Found = RespawnBeds.Find(GetStablePlayerId(PlayerState));
     const bool bHasBed = Found != nullptr && IsValid(*Found) && (*Found)->GetState() == EFEBuildPieceState::Built;
-    if (!bHasBed)
-    {
-        return false;
-    }
+    if (!bHasBed) return false;
+
     OutTransform = (*Found)->GetActorTransform();
     OutTransform.AddToTranslation(FVector(0.f, 0.f, RespawnHeight));
     OutTransform.SetScale3D(FVector::OneVector);
+    
     return true;
 }
 
@@ -325,10 +325,7 @@ void UFEBuildingSubsystem::RestoreRecords(const TArray<FFEBuildPieceRecord>& Rec
     RespawnBeds.Reset();
 
     PendingRestore = Records;
-    if (PendingRestore.Num() == 0)
-    {
-        return;
-    }
+    if (PendingRestore.Num() == 0) return;
 
     TArray<FPrimaryAssetId> Ids;
     for (const FFEBuildPieceRecord& Record : PendingRestore)
@@ -346,10 +343,7 @@ void UFEBuildingSubsystem::HandleRestoreAssetsLoaded()
 {
     RestoreHandle.Reset();
     UWorld* World = GetWorld();
-    if (World == nullptr)
-    {
-        return;
-    }
+    if (World == nullptr) return;
 
     UAssetManager& AssetManager = UAssetManager::Get();
     int32 RestoredCount = 0;
@@ -392,10 +386,7 @@ void UFEBuildingSubsystem::HandleRestoreAssetsLoaded()
 void UFEBuildingSubsystem::Recalculate()
 {
     RecalculateTimer.Invalidate();
-    if (bIsCollapsing)
-    {
-        return; // 붕괴가 끝나면 CollapseNext 가 다시 MarkDirty 한다
-    }
+    if (bIsCollapsing) return; // 붕괴가 끝나면 CollapseNext 가 다시 MarkDirty 한다
 
     Pieces.RemoveAll([](const TObjectPtr<AFEBuildPiece>& Piece)
     {
@@ -415,10 +406,8 @@ void UFEBuildingSubsystem::Recalculate()
         FindConnectedPieces(GetWorld(), Piece->GetDefinition(), Piece->GetActorTransform(), Piece, Connected);
         for (AFEBuildPiece* Neighbor : Connected)
         {
-            if (!Adjacency.Contains(Neighbor))
-            {
-                continue;
-            }
+            if (!Adjacency.Contains(Neighbor)) continue;
+
             Adjacency[Piece].AddUnique(Neighbor);
             Adjacency[Neighbor].AddUnique(Piece);
         }
@@ -486,11 +475,10 @@ void UFEBuildingSubsystem::ComputeDistances(const TMap<AFEBuildPiece*, TArray<AF
     for (const TPair<AFEBuildPiece*, TArray<AFEBuildPiece*>>& Pair : Adjacency)
     {
         AFEBuildPiece* Piece = Pair.Key;
-        if (bBuiltOnly && Piece->GetState() != EFEBuildPieceState::Built)
-        {
-            continue;
-        }
-        const bool bIsAnchor = Piece->IsAnchor();
+        if (bBuiltOnly && Piece->GetState() != EFEBuildPieceState::Built) continue;
+
+        // PredictSupportDistance 와 같은 규칙: 땅 피스는 토대이거나 이웃이 없을 때만 anchor (맨땅 계단·가구는 anchor, 매단 계단은 아님)
+        const bool bIsAnchor = Piece->IsAnchor() && (Piece->GetSupportCost() == 0 || Pair.Value.Num() == 0);
         OutDistance.Add(Piece, bIsAnchor ? 0 : Unreachable);
         if (bIsAnchor)
         {
@@ -517,10 +505,8 @@ void UFEBuildingSubsystem::ComputeDistances(const TMap<AFEBuildPiece*, TArray<AF
         for (AFEBuildPiece* Neighbor : Adjacency[Current])
         {
             uint8* NeighborDistance = OutDistance.Find(Neighbor);
-            if (NeighborDistance == nullptr)
-            {
-                continue;
-            }
+            if (NeighborDistance == nullptr) continue;
+
             const int32 Candidate = FMath::Min<int32>(CurrentDistance + Neighbor->GetSupportCost(), Unreachable);
             if (Candidate < *NeighborDistance)
             {
@@ -534,10 +520,7 @@ void UFEBuildingSubsystem::ComputeDistances(const TMap<AFEBuildPiece*, TArray<AF
 void UFEBuildingSubsystem::CollapseNext()
 {
     UWorld* World = GetWorld();
-    if (World == nullptr)
-    {
-        return;
-    }
+    if (World == nullptr) return;
 
     while (CollapseQueue.Num() > 0 && (CollapseQueue[0] == nullptr || CollapseQueue[0]->IsActorBeingDestroyed()))
     {

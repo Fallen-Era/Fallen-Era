@@ -9,6 +9,9 @@
 
 class AFEBuildPiece;
 class UStaticMesh;
+class UNiagaraSystem;
+class USoundBase;
+class UMaterialInterface;
 class UTexture2D;
 
 /**
@@ -29,9 +32,22 @@ public:
     static const FName RuntimeBundle;
 
     virtual FPrimaryAssetId GetPrimaryAssetId() const override;
+    
+    /** 재질 사슬: 자신부터 UpgradeTo 를 따라간 정의들 (예: 나무 → 돌 → 철). 투입 시 재질 선택·메뉴·프롬프트가 쓴다.
+     *  다음 단계 DA 를 동기 로드한다 (소프트 참조만 가진 작은 데이터라 메시는 따라오지 않음).
+     *  사슬이 길어지거나 DA 가 무거워지면 시작 DA 에 변형 목록을 Runtime 번들로 두는 방식으로 바꾼다 */
+    void GetMaterialChain(TArray<const UFEBuildPieceDefinition*>& OutChain) const;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
     FText DisplayName;
+	
+	/** 재질과 무관한 이름 ("벽"). 재질 사슬의 시작 DA 에만 넣는다 — 빌드 메뉴와 재질 선택 패널 제목에 쓴다. 비우면 DisplayName */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
+	FText BaseName;
+	
+	/** 빌드 메뉴 순서. 작은 값이 먼저, 같으면 에셋 이름순. 메뉴에는 재질 사슬의 시작 DA 만 나오므로 시작 DA 의 값만 쓰인다 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
+	int32 MenuOrder = 0;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (Categories = "Build.Piece"))
     FGameplayTag Category;
@@ -45,6 +61,10 @@ public:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (AssetBundles = "Runtime"))
     TSoftObjectPtr<UStaticMesh> Mesh;
+    
+    /** 완성 상태 머티리얼. 같은 메시를 재질별 DA(나무/돌/철)가 공유하므로 색은 DA 가 정한다. 비우면 메시 기본 머티리얼 */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building", meta = (AssetBundles = "Runtime"))
+    TSoftObjectPtr<UMaterialInterface> BuiltMaterial;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Cost")
     EFEBuildMaterial Material = EFEBuildMaterial::Wood;
@@ -58,6 +78,19 @@ public:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Durability", meta = (ClampMin = 1))
     float MaxHealth = 300.f;
+    
+    /** 완성 피스가 사라질 때(파괴·붕괴·철거) 클라에서 재생하는 파편 효과. 비우면 없음. 재질별로 다르게 */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Durability", meta = (AssetBundles = "Runtime"))
+    TSoftObjectPtr<UNiagaraSystem> BreakEffect;
+
+    /** BreakEffect 와 같은 시점의 소리. 비우면 없음 */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Durability", meta = (AssetBundles = "Runtime"))
+    TSoftObjectPtr<USoundBase> BreakSound;
+    
+    /** 망치 우클릭 업그레이드 대상 (다음 재질 DA). 비우면 마지막 단계. PieceClass 가 같아야 한다 (액터는 그대로, 정의만 교체).
+     *  Runtime 번들이라 이 DA 를 로드하면 대상 DA 객체(이름·비용)도 같이 로드된다. 대상의 메시·머티리얼은 교체할 때 따로 로드 */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Upgrade", meta = (AssetBundles = "Runtime"))
+    TSoftObjectPtr<UFEBuildPieceDefinition> UpgradeTo;
 
     /** 이 피스가 얹힌 대상의 지지 거리에 더해지는 값. 바닥(토대)은 0 (anchor). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Structure", meta = (ClampMin = 0))
@@ -82,6 +115,12 @@ public:
     /** 지형 배치 시 바닥 4코너와 지면 사이 허용 높이차 (cm). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (EditCondition = "bCanPlaceOnGround", ClampMin = 0))
     float MaxGroundHeightDelta = 50.f;
+	
+	/** 소켓 배치 때 "같은 자리 중복" 검사 상자 = 바운드 × 이 값. 0 이면 검사하지 않는다 —
+	 *  직각 삼각 벽은 바운드 중심이 빗변 위라 어떤 크기로 줄여도 위에 얹힌 지붕에 닿는다.
+	 *  ponytail: 같은 자리에 삼각 벽 2장을 겹쳐 놓을 수 있음. 문제가 되면 같은 위치·방향 피스 비교로 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (ClampMin = 0, ClampMax = 1))
+	float DuplicateCoreScale = 0.4f;
     
     /** 스냅 지점. 토대: Edge×4(붙는 쪽+상대) + Top×4(상대 전용). 벽: Bottom×1(붙는 쪽). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Snap")

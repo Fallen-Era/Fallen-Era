@@ -27,6 +27,8 @@ public class FallenEra : ModuleRules
 			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",
+			"PhysicsCore",
+			"ModelViewViewModel",
 			"DeveloperSettings",
 			"AssetRegistry"
 		});

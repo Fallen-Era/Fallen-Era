@@ -8,6 +8,8 @@
 #include "UObject/PrimaryAssetId.h"
 #include "FEBuildingTypes.h"
 #include "Interaction/FEInteractable.h"
+#include "GenericTeamAgentInterface.h"
+#include "Combat/Interface/FEDamageable.h"
 #include "FEBuildPiece.generated.h"
 
 class IFEBuildInventoryProvider;
@@ -23,7 +25,7 @@ struct FStreamableHandle;
  * 상호작용: 청사진이면 재료 투입, 완성품이면 서브클래스의 InteractBuilt (문·침구·작업대).
  */
 UCLASS()
-class FALLENERA_API AFEBuildPiece : public AActor, public IFEInteractable
+class FALLENERA_API AFEBuildPiece : public AActor, public IFEInteractable, public IFE_Damageable, public IGenericTeamAgentInterface
 {
     GENERATED_BODY()
 
@@ -36,8 +38,13 @@ public:
     /** [Server Only] 클라이언트는 OnRep_State 로 따라온다. */
     void SetState(EFEBuildPieceState NewState);
     
-    /** [Server Only] ItemTag 항목에 인벤토리에서 있는 만큼 투입. 다 차고 지지되면 Built. 무언가 바뀌었으면 true. */
-    bool TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag);
+    /** [Server Only] ItemTag 를 인벤토리에서 있는 만큼 투입. 다 차고 지지되면 Built. 무언가 바뀌었으면 true.
+     *  재질 미정(투입량 0)이고 현재 정의에 없는 재료면, 재질 사슬에서 그 재료를 쓰는 정의로 교체한 뒤 투입한다(= 재질 결정).
+     *  이미 다른 재질로 잠겼으면 실패 + OutReason */
+    bool TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag, FText& OutReason);
+
+    /** 재질이 정해졌다 (청사진에 무언가 투입됨, 또는 완성됨). 리플리케이트된 투입량만 봐서 서버·클라 공용 */
+    bool IsMaterialLocked() const;
     
     /** [Server Only] 재료가 다 찬 청사진을 완성 시도. 지지 구조가 아직 청사진이면 false (대기). */
     bool TryComplete();
@@ -50,6 +57,21 @@ public:
     
     /** [Server Only] 지지를 잃어 무너진다. 환불 없음. */
     void Collapse();
+    
+    /** [Server Only] 체력 감소. 0 이 되면 파괴되고 위 구조물은 지지 재계산으로 연쇄 붕괴한다. 완성 피스만. Source 는 로그용(없어도 됨) */
+    void ApplyStructureDamage(float Amount, const AActor* Source);
+
+    /** [Server Only] 깎인 만큼 재료로 수리. 재료가 모자라면 가진 만큼 비례 수리. 성공하면 true, 실패면 OutReason */
+    bool TryRepair(IFEBuildInventoryProvider& Inventory, FText& OutReason);
+    
+    /** MissingRatio(0~1, 깎인 비율)만큼 수리할 때의 비용. 서버 수리와 클라 미리보기가 같은 식을 쓴다. 비용 0 인 항목은 빠진다 */
+    void GetRepairCost(float MissingRatio, TArray<FFEBuildItemCost>& OutCosts) const;
+    
+    /** [Server Only] UpgradeTo 대상 재질로 교체. 대상 RequiredItems 전부를 한 번에 낸다(모자라면 실패). 체력 비율은 유지. 성공하면 true */
+    bool TryUpgrade(IFEBuildInventoryProvider& Inventory, FText& OutReason);
+
+    /** 업그레이드 대상 정의. 완성 피스가 아니거나, 마지막 단계거나, 아직 로드 전이면 nullptr. 서버 판정과 클라 HUD 공용 */
+    const UFEBuildPieceDefinition* GetUpgradeTarget() const;
     
     /** [Server Only] 서브시스템이 재계산 결과를 기록 */
     void SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance);
@@ -68,6 +90,12 @@ public:
     virtual FText GetInteractText_Implementation(AActor* InstigatorActor) const override;
     virtual void Interact_Implementation(AActor* InstigatorActor) override;
     virtual void InteractLocal_Implementation(AActor* InstigatorActor) override;
+    
+    // IFE_Damageable — HT 전투 컴포넌트가 서버에서 호출
+    virtual FFE_CombatDamageResult ReceiveCombatDamage_Implementation(const FFE_CombatDamageRequest& DamageRequest) override;
+
+    // IGenericTeamAgentInterface — 플레이어 팀으로 두어 플레이어 공격·수류탄이 HT 의 같은 팀 검사에서 걸러지게 한다
+    virtual FGenericTeamId GetGenericTeamId() const override;
 
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     const UFEBuildPieceDefinition* GetDefinition() const;
@@ -102,6 +130,14 @@ public:
     /** 0~1. 완성품은 1. UI 용 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     float GetSupplyProgress() const;
+    
+    /** 0~1. 리플리케이트된 값이라 클라에서도 쓸 수 있다 (표시·수리 사전 검사용) */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    float GetHealthPercent() const;
+
+    /** 완성 피스이고 체력이 가득이 아니다 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    bool IsDamaged() const;
 
     /** RequiredItems[Index] 에 투입된 개수. 범위 밖이면 0 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
@@ -149,6 +185,10 @@ protected:
     
     UPROPERTY(Replicated)
     uint8 DesignSupportDistance = 255;
+    
+    /** 표시용 체력 %. 가득 = 100, 손상 = 1~99 (조금만 깎여도 99). 정확한 값은 서버의 Health */
+    UPROPERTY(ReplicatedUsing = OnRep_HealthPercent)
+    uint8 HealthPercent = 100;
 
     UPROPERTY(Replicated)
     uint8 SupportDistance = 255;
@@ -164,6 +204,14 @@ protected:
 
     UFUNCTION()
     void OnRep_SuppliedCounts();
+    
+    UFUNCTION()
+    void OnRep_HealthPercent();
+    
+    /** [Multicast RPC] 사라지기 직전의 파편 효과·소리. Destroy 전에 보내는 Reliable 이라 채널이 닫히기 전에 도착한다.
+     *  클라 EndPlay 로 하지 않는 이유: 거리 밖으로 멀어져 액터가 지워질 때도 EndPlay(Destroyed) 가 와서 구분할 수 없다 */
+    UFUNCTION(NetMulticast, Reliable)
+    void MulticastPlayBreakEffect();
 
     /** BP 훅 (VFX/SFX 용). ApplyState 가 실행될 때마다 호출되며 최초 1회도 포함. */
     UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
@@ -172,6 +220,10 @@ protected:
     /** BP 훅 (진행도 표시 용). 서버와 클라이언트 모두에서 호출. */
     UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
     void OnSupplyChanged(int32 NewSuppliedCount, int32 TotalRequired);
+    
+    /** BP 훅 (금 간 머티리얼·타격음·수리 효과). 서버와 클라이언트 모두에서 호출. Percent 0~1 */
+    UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
+    void OnHealthChanged(float Percent);
 
 private:
     /** [Client Only] PieceId 를 로드된 정의로 해석한 뒤 ApplyState. */
@@ -186,4 +238,14 @@ private:
     TObjectPtr<const UFEBuildPieceDefinition> Definition;
 
     TSharedPtr<FStreamableHandle> DefinitionLoadHandle;
+    
+    /** [Server Only] 정확한 체력. 리플리케이트하지 않는다 (클라는 HealthPercent 만) */
+    float Health = 0.f;
+
+    /** [Server Only] Health 를 바꾸고 HealthPercent 갱신 + 서버 로컬 OnRep */
+    void SetHealth(float NewHealth);
+    
+    /** [Server Only] 같은 액터에서 정의만 Target 으로 교체 (재질 결정·업그레이드 공용). 체력 비율 유지, 지지 재계산, 새 번들 로드.
+     *  bFillSupply: true = 투입량을 Target 재료로 가득 (업그레이드), false = 0 으로 (청사진 재질 결정) */
+    void SwapDefinition(const UFEBuildPieceDefinition* Target, bool bFillSupply);
 };
