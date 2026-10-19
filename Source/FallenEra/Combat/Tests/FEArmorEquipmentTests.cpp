@@ -63,13 +63,13 @@ bool FFE_ArmorEquipmentTest::RunTest(const FString& Parameters)
 	const FGameplayTag Head = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Head"));
 	const FGameplayTag Body = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Body"));
 	UFE_ArmorItemData* Helmet = NewObject<UFE_ArmorItemData>();
-	Helmet->EquipmentSlotTag = Head;
-	Helmet->ArmorStat.Defense = 3.0f;
-	Helmet->ArmorStat.KnockbackResistance = 100.0f;
+	Helmet->Template.EquipmentSlotTag = Head;
+	Helmet->Instance.ItemData.Defense = 3.0f;
+	Helmet->Instance.ItemData.KnockbackResistance = 100.0f;
 	UFE_ArmorItemData* Vest = NewObject<UFE_ArmorItemData>();
-	Vest->EquipmentSlotTag = Body;
-	Vest->ArmorStat.Defense = 4.0f;
-	Vest->ArmorStat.KnockbackResistance = 200.0f;
+	Vest->Template.EquipmentSlotTag = Body;
+	Vest->Instance.ItemData.Defense = 4.0f;
+	Vest->Instance.ItemData.KnockbackResistance = 200.0f;
 
 	TestTrue(TEXT("Equip helmet"), Equipment->EquipArmor(Helmet));
 	TestEqual(TEXT("Base + helmet defense"), Stats->GetDefensePower(), 5.0f);

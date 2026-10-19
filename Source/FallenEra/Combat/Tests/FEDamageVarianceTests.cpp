@@ -15,6 +15,11 @@ bool FFE_DamageVarianceTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Minimum attack 20, defense 5, head x2"),
 		FMath::IsNearlyEqual(Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, -1.0f), 26.0f));
 	TestEqual(TEXT("Center preserves the previous formula"), Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, 0.0f), 30.0f);
+	TestEqual(TEXT("Glancing scales after defense and head multiplier"), Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, 0.0f, 0.4f), 12.0f);
+	TestEqual(TEXT("Zero glancing multiplier never damages"), Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, 0.0f, 0.0f), 0.0f);
+	TestEqual(TEXT("Quality cannot exceed direct damage"), Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, 0.0f, 2.0f), 30.0f);
+	TestEqual(TEXT("Invalid quality cannot corrupt Health"), Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, 0.0f,
+		std::numeric_limits<float>::quiet_NaN()), 0.0f);
 	TestTrue(TEXT("Maximum attack 20, defense 5, head x2"),
 		FMath::IsNearlyEqual(Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, 1.0f), 34.0f));
 	TestEqual(TEXT("Zero attack cannot cause random bonus damage"), Calculation->CalculateDamage(0.0f, 0.0f, 1.0f, 1.0f), 0.0f);

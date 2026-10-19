@@ -15,6 +15,8 @@
 #include "Combat/AI/FEEnemyAIController.h"
 #include "Combat/FECombatTeams.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEProceduralHitReactionComponent.h"
+#include "Combat/Component/FEKnockdownComponent.h"
 #include "Combat/Component/FEEquipmentComponent.h"
 #include "Combat/GameplayEffect/FEDamageGameplayEffect.h"
 #include "Combat/Interface/FEDamageable.h"
@@ -36,6 +38,8 @@ AFE_EnemyCharacter::AFE_EnemyCharacter()
 	AttributeSet = CreateDefaultSubobject<UFallenEraAttributeSet>(TEXT("AttributeSet"));
 	CombatComponent = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("CombatComponent"));
 	CombatComponent->DeferCombatConfiguration();
+	PhysicalHitReactionComponent = CreateDefaultSubobject<UFE_ProceduralHitReactionComponent>(TEXT("PhysicalHitReaction"));
+	KnockdownComponent = CreateDefaultSubobject<UFE_KnockdownComponent>(TEXT("Knockdown"));
 	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
 	EquipmentComponent->SetInitialArmorInitializationDeferred(true);
 	NavigationInvokerComponent = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvokerComponent"));
@@ -210,6 +214,8 @@ void AFE_EnemyCharacter::FinishAISettingsInitialization()
 	CombatComponent->SetPreloadedCombatConfiguration(
 		CachedAISettings.DamageEffect, CachedAISettings.DeathMontage,
 		CachedAISettings.HitZoneMappingData, CachedAISettings.HitZoneMultiplierData);
+	PhysicalHitReactionComponent->Configure(CachedAISettings.PhysicalHitReaction);
+	KnockdownComponent->Configure(CachedAISettings.LegKnockdown);
 	if (HasAuthority())
 	{
 		EquipmentComponent->DefaultArmorDataAssets = CachedAISettings.DefaultArmorDataAssets;

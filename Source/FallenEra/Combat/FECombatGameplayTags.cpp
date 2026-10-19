@@ -8,6 +8,7 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Combat_Attack, "Ability.Combat.Attack");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Combat_Aim, "Ability.Combat.Aim");
 	UE_DEFINE_GAMEPLAY_TAG(State_Combat_Aiming, "State.Combat.Aiming");
+	UE_DEFINE_GAMEPLAY_TAG(State_Combat_KnockedDown, "State.Combat.KnockedDown");
 	UE_DEFINE_GAMEPLAY_TAG(Equipment_WeaponSlot_Sight, "Equipment.WeaponSlot.Sight");
 
 	UE_DEFINE_GAMEPLAY_TAG(State_Condition_Bleeding, "State.Condition.Bleeding");
@@ -15,6 +16,7 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(State_Immune_Knockback, "State.Immune.Knockback");
 	UE_DEFINE_GAMEPLAY_TAG(State_Immune_Stun, "State.Immune.Stun");
 	UE_DEFINE_GAMEPLAY_TAG(State_Immune_HitReaction, "State.Immune.HitReaction");
+	UE_DEFINE_GAMEPLAY_TAG(State_Immune_PhysicalReaction, "State.Immune.PhysicalReaction");
 	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Walking, "State.Movement.Walking");
 	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Sprinting, "State.Movement.Sprinting");
 
@@ -22,6 +24,7 @@ namespace FallenEraCombatGameplayTags
 
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_AttackPower, "SetByCaller.AttackPower");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Damage_HitRegionMultiplier, "SetByCaller.Damage.HitRegionMultiplier");
+	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Damage_HitQualityMultiplier, "SetByCaller.Damage.HitQualityMultiplier");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Condition_HealthLoss, "SetByCaller.Condition.HealthLoss");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_DefensePower, "SetByCaller.DefensePower");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_KnockbackResistance, "SetByCaller.KnockbackResistance");

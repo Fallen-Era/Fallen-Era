@@ -1,4 +1,5 @@
 #include "Combat/Ability/FEProjectileAttackAbility.h"
+#include "Combat/Interface/FECombatPresentation.h"
 #include "Combat/Component/FECombatComponent.h"
 
 #include "Components/SkeletalMeshComponent.h"
@@ -187,7 +188,7 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 		{
 			// Authoritative projectiles use the replicated world presentation. Local previews
 			// use the first-person weapon when one exists so the arc starts at the visible muzzle.
-			WeaponMesh = LaunchContext == EFE_ProjectileLaunchContext::LocalPreview
+			WeaponMesh = LaunchContext == EFE_ProjectileLaunchContext::LocalPreview && IFE_CombatPresentation::UsesFirstPersonView(CombatCharacter)
 				? Equipment->GetEquippedFirstPersonWeaponMesh()
 				: Equipment->GetEquippedWorldWeaponMesh();
 			if (!WeaponMesh)

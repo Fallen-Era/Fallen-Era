@@ -54,8 +54,8 @@ bool FFE_EnemyPresetConfigurationTest::RunTest(const FString& Parameters)
 	FSAIStartupEffect& StartupEffect = Preset->AISettings.StartupEffects.AddDefaulted_GetRef();
 	StartupEffect.GameplayEffect = UFE_EnemySettingsTestEffect::StaticClass();
 	UFE_ArmorItemData* Armor = NewObject<UFE_ArmorItemData>();
-	Armor->EquipmentSlotTag = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Body"));
-	Armor->ArmorStat.Defense = 5.0f;
+	Armor->Template.EquipmentSlotTag = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Body"));
+	Armor->Instance.ItemData.Defense = 5.0f;
 	Preset->AISettings.DefaultArmorDataAssets.Add(Armor);
 	UFE_HitZoneMappingData* Mapping = NewObject<UFE_HitZoneMappingData>();
 	UFE_HitZoneMultiplierData* Multipliers = NewObject<UFE_HitZoneMultiplierData>();
@@ -67,7 +67,7 @@ bool FFE_EnemyPresetConfigurationTest::RunTest(const FString& Parameters)
 	TestNotNull(TEXT("Preset GA granted"), ASC->FindAbilitySpecFromClass(UFE_EnemyMeleeAttackAbility::StaticClass()));
 	TestEqual(TEXT("Preset startup GE initializes attributes"), Enemy->GetEnemyAttributeSet()->GetAttackPower(), 7.0f);
 	TestEqual(TEXT("Preset armor applies after startup GE"), Enemy->GetEnemyAttributeSet()->GetDefensePower(), 5.0f);
-	TestTrue(TEXT("Preset armor cached"), Enemy->GetEquipmentComponent()->GetEquippedArmor(Armor->EquipmentSlotTag) == Armor);
+	TestTrue(TEXT("Preset armor cached"), Enemy->GetEquipmentComponent()->GetEquippedArmor(Armor->Template.EquipmentSlotTag) == Armor);
 	TestTrue(TEXT("Preset mapping cached"), Enemy->GetCombatComponent()->GetLoadedHitZoneMappingData() == Mapping);
 	TestTrue(TEXT("Preset multipliers cached"), Enemy->GetCombatComponent()->GetLoadedHitZoneMultiplierData() == Multipliers);
 	TArray<FSoftObjectPath> PreloadPaths;
@@ -98,8 +98,8 @@ bool FFE_EnemyPresetOnlyTest::RunTest(const FString& Parameters)
 	AFE_EnemySettingsTestCharacter* Enemy = Fixture.World->SpawnActor<AFE_EnemySettingsTestCharacter>();
 	Enemy->ConfigurePreset(Preset);
 	UFE_ArmorItemData* OldArmor = NewObject<UFE_ArmorItemData>();
-	OldArmor->EquipmentSlotTag = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Body"));
-	OldArmor->ArmorStat.Defense = 50.0f;
+	OldArmor->Template.EquipmentSlotTag = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Body"));
+	OldArmor->Instance.ItemData.Defense = 50.0f;
 	Enemy->GetEquipmentComponent()->DefaultArmorDataAssets.Add(OldArmor);
 	UFE_HitZoneMappingData* OldMapping = NewObject<UFE_HitZoneMappingData>();
 	Enemy->GetCombatComponent()->HitZoneMappingData = OldMapping;

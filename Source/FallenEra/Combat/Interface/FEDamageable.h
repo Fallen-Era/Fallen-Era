@@ -33,6 +33,10 @@ struct FALLENERA_API FFE_CombatDamageRequest
 	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
 	float SourceAttackPower = 0.0f;
 
+	/** Multiply damage after the receiver's defense/region formula. x1 direct, lower for glancing hits. */
+	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	float HitQualityMultiplier = 1.0f;
+
 	/** Area damage never selects a skeletal hit region, even if it carries a hit result for FX. */
 	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
 	EFE_DamageHitType HitType = EFE_DamageHitType::Direct;

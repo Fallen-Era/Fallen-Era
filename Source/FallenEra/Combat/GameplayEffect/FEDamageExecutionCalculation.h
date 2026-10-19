@@ -21,7 +21,8 @@ public:
 	float DamageVarianceRatio = 0.1f;
 
 	/** Pure calculation. CenteredRoll is in [-1, 1], with zero representing average attack power. */
-	float CalculateDamage(float AttackPower, float DefensePower, float HitRegionMultiplier, float CenteredRoll) const;
+	float CalculateDamage(float AttackPower, float DefensePower, float HitRegionMultiplier, float CenteredRoll,
+		float HitQualityMultiplier = 1.0f) const;
 
 	virtual void Execute_Implementation(
 		const FGameplayEffectCustomExecutionParameters& ExecutionParams,

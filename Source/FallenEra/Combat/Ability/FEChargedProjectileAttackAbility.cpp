@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
 #include "Combat/Projectile/FECombatProjectile.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
 
@@ -187,11 +188,21 @@ void UFE_ChargedProjectileAttackAbility::StartLocalChargePresentation()
 		bChargePresentationActive = true;
 	}
 	StartSpecializedChargePresentation();
+	if (CombatCharacter->IsLocallyControlled())
+	{
+		ChargeSwayComponent = CombatCharacter->FindComponentByClass<UFE_WeaponAimingComponent>();
+		if (ChargeSwayComponent.IsValid() && GetCachedWeaponData())
+		{
+			ChargeSwayComponent->BeginChargeSway(this, GetCachedWeaponData()->Template.AimSwaySettings);
+		}
+	}
 }
 
 void UFE_ChargedProjectileAttackAbility::StopLocalChargePresentation()
 {
 	StopSpecializedChargePresentation();
+	if (ChargeSwayComponent.IsValid()) { ChargeSwayComponent->EndChargeSway(this); }
+	ChargeSwayComponent.Reset();
 
 	if (bChargePresentationActive)
 	{

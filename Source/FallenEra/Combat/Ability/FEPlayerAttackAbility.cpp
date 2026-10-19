@@ -110,7 +110,7 @@ const UFE_WeaponAttackData* UFE_PlayerAttackAbility::ResolveAttackData(
 		return nullptr;
 	}
 
-	for (const UFE_WeaponAttackData* AttackData : WeaponData->AttackActions)
+	for (const UFE_WeaponAttackData* AttackData : WeaponData->Template.AttackActions)
 	{
 		if (!AttackData || AttackData->AbilityClass.Get() != GetClass())
 		{
@@ -146,7 +146,7 @@ void UFE_PlayerAttackAbility::CacheAttackContext(
 	}
 
 	const TSoftClassPtr<UGameplayEffect>& EffectReference = AttackData->DamageEffectOverride.IsNull()
-		? WeaponData->DefaultDamageEffect
+		? WeaponData->Template.DefaultDamageEffect
 		: AttackData->DamageEffectOverride;
 	CachedDamageEffectClass = EffectReference.Get();
 }
@@ -223,7 +223,8 @@ void UFE_PlayerAttackAbility::ApplyDamage(
 	const UFE_WeaponItemData* WeaponData,
 	const UFE_WeaponAttackData* AttackData,
 	AActor* TargetActor,
-	const FHitResult& HitResult) const
+	const FHitResult& HitResult,
+	float HitQualityMultiplier) const
 {
 	if (!CombatCharacter || !WeaponData || !AttackData ||
 		(!TargetActor && !HitResult.bBlockingHit))
@@ -238,7 +239,7 @@ void UFE_PlayerAttackAbility::ApplyDamage(
 	}
 
 	const TSoftClassPtr<UGameplayEffect>& OverrideEffect = AttackData->DamageEffectOverride;
-	const TSoftClassPtr<UGameplayEffect>& WeaponEffect = WeaponData->DefaultDamageEffect;
+	const TSoftClassPtr<UGameplayEffect>& WeaponEffect = WeaponData->Template.DefaultDamageEffect;
 	if (UClass* DamageEffectClass = CachedDamageEffectClass
 		? CachedDamageEffectClass.Get()
 		: (OverrideEffect.IsNull() ? WeaponEffect.Get() : OverrideEffect.Get()))
@@ -247,14 +248,18 @@ void UFE_PlayerAttackAbility::ApplyDamage(
 			TargetActor,
 			DamageEffectClass,
 			HitResult,
-			AttackData);
+			AttackData,
+			EFE_DamageHitType::Direct,
+			HitQualityMultiplier);
 	}
 	else
 	{
 		CombatComponent->ApplyDamageFromHit(
 			TargetActor,
 			HitResult,
-			AttackData);
+			AttackData,
+			EFE_DamageHitType::Direct,
+			HitQualityMultiplier);
 	}
 }
 

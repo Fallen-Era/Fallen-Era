@@ -22,6 +22,8 @@ class FALLENERA_API IFE_CombatPresentation
 public:
 	static USkeletalMeshComponent* FindFirstPersonMesh(const AActor* Actor);
 	static UCameraComponent* FindCombatCamera(const AActor* Actor);
+	static bool UsesFirstPersonView(const AActor* Actor);
 	virtual USkeletalMeshComponent* GetCombatFirstPersonMesh() const = 0;
 	virtual UCameraComponent* GetCombatCamera() const = 0;
+	virtual bool IsCombatFirstPersonView() const { return true; }
 };

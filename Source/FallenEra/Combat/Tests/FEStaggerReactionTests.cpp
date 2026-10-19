@@ -45,7 +45,7 @@ namespace
 			UFE_RangedWeaponItemData* Weapon = NewObject<UFE_RangedWeaponItemData>(Character);
 			UFE_MeleeAttackData* Attack = NewObject<UFE_MeleeAttackData>(Weapon);
 			Attack->IgnoreStaggerUpTo = EFE_StaggerStrength::Light;
-			Weapon->AttackActions.Add(Attack);
+			Weapon->Template.AttackActions.Add(Attack);
 			return ASC->GiveAbility(FGameplayAbilitySpec(UFE_ReactionTestAttackAbility::StaticClass(), 1, INDEX_NONE, Weapon));
 		}
 	};
@@ -119,6 +119,16 @@ bool FFE_StaggerPolicyTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Stun immunity does not suppress knockback"), Fixture.Combat->CalculateReceivedKnockback(120.0f), 120.0f);
 	Fixture.ASC->AddLooseGameplayTag(FallenEraCombatGameplayTags::State_Immune_Knockback);
 	TestEqual(TEXT("Knockback immunity independent"), Fixture.Combat->CalculateReceivedKnockback(120.0f), 0.0f);
+	TestTrue(TEXT("Existing montage/stun/knockback immunities allow cosmetic physics"),
+		UFE_CombatComponent::CanActorPlayPhysicalHitReaction(Fixture.Character));
+	Fixture.ASC->AddLooseGameplayTag(FallenEraCombatGameplayTags::State_Immune_PhysicalReaction);
+	TestFalse(TEXT("Only dedicated physics immunity blocks cosmetic physics"),
+		UFE_CombatComponent::CanActorPlayPhysicalHitReaction(Fixture.Character));
+	Fixture.ASC->RemoveLooseGameplayTag(FallenEraCombatGameplayTags::State_Immune_Stun);
+	Fixture.ASC->RemoveLooseGameplayTag(FallenEraCombatGameplayTags::State_Immune_HitReaction);
+	const FFE_DamageReactionDecision PhysicsOnlyImmune = Fixture.Combat->ResolveDamageReaction(Reaction);
+	TestTrue(TEXT("Physical immunity alone cannot prevent stun or montage interruption"),
+		PhysicsOnlyImmune.bInterruptAttack && PhysicsOnlyImmune.bPlayHitReaction && PhysicsOnlyImmune.bApplyStun);
 	ADD_LATENT_AUTOMATION_COMMAND(FFE_StunExpiryCommand(this));
 	return true;
 }

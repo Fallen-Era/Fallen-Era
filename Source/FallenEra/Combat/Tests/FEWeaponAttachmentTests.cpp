@@ -42,10 +42,10 @@ bool FFE_WeaponAttachmentTest::RunTest(const FString& Parameters)
 	UFE_EquipmentComponent* Equipment = NewObject<UFE_EquipmentComponent>(Character);
 	Equipment->RegisterComponent();
 	UFE_RangedWeaponItemData* Weapon = NewObject<UFE_RangedWeaponItemData>();
-	Weapon->bSupportsAiming = true;
+	Weapon->Template.bSupportsAiming = true;
 	UFE_WeaponSightData* Irons = NewObject<UFE_WeaponSightData>();
 	Irons->AccuracyBonus = 0.05f;
-	Weapon->DefaultSight = Irons;
+	Weapon->Template.DefaultSight = Irons;
 	FindFProperty<FObjectPropertyBase>(UFE_EquipmentComponent::StaticClass(), TEXT("CurrentWeaponData"))
 		->SetObjectPropertyValue_InContainer(Equipment, Weapon);
 	FindFProperty<FFloatProperty>(UFE_EquipmentComponent::StaticClass(), TEXT("EquipmentChangeInterval"))
@@ -154,24 +154,24 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	UFE_WeaponSightData* Sight = NewObject<UFE_WeaponSightData>();
 	Sight->BlendInTime = Sight->BlendOutTime = 0.2f;
 	UFE_RangedWeaponItemData* Weapon = NewObject<UFE_RangedWeaponItemData>();
-	Weapon->bSupportsAiming = true;
-	Weapon->AimSwaySettings.bEnabled = false;
-	Weapon->DefaultSight = Sight;
-	Weapon->ItemTags.AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_LeftClick);
-	Weapon->FirstPersonMeshTransform = FTransform(FRotator(0, -90, 5), FVector(4, 8, -154));
+	Weapon->Template.bSupportsAiming = true;
+	Weapon->Template.AimSwaySettings.bEnabled = false;
+	Weapon->Template.DefaultSight = Sight;
+	Weapon->Template.ItemTags.AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_LeftClick);
+	Weapon->Template.FirstPersonMeshTransform = FTransform(FRotator(0, -90, 5), FVector(4, 8, -154));
 	UStaticMesh* WeaponMeshAsset = NewObject<UStaticMesh>();
 	UStaticMeshSocket* AimSocket = NewObject<UStaticMeshSocket>(WeaponMeshAsset);
 	AimSocket->SocketName = Sight->AimSocketName;
 	AimSocket->RelativeLocation = FVector(20, 4, 8);
 	AimSocket->RelativeRotation = FRotator(5, 10, 0);
 	WeaponMeshAsset->Sockets.Add(AimSocket);
-	Weapon->Mesh = WeaponMeshAsset;
+	Weapon->Template.Mesh = WeaponMeshAsset;
 	UFE_RangedWeaponItemData* SecondWeapon = NewObject<UFE_RangedWeaponItemData>();
-	SecondWeapon->bSupportsAiming = true;
-	SecondWeapon->DefaultSight = Sight;
-	SecondWeapon->Mesh = WeaponMeshAsset;
-	SecondWeapon->ItemTags.AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
-	SecondWeapon->FirstPersonMeshTransform = FTransform(FRotator(0, -90, 0), FVector(2, 10, -150));
+	SecondWeapon->Template.bSupportsAiming = true;
+	SecondWeapon->Template.DefaultSight = Sight;
+	SecondWeapon->Template.Mesh = WeaponMeshAsset;
+	SecondWeapon->Template.ItemTags.AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
+	SecondWeapon->Template.FirstPersonMeshTransform = FTransform(FRotator(0, -90, 0), FVector(2, 10, -150));
 	*FindFProperty<FArrayProperty>(Equipment->GetClass(), TEXT("TestItemTags"))
 		->ContainerPtrToValuePtr<TArray<FGameplayTag>>(Equipment) = {
 			FallenEraCombatGameplayTags::Ability_Input_Combat_LeftClick, FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick };
@@ -186,7 +186,7 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 		GEngine->DestroyWorldContext(World);
 		return false;
 	}
-	TestTrue(TEXT("Equipping applies weapon arms base transform"), Arms->GetRelativeTransform().Equals(Weapon->FirstPersonMeshTransform));
+	TestTrue(TEXT("Equipping applies weapon arms base transform"), Arms->GetRelativeTransform().Equals(Weapon->Template.FirstPersonMeshTransform));
 	TestTrue(TEXT("Default sight uses weapon mesh"), Equipment->GetFirstPersonSightMesh() == Equipment->GetEquippedFirstPersonWeaponMesh());
 	AimSocket->SocketName = TEXT("MissingAimSocket");
 	TestFalse(TEXT("Missing aim socket rejects 3D ADS"), Aiming->CanAim());
@@ -195,7 +195,7 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 		.GetRelativeTransform(Arms->GetComponentTransform());
 	const FTransform DesiredSight(FVector(Sight->EyeReliefDistance, 0, 0));
 	const FTransform ExpectedAim = UFE_WeaponAimingComponent::CalculateAlignedArmsTransform(
-		SightInArms, DesiredSight, Weapon->FirstPersonMeshTransform.GetScale3D());
+		SightInArms, DesiredSight, Weapon->Template.FirstPersonMeshTransform.GetScale3D());
 	Movement->SetSprinting(true);
 	TestTrue(TEXT("Local sprint before ADS"), Movement->IsSprinting());
 	TestTrue(TEXT("Local owner aims with the weapon aim socket"), Aiming->BeginAim());
@@ -204,15 +204,15 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Local sprint input ignored during ADS"), Movement->IsSprinting());
 	Aiming->TickComponent(0.1f, LEVELTICK_All, nullptr);
 	FTransform Halfway;
-	Halfway.Blend(Weapon->FirstPersonMeshTransform, ExpectedAim, 0.5f);
+	Halfway.Blend(Weapon->Template.FirstPersonMeshTransform, ExpectedAim, 0.5f);
 	TestTrue(TEXT("ADS interpolates arms toward socket alignment"), Arms->GetRelativeTransform().Equals(Halfway, 0.001f));
 	TestTrue(TEXT("Holding 3D ADS enables socket correction"), Aiming->IsComponentTickEnabled());
 	TestEqual(TEXT("Halfway aim alpha"), Aiming->GetAimAlpha(), 0.5f);
 	TestEqual(TEXT("Halfway FOV"), Character->GetFirstPersonCameraComponent()->FieldOfView, FMath::Lerp(OriginalFOV, Sight->AimFieldOfView, 0.5f));
 	TestTrue(TEXT("Weapon stays attached to arms with its socket offset"),
-		Equipment->GetEquippedFirstPersonWeaponMesh()->GetRelativeTransform().Equals(Weapon->SocketOffset));
+		Equipment->GetEquippedFirstPersonWeaponMesh()->GetRelativeTransform().Equals(Weapon->Template.SocketOffset));
 	TestTrue(TEXT("ADS does not alter world weapon attachment"),
-		Equipment->GetEquippedWorldWeaponMesh()->GetRelativeTransform().Equals(Weapon->SocketOffset));
+		Equipment->GetEquippedWorldWeaponMesh()->GetRelativeTransform().Equals(Weapon->Template.SocketOffset));
 	Aiming->EndAim();
 	Aiming->TickComponent(0.05f, LEVELTICK_All, nullptr);
 	TestFalse(TEXT("Release ends aim state while blending out"), Aiming->IsAiming());
@@ -229,15 +229,15 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
 	TestTrue(TEXT("Animated/socket offset changes remain centered with sway disabled"), Equipment->GetFirstPersonSightMesh()->GetSocketTransform(Sight->AimSocketName)
 		.GetRelativeTransform(Character->GetFirstPersonCameraComponent()->GetComponentTransform()).GetLocation().Equals(DesiredSight.GetLocation(), 0.001f));
-	Equipment->GetEquippedFirstPersonWeaponMesh()->SetRelativeTransform(Weapon->SocketOffset);
+	Equipment->GetEquippedFirstPersonWeaponMesh()->SetRelativeTransform(Weapon->Template.SocketOffset);
 	Aiming->EndAim();
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
-	TestTrue(TEXT("Release restores equipped weapon base"), Arms->GetRelativeTransform().Equals(Weapon->FirstPersonMeshTransform));
+	TestTrue(TEXT("Release restores equipped weapon base"), Arms->GetRelativeTransform().Equals(Weapon->Template.FirstPersonMeshTransform));
 	TestEqual(TEXT("Release restores FOV"), Character->GetFirstPersonCameraComponent()->FieldOfView, OriginalFOV);
 	TestEqual(TEXT("Release restores first-person FOV"), Character->GetFirstPersonCameraComponent()->FirstPersonFieldOfView, OriginalFirstPersonFOV);
 	TestFalse(TEXT("Blend-out completion disables ADS tick"), Aiming->IsComponentTickEnabled());
-	Weapon->AimSwaySettings.bEnabled = true;
-	Weapon->AimSwaySettings.SmoothingTime = 0.0f;
+	Weapon->Template.AimSwaySettings.bEnabled = true;
+	Weapon->Template.AimSwaySettings.SmoothingTime = 0.0f;
 	const FRotator OriginalCameraRotation = Character->GetFirstPersonCameraComponent()->GetRelativeRotation();
 	const FRotator OriginalControlRotation = Controller->GetControlRotation();
 	Aiming->BeginAim();
@@ -255,7 +255,7 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 		Controller->GetControlRotation().Equals(OriginalControlRotation));
 	Aiming->EndAim(true);
 	TestTrue(TEXT("Cancelling ADS clears sway"), Aiming->GetAimSwayTransform().Equals(FTransform::Identity));
-	TestTrue(TEXT("Cancelling ADS restores the equipped base"), Arms->GetRelativeTransform().Equals(Weapon->FirstPersonMeshTransform));
+	TestTrue(TEXT("Cancelling ADS restores the equipped base"), Arms->GetRelativeTransform().Equals(Weapon->Template.FirstPersonMeshTransform));
 	Character->GetFirstPersonCameraComponent()->SetRelativeRotation(OriginalCameraRotation);
 	Aiming->BeginAim();
 	Character->GetCharacterMovement()->Velocity = FVector(300, 0, 0);
@@ -270,10 +270,28 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	Aiming->EndAim(true);
 	Movement->SetSprinting(true);
 	TestTrue(TEXT("Local sprint can resume on new input after release"), Movement->IsSprinting());
+	UObject* ChargeSource = NewObject<UFE_MeleeAttackData>(Aiming);
+	Aiming->BeginChargeSway(ChargeSource, Weapon->Template.AimSwaySettings);
+	Character->GetFirstPersonCameraComponent()->AddRelativeRotation(FRotator(0, 10, 0));
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	TestFalse(TEXT("Charge moves arms before entering ADS"), Arms->GetRelativeTransform().Equals(Weapon->Template.FirstPersonMeshTransform, 0.0001f));
+	TestTrue(TEXT("ADS can take over from charge sway"), Aiming->BeginAim());
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("ADS takeover retains exact socket alignment"), Equipment->GetFirstPersonSightMesh()->GetSocketTransform(Sight->AimSocketName)
+		.GetRelativeTransform(Character->GetFirstPersonCameraComponent()->GetComponentTransform()).GetLocation().Equals(DesiredSight.GetLocation(), 0.001f));
+	Aiming->EndAim(true);
+	TestTrue(TEXT("Ending ADS resumes an active charge"), Aiming->IsComponentTickEnabled());
+	TestTrue(TEXT("Charge resumes from original weapon base, not ADS pose"), Arms->GetRelativeTransform().Equals(Weapon->Template.FirstPersonMeshTransform));
+	Aiming->BeginAim();
+	Aiming->EndChargeSway(ChargeSource);
+	TestTrue(TEXT("Charge release leaves a concurrent ADS active"), Aiming->IsAiming() && Aiming->IsComponentTickEnabled());
+	Aiming->EndAim(true);
+	TestFalse(TEXT("Releasing both modes stops presentation tick"), Aiming->IsComponentTickEnabled());
+	Character->GetFirstPersonCameraComponent()->SetRelativeRotation(OriginalCameraRotation);
 	Sight->Mode = EFE_WeaponSightMode::Scope2D;
 	Aiming->BeginAim();
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
-	TestTrue(TEXT("Scope2D does not move arms to the 3D aim transform"), Arms->GetRelativeTransform().Equals(Weapon->FirstPersonMeshTransform));
+	TestTrue(TEXT("Scope2D does not move arms to the 3D aim transform"), Arms->GetRelativeTransform().Equals(Weapon->Template.FirstPersonMeshTransform));
 	TestFalse(TEXT("Scope2D hides arms"), Arms->IsVisible());
 	TestFalse(TEXT("Scope2D hides the first-person weapon"), Equipment->GetEquippedFirstPersonWeaponMesh()->IsVisible());
 	TestFalse(TEXT("Scope2D stops ticking after blend-in"), Aiming->IsComponentTickEnabled());
@@ -309,9 +327,81 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
 	Equipment->EquipWeaponByItemTag(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
 	TestFalse(TEXT("Swap cancels ADS"), Aiming->IsAiming());
-	TestTrue(TEXT("Swap applies the new base, not the previous aim pose"), Arms->GetRelativeTransform().Equals(SecondWeapon->FirstPersonMeshTransform));
+	TestTrue(TEXT("Swap applies the new base, not the previous aim pose"), Arms->GetRelativeTransform().Equals(SecondWeapon->Template.FirstPersonMeshTransform));
 	Equipment->UnequipWeapon();
 	TestTrue(TEXT("Unequip restores original character arms pose"), Arms->GetRelativeTransform().Equals(UnequippedTransform));
+	World->DestroyWorld(false);
+	GEngine->DestroyWorldContext(World);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFE_ChargeSwayTest, "FallenEra.Combat.Presentation.ChargeSway",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFE_ChargeSwayTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+	UClass* CharacterClass = LoadClass<AFallenEraCharacter>(nullptr,
+		TEXT("/Game/Combat/Character/PlayerCharacter/BP_HT_PlayerCharacter.BP_HT_PlayerCharacter_C"));
+	if (!TestNotNull(TEXT("Player class"), CharacterClass))
+	{
+		World->DestroyWorld(false);
+		GEngine->DestroyWorldContext(World);
+		return false;
+	}
+	AFallenEraCharacter* Character = World->SpawnActor<AFallenEraCharacter>(CharacterClass);
+	APlayerController* Controller = World->SpawnActor<APlayerController>();
+	Controller->SetAsLocalPlayerController();
+	Controller->Possess(Character);
+	UFE_WeaponAimingComponent* Aiming = Character->FindComponentByClass<UFE_WeaponAimingComponent>();
+	USkeletalMeshComponent* Arms = Character->GetFirstPersonMesh();
+	UCameraComponent* Camera = Character->GetFirstPersonCameraComponent();
+	const FTransform Base = Arms->GetRelativeTransform();
+	const float FOV = Camera->FieldOfView;
+	const FRotator ControlRotation = Controller->GetControlRotation();
+	UObject* Source = NewObject<UFE_MeleeAttackData>(Aiming);
+	UObject* OtherSource = NewObject<UFE_MeleeAttackData>(Aiming);
+	FFE_WeaponAimSwaySettings Settings;
+	Settings.SmoothingTime = 0.0f;
+	Settings.MovementLocationAmplitude = FVector::ZeroVector;
+	Settings.MovementRotationAmplitude = FRotator::ZeroRotator;
+	Aiming->BeginChargeSway(Source, Settings);
+	TestTrue(TEXT("Charge needs no optic or ADS support"), Aiming->IsComponentTickEnabled());
+	TestFalse(TEXT("Charging is not ADS"), Aiming->IsAiming());
+	Camera->AddRelativeRotation(FRotator(0.0f, 10.0f, 0.0f));
+	Aiming->TickComponent(0.1f, LEVELTICK_All, nullptr);
+	const FTransform FirstOffset = Arms->GetRelativeTransform();
+	TestFalse(TEXT("Charge look input moves arms"), FirstOffset.Equals(Base, 0.0001f));
+	TestFalse(TEXT("Charge shares the existing sway calculator"), Aiming->GetAimSwayTransform().Equals(FTransform::Identity));
+	TestEqual(TEXT("Charge sway does not zoom camera"), Camera->FieldOfView, FOV);
+	TestTrue(TEXT("Charge sway does not alter ballistic aim"), Controller->GetControlRotation().Equals(ControlRotation));
+	Aiming->BeginChargeSway(Source, Settings);
+	Camera->AddRelativeRotation(FRotator(0.0f, 10.0f, 0.0f));
+	Aiming->TickComponent(0.1f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Held start cannot recapture and accumulate sway"), Arms->GetRelativeTransform().Equals(FirstOffset, 0.001f));
+	Aiming->EndAim(true);
+	TestTrue(TEXT("Ending absent ADS does not recapture a swayed baseline"), Arms->GetRelativeTransform().Equals(Base));
+	TestTrue(TEXT("Ending absent ADS preserves ongoing charge"), Aiming->IsComponentTickEnabled());
+	Aiming->EndChargeSway(OtherSource);
+	TestTrue(TEXT("Another ability cannot stop the active charge sway"), Aiming->IsComponentTickEnabled());
+	Aiming->EndChargeSway(Source);
+	TestTrue(TEXT("Release restores the exact equipped baseline"), Arms->GetRelativeTransform().Equals(Base));
+	TestTrue(TEXT("Release clears sway"), Aiming->GetAimSwayTransform().Equals(FTransform::Identity));
+	TestFalse(TEXT("Release disables charge-only tick"), Aiming->IsComponentTickEnabled());
+	Settings.bEnabled = false;
+	Aiming->BeginChargeSway(Source, Settings);
+	TestFalse(TEXT("Disabled setting has no charge tick"), Aiming->IsComponentTickEnabled());
+	Settings.bEnabled = true;
+	Settings.MovementLocationAmplitude = FVector(0.0f, 0.3f, 0.2f);
+	Character->GetCharacterMovement()->Velocity = FVector(300.0f, 0.0f, 0.0f);
+	Aiming->BeginChargeSway(Source, Settings);
+	Aiming->TickComponent(0.1f, LEVELTICK_All, nullptr);
+	TestFalse(TEXT("Movement also creates charge sway"), Arms->GetRelativeTransform().Equals(Base, 0.0001f));
+	Aiming->BeginPlay();
+	Aiming->EndPlay(EEndPlayReason::Destroyed);
+	TestTrue(TEXT("Teardown restores baseline"), Arms->GetRelativeTransform().Equals(Base));
+	TestFalse(TEXT("Teardown stops charge tick"), Aiming->IsComponentTickEnabled());
 	World->DestroyWorld(false);
 	GEngine->DestroyWorldContext(World);
 	return true;

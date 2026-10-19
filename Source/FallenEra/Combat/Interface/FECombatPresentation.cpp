@@ -13,3 +13,9 @@ UCameraComponent* IFE_CombatPresentation::FindCombatCamera(const AActor* Actor)
 	const IFE_CombatPresentation* Presentation = Cast<IFE_CombatPresentation>(Actor);
 	return Presentation ? Presentation->GetCombatCamera() : nullptr;
 }
+
+bool IFE_CombatPresentation::UsesFirstPersonView(const AActor* Actor)
+{
+	const IFE_CombatPresentation* Presentation = Cast<IFE_CombatPresentation>(Actor);
+	return Presentation && Presentation->IsCombatFirstPersonView();
+}

@@ -1,5 +1,7 @@
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Component/FEWeaponAimingComponent.h"
+#include "Combat/Component/FEProceduralHitReactionComponent.h"
+#include "Combat/Component/FEKnockdownComponent.h"
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
@@ -129,8 +131,11 @@ void UFE_CombatComponent::RefreshAbilitySystem()
 bool UFE_CombatComponent::CanActorAttack(AActor* Actor)
 {
 	if (!IsActorAlive(Actor)) { return false; }
+	if (const UFE_KnockdownComponent* Knockdown = Actor->FindComponentByClass<UFE_KnockdownComponent>();
+		Knockdown && Knockdown->IsKnockedDown()) { return false; }
 	const UAbilitySystemComponent* ASC = FindAbilitySystemComponent(Actor);
-	return !ASC || !ASC->HasMatchingGameplayTag(FallenEraGameplayTags::State_Stunned);
+	return !ASC || (!ASC->HasMatchingGameplayTag(FallenEraGameplayTags::State_Stunned) &&
+		!ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_KnockedDown));
 }
 
 bool UFE_CombatComponent::IsActorAlive(AActor* Actor)
@@ -257,9 +262,10 @@ bool UFE_CombatComponent::ApplyDamageFromHit(
 	AActor* TargetActor,
 	const FHitResult& HitResult,
 	const UFE_WeaponAttackData* AttackData,
-	EFE_DamageHitType HitType)
+	EFE_DamageHitType HitType,
+	float HitQualityMultiplier)
 {
-	return ApplyDamageInternal(TargetActor, CachedDamageEffectClass, &HitResult, AttackData, HitType);
+	return ApplyDamageInternal(TargetActor, CachedDamageEffectClass, &HitResult, AttackData, HitType, HitQualityMultiplier);
 }
 
 bool UFE_CombatComponent::ApplyDamageWithEffect(AActor* TargetActor, TSubclassOf<UGameplayEffect> DamageEffectClassOverride)
@@ -272,14 +278,16 @@ bool UFE_CombatComponent::ApplyDamageWithEffectFromHit(
 	TSubclassOf<UGameplayEffect> DamageEffectClassOverride,
 	const FHitResult& HitResult,
 	const UFE_WeaponAttackData* AttackData,
-	EFE_DamageHitType HitType)
+	EFE_DamageHitType HitType,
+	float HitQualityMultiplier)
 {
 	return ApplyDamageInternal(
 		TargetActor,
 		DamageEffectClassOverride,
 		&HitResult,
 		AttackData,
-		HitType);
+		HitType,
+		HitQualityMultiplier);
 }
 
 void UFE_CombatComponent::RefreshHitZoneData()
@@ -396,6 +404,12 @@ float UFE_CombatComponent::CalculateReceivedKnockback(float IncomingKnockback) c
 
 void UFE_CombatComponent::ApplyDamageReaction(const AActor* DamageSource, const FFE_AttackReactionData& ReactionData)
 {
+	ApplyDamageReactionInternal(DamageSource, ReactionData, nullptr);
+}
+
+void UFE_CombatComponent::ApplyDamageReactionInternal(const AActor* DamageSource,
+	const FFE_AttackReactionData& ReactionData, const FHitResult* HitResult)
+{
 	AActor* Victim = GetOwner();
 	if (!Victim || !Victim->HasAuthority())
 	{
@@ -406,6 +420,8 @@ void UFE_CombatComponent::ApplyDamageReaction(const AActor* DamageSource, const 
 	// A lethal hit already triggered the death montage from the AttributeSet.
 	// Do not overwrite it with a knockback or hit-reaction montage afterwards.
 	if (bDeathCollisionDisabled || !IsActorAlive(Victim)) { return; }
+	if (const UFE_KnockdownComponent* Knockdown = Victim->FindComponentByClass<UFE_KnockdownComponent>();
+		Knockdown && Knockdown->IsKnockedDown()) { return; }
 
 	// Snapshot before EndAbility removes the cancelled attack's protection.
 	const FFE_DamageReactionDecision Decision = ResolveDamageReaction(ReactionData);
@@ -468,7 +484,24 @@ void UFE_CombatComponent::ApplyDamageReaction(const AActor* DamageSource, const 
 			HitMontage = HitReactionMontages[FMath::RandHelper(HitReactionMontages.Num())];
 		}
 	}
-	if (Decision.bInterruptAttack) { MulticastPlayDamageReaction(HitMontage); }
+	FFE_ProceduralHitReactionEvent Event;
+	Event.bInterruptAttack = Decision.bInterruptAttack;
+	const UFE_ProceduralHitReactionComponent* PhysicalReaction =
+		Victim->FindComponentByClass<UFE_ProceduralHitReactionComponent>();
+	// Cosmetic motion may accompany a resisted light hit without cancelling the attack.
+	if (HitResult && !HitResult->BoneName.IsNone() && PhysicalReaction &&
+		PhysicalReaction->IsConfiguredForHits() && CanActorPlayPhysicalHitReaction(Victim))
+	{
+		Event.HitBone = HitResult->BoneName;
+		FVector Direction = (HitResult->TraceEnd - HitResult->TraceStart).GetSafeNormal();
+		if (Direction.IsNearlyZero() && DamageSource)
+		{
+			Direction = (Victim->GetActorLocation() - DamageSource->GetActorLocation()).GetSafeNormal();
+		}
+		if (Direction.IsNearlyZero()) { Direction = -HitResult->ImpactNormal; }
+		Event.Direction = Direction.GetSafeNormal();
+	}
+	if (Decision.bInterruptAttack || !Event.HitBone.IsNone()) { MulticastPlayDamageReaction(HitMontage, Event); }
 }
 
 void UFE_CombatComponent::HandleDeath()
@@ -507,6 +540,13 @@ void UFE_CombatComponent::ApplyDeathCollisionState()
 	Victim->SetActorEnableCollision(false);
 	if (ACharacter* Character = Cast<ACharacter>(Victim))
 	{
+		if (UFE_KnockdownComponent* Knockdown = Victim->FindComponentByClass<UFE_KnockdownComponent>())
+		{
+			Knockdown->StopForDeath();
+		}
+		// Stop first: ProcHitReact must not restore QueryOnly after death sets NoCollision.
+		if (UFE_ProceduralHitReactionComponent* PhysicalReaction =
+			Victim->FindComponentByClass<UFE_ProceduralHitReactionComponent>()) { PhysicalReaction->StopReaction(); }
 		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
 		{
 			Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -523,10 +563,22 @@ void UFE_CombatComponent::ApplyDeathCollisionState()
 	}
 }
 
-void UFE_CombatComponent::MulticastPlayDamageReaction_Implementation(UAnimMontage* HitMontage)
+void UFE_CombatComponent::MulticastPlayDamageReaction_Implementation(
+	UAnimMontage* HitMontage, const FFE_ProceduralHitReactionEvent& Event)
 {
-	// One message preserves stop-before-play ordering; a null montage still stops the old attack.
-	StopWeaponActionPresentationLocal();
+	if (bDeathCollisionDisabled || !IsActorAlive(GetOwner())) { return; }
+	if (const UFE_KnockdownComponent* Knockdown = GetOwner()->FindComponentByClass<UFE_KnockdownComponent>();
+		Knockdown && Knockdown->IsKnockedDown()) { return; }
+	// One event preserves stop-before-react ordering without stopping protected light-hit attacks.
+	if (Event.bInterruptAttack) { StopWeaponActionPresentationLocal(); }
+	if (!Event.HitBone.IsNone())
+	{
+		if (UFE_ProceduralHitReactionComponent* PhysicalReaction =
+			GetOwner()->FindComponentByClass<UFE_ProceduralHitReactionComponent>())
+		{
+			if (PhysicalReaction->TryPlayReaction(Event)) { return; }
+		}
+	}
 	PlayHitReactionMontage(HitMontage);
 }
 
@@ -632,7 +684,8 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	TSubclassOf<UGameplayEffect> EffectClass,
 	const FHitResult* HitResult,
 	const UFE_WeaponAttackData* AttackData,
-	EFE_DamageHitType HitType)
+	EFE_DamageHitType HitType,
+	float HitQualityMultiplier)
 {
 	AActor* SourceActor = GetOwner();
 	if (!IsActorAlive(SourceActor) || SourceActor == TargetActor ||
@@ -658,6 +711,8 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	DamageRequest.AttackData = const_cast<UFE_WeaponAttackData*>(AttackData);
 	DamageRequest.DamageEffectClass = EffectClass;
 	DamageRequest.HitType = HitType;
+	DamageRequest.HitQualityMultiplier = FMath::IsFinite(HitQualityMultiplier)
+		? FMath::Clamp(HitQualityMultiplier, 0.0f, 1.0f) : 0.0f;
 	DamageRequest.bHasHitResult = HitResult != nullptr;
 	if (HitResult)
 	{
@@ -742,6 +797,8 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 		DamageRequest.HitType, Result.HitRegion);
 	EffectSpec.Data->SetSetByCallerMagnitude(
 		FallenEraCombatGameplayTags::SetByCaller_Damage_HitRegionMultiplier, Result.HitRegionMultiplier);
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_HitQualityMultiplier, DamageRequest.HitQualityMultiplier);
 
 	const float HealthBeforeDamage = TargetAbilitySystem->HasAttributeSetForAttribute(
 		UFallenEraAttributeSet::GetHealthAttribute())
@@ -780,9 +837,20 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 			}
 		}
 	}
+	if (Result.AppliedDamage > 0.0f && DamageRequest.bHasHitResult && DamageRequest.HitType == EFE_DamageHitType::Direct)
+	{
+		if (UFE_KnockdownComponent* Knockdown = TargetActor->FindComponentByClass<UFE_KnockdownComponent>())
+		{
+			FVector Direction = (DamageRequest.HitResult.TraceEnd - DamageRequest.HitResult.TraceStart).GetSafeNormal();
+			if (Direction.IsNearlyZero()) { Direction = -DamageRequest.HitResult.ImpactNormal; }
+			if (Knockdown->TryStartFromHit(DamageRequest.HitResult.BoneName, Direction)) { return Result; }
+		}
+	}
 	if (Result.bDamageApplied && DamageRequest.AttackData)
 	{
-		ApplyDamageReaction(DamageRequest.SourceActor, DamageRequest.AttackData->AttackReactionData);
+		ApplyDamageReactionInternal(DamageRequest.SourceActor, DamageRequest.AttackData->AttackReactionData,
+			DamageRequest.bHasHitResult && DamageRequest.HitType == EFE_DamageHitType::Direct
+				? &DamageRequest.HitResult : nullptr);
 	}
 	return Result;
 }
@@ -794,9 +862,9 @@ void UFE_CombatComponent::ShowHitDamageDebug(
 	if (!CVarFEHitDamageDebug.GetValueOnGameThread()) { return; }
 	const FString Bone = Request.HitType == EFE_DamageHitType::Area ? TEXT("N/A")
 		: (Request.bHasHitResult ? Request.HitResult.BoneName.ToString() : TEXT("None"));
-	const FString Message = FString::Printf(TEXT("Hit: %s | Bone: %s | Region: %s | x%.2f | Damage: %.2f%s"),
+	const FString Message = FString::Printf(TEXT("Hit: %s | Bone: %s | Region: %s | x%.2f | Quality: x%.2f | Damage: %.2f%s"),
 		*GetNameSafe(Request.TargetActor), *Bone, *Result.HitRegion.ToString(), Result.HitRegionMultiplier,
-		Result.AppliedDamage, Result.bDamageApplied ? TEXT("") : TEXT(" (rejected)"));
+		Request.HitQualityMultiplier, Result.AppliedDamage, Result.bDamageApplied ? TEXT("") : TEXT(" (rejected)"));
 	const APawn* Pawn = Cast<APawn>(GetOwner());
 	if (Pawn && Pawn->IsPlayerControlled() && !Pawn->IsLocallyControlled())
 	{

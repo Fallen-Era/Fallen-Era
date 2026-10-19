@@ -15,6 +15,7 @@
 #include "InputAction.h"
 #include "InputMappingContext.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/SpringArmComponent.h"
 #include "FallenEra.h"
 #include "FallenEraPlayerState.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
@@ -52,6 +53,19 @@ AFallenEraCharacter::AFallenEraCharacter()
 	FirstPersonCameraComponent->bEnableFirstPersonScale = true;
 	FirstPersonCameraComponent->FirstPersonFieldOfView = 70.0f;
 	FirstPersonCameraComponent->FirstPersonScale = 0.6f;
+
+	ThirdPersonSpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("Third Person Spring Arm"));
+	ThirdPersonSpringArm->SetupAttachment(GetCapsuleComponent());
+	ThirdPersonSpringArm->SetRelativeLocation(FVector(0.0f, 0.0f, BaseEyeHeight));
+	ThirdPersonSpringArm->TargetArmLength = 300.0f;
+	ThirdPersonSpringArm->SocketOffset = FVector(0.0f, 50.0f, 0.0f);
+	ThirdPersonSpringArm->bUsePawnControlRotation = true;
+	ThirdPersonSpringArm->bDoCollisionTest = true;
+	ThirdPersonSpringArm->SetComponentTickEnabled(false);
+	ThirdPersonCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("Third Person Camera"));
+	ThirdPersonCameraComponent->SetupAttachment(ThirdPersonSpringArm, USpringArmComponent::SocketName);
+	ThirdPersonCameraComponent->bUsePawnControlRotation = false;
+	ThirdPersonCameraComponent->SetAutoActivate(false);
 
 	// The mesh skeleton origin remains at foot level, relative to the camera's eye height.
 	FirstPersonMesh->SetupAttachment(FirstPersonCameraComponent);
@@ -123,6 +137,7 @@ void AFallenEraCharacter::PostInitializeComponents()
 	RefreshFirstPersonPoseSource();
 	// Legs need no separate locomotion evaluation while sharing the same skeleton.
 	FirstPersonLegsMesh->SetLeaderPoseComponent(GetMesh());
+	ApplyPerspectivePresentation();
 }
 
 void AFallenEraCharacter::RefreshFirstPersonPoseSource()
@@ -152,6 +167,7 @@ void AFallenEraCharacter::BeginPlay()
 		PerceptionStimuliSourceComponent->RegisterForSense(UAISense_Sight::StaticClass());
 	}
 	SetCombatInputEnabled(true);
+	ApplyPerspectivePresentation();
 	if (PlayerMovementStatsComponent)
 	{
 		PlayerMovementStatsComponent->RefreshMovementState();
@@ -161,6 +177,7 @@ void AFallenEraCharacter::BeginPlay()
 void AFallenEraCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	ApplyPerspectivePresentation();
 
 	if (AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>())
 	{
@@ -251,6 +268,12 @@ void AFallenEraCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 			EnhancedInputComponent->BindAction(
 				CombatSwapAction, ETriggerEvent::Started,
 				this, &AFallenEraCharacter::HandleCombatSwap);
+		}
+
+		if (CombatTogglePerspectiveAction)
+		{
+			EnhancedInputComponent->BindAction(CombatTogglePerspectiveAction, ETriggerEvent::Started,
+				this, &AFallenEraCharacter::HandleCombatTogglePerspective);
 		}
 
 		if (SprintAction)

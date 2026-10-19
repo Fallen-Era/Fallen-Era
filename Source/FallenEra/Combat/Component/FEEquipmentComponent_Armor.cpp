@@ -27,12 +27,18 @@ void UFE_EquipmentComponent::RefreshArmorEquipment()
 	}
 	for (UFE_ArmorItemData* Armor : EquippedArmor)
 	{
-		if (Armor && !ArmorEffectHandles.Contains(Armor->EquipmentSlotTag))
+		if (Armor && !ArmorEffectHandles.Contains(Armor->Template.EquipmentSlotTag))
 		{
-			const FActiveGameplayEffectHandle Handle = ApplyArmorEffect(Armor);
+			FFE_ArmorInstanceData* Instance = ArmorInstances.Find(Armor->Template.EquipmentSlotTag);
+			if (!Instance)
+			{
+				Instance = &ArmorInstances.Add(Armor->Template.EquipmentSlotTag, Armor->Instance);
+				if (!Instance->InstanceId.IsValid()) { Instance->InstanceId = FGuid::NewGuid(); }
+			}
+			const FActiveGameplayEffectHandle Handle = ApplyArmorEffect(Armor, *Instance);
 			if (Handle.IsValid())
 			{
-				ArmorEffectHandles.Add(Armor->EquipmentSlotTag, Handle);
+				ArmorEffectHandles.Add(Armor->Template.EquipmentSlotTag, Handle);
 			}
 		}
 	}
@@ -78,7 +84,7 @@ void UFE_EquipmentComponent::FinishLoadingDefaultArmor()
 	{
 		UFE_ArmorItemData* Armor = Reference.Get();
 		// First valid entry wins if multiple defaults specify the same slot.
-		if (Armor && !GetEquippedArmor(Armor->EquipmentSlotTag))
+		if (Armor && !GetEquippedArmor(Armor->Template.EquipmentSlotTag))
 		{
 			EquipArmor(Armor);
 		}
@@ -90,7 +96,7 @@ const UFE_ArmorItemData* UFE_EquipmentComponent::GetEquippedArmor(FGameplayTag S
 {
 	for (const UFE_ArmorItemData* Armor : EquippedArmor)
 	{
-		if (Armor && Armor->EquipmentSlotTag == SlotTag)
+		if (Armor && Armor->Template.EquipmentSlotTag == SlotTag)
 		{
 			return Armor;
 		}
@@ -98,30 +104,42 @@ const UFE_ArmorItemData* UFE_EquipmentComponent::GetEquippedArmor(FGameplayTag S
 	return nullptr;
 }
 
-FActiveGameplayEffectHandle UFE_EquipmentComponent::ApplyArmorEffect(UFE_ArmorItemData* ArmorData)
+FFE_ArmorInstanceData UFE_EquipmentComponent::GetArmorInstanceData(FGameplayTag SlotTag) const
+{
+	const FFE_ArmorInstanceData* Instance = ArmorInstances.Find(SlotTag);
+	return Instance ? *Instance : FFE_ArmorInstanceData();
+}
+
+FActiveGameplayEffectHandle UFE_EquipmentComponent::ApplyArmorEffect(UFE_ArmorItemData* ArmorData, const FFE_ArmorInstanceData& ArmorInstance)
 {
 	UAbilitySystemComponent* ASC = ArmorAbilitySystem.Get();
-	if (!ASC || !ArmorData)
+	if (!ASC || !ArmorData || !ArmorInstance.IsValid())
 	{
 		return FActiveGameplayEffectHandle();
 	}
 	FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
 	Context.AddSourceObject(ArmorData);
+	const FFE_ArmorStat& ArmorStats = ArmorInstance.ResolveStats();
 	const FGameplayEffectSpecHandle Spec = ASC->MakeOutgoingSpec(UFE_ArmorStatsGameplayEffect::StaticClass(), 1.0f, Context);
 	if (!Spec.IsValid())
 	{
 		return FActiveGameplayEffectHandle();
 	}
-	Spec.Data->SetSetByCallerMagnitude(FallenEraCombatGameplayTags::SetByCaller_DefensePower, FMath::Max(ArmorData->ArmorStat.Defense, 0.0f));
-	Spec.Data->SetSetByCallerMagnitude(FallenEraCombatGameplayTags::SetByCaller_KnockbackResistance, FMath::Max(ArmorData->ArmorStat.KnockbackResistance, 0.0f));
+	Spec.Data->SetSetByCallerMagnitude(FallenEraCombatGameplayTags::SetByCaller_DefensePower, ArmorStats.Defense);
+	Spec.Data->SetSetByCallerMagnitude(FallenEraCombatGameplayTags::SetByCaller_KnockbackResistance, ArmorStats.KnockbackResistance);
 	return ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
 }
 
 bool UFE_EquipmentComponent::EquipArmor(UFE_ArmorItemData* ArmorData)
 {
+	return ArmorData && EquipArmorInstance(ArmorData, ArmorData->Instance);
+}
+
+bool UFE_EquipmentComponent::EquipArmorInstance(UFE_ArmorItemData* ArmorData, const FFE_ArmorInstanceData& NewInstance)
+{
 	if (bArmorEndingPlay || !GetOwner() || !GetOwner()->HasAuthority() || !bInitialArmorApplied ||
-		!ArmorData || !ArmorData->EquipmentSlotTag.IsValid() ||
-		!FMath::IsFinite(ArmorData->ArmorStat.Defense) || !FMath::IsFinite(ArmorData->ArmorStat.KnockbackResistance))
+		!ArmorData || !ArmorData->Template.EquipmentSlotTag.IsValid() ||
+		!NewInstance.IsValid())
 	{
 		return false;
 	}
@@ -131,14 +149,17 @@ bool UFE_EquipmentComponent::EquipArmor(UFE_ArmorItemData* ArmorData)
 		return false;
 	}
 	// Apply first so a rejected effect does not discard the previous equipment.
-	const FActiveGameplayEffectHandle NewHandle = ApplyArmorEffect(ArmorData);
+	FFE_ArmorInstanceData Snapshot = NewInstance;
+	if (!Snapshot.InstanceId.IsValid()) { Snapshot.InstanceId = FGuid::NewGuid(); }
+	const FActiveGameplayEffectHandle NewHandle = ApplyArmorEffect(ArmorData, Snapshot);
 	if (!NewHandle.IsValid())
 	{
 		return false;
 	}
-	UnequipArmor(ArmorData->EquipmentSlotTag);
+	UnequipArmor(ArmorData->Template.EquipmentSlotTag);
 	EquippedArmor.Add(ArmorData);
-	ArmorEffectHandles.Add(ArmorData->EquipmentSlotTag, NewHandle);
+	ArmorInstances.Add(ArmorData->Template.EquipmentSlotTag, Snapshot);
+	ArmorEffectHandles.Add(ArmorData->Template.EquipmentSlotTag, NewHandle);
 	return true;
 }
 
@@ -156,9 +177,10 @@ bool UFE_EquipmentComponent::UnequipArmor(FGameplayTag SlotTag)
 		}
 		ArmorEffectHandles.Remove(SlotTag);
 	}
+	ArmorInstances.Remove(SlotTag);
 	return EquippedArmor.RemoveAll([SlotTag](const UFE_ArmorItemData* Armor)
 	{
-		return Armor && Armor->EquipmentSlotTag == SlotTag;
+		return Armor && Armor->Template.EquipmentSlotTag == SlotTag;
 	}) > 0;
 }
 

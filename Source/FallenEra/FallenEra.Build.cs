@@ -27,6 +27,7 @@ public class FallenEra : ModuleRules
 			"Slate",
 			"SlateCore",
 			"PhysicsCore",
+			"ProcHitReact",
 			"ModelViewViewModel",
 		});
 
@@ -34,6 +35,11 @@ public class FallenEra : ModuleRules
 		{
 			"AnimGraphRuntime",
 		});
+
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AnimGraph", "BlueprintGraph" });
+		}
 
 		PublicIncludePaths.AddRange(new string[] {
 			"FallenEra",

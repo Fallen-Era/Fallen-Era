@@ -82,7 +82,7 @@ bool FFE_HitRegionDamageTest::RunTest(const FString& Parameters)
 	FDataValidationContext ValidContext;
 	TestTrue(TEXT("Valid hit-zone rules pass asset validation"), Mapping->IsDataValid(ValidContext) == EDataValidationResult::Valid);
 #endif
-	auto Apply = [&](FName Bone, EFE_DamageHitType HitType = EFE_DamageHitType::Direct, bool bHasHit = true)
+	auto Apply = [&](FName Bone, EFE_DamageHitType HitType = EFE_DamageHitType::Direct, bool bHasHit = true, float HitQuality = 1.0f)
 	{
 		TargetASC->SetNumericAttributeBase(UFallenEraAttributeSet::GetHealthAttribute(), 100.0f);
 		FFE_CombatDamageRequest Request;
@@ -90,6 +90,7 @@ bool FFE_HitRegionDamageTest::RunTest(const FString& Parameters)
 		Request.TargetActor = Target;
 		Request.DamageEffectClass = UFE_DamageGameplayEffect::StaticClass();
 		Request.HitType = HitType;
+		Request.HitQualityMultiplier = HitQuality;
 		Request.bHasHitResult = bHasHit;
 		Request.HitResult.BoneName = Bone;
 		return Combat->ApplyGameplayEffectDamage(Request);
@@ -109,6 +110,11 @@ bool FFE_HitRegionDamageTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Head region selected"), Result.HitRegion, FName(TEXT("Head")));
 	CheckDamage(TEXT("Head damage"), Result, 2.0f);
 	TestEqual(TEXT("HP reflects head multiplier"), TargetASC->GetNumericAttribute(UFallenEraAttributeSet::GetHealthAttribute()), 100.0f - Result.AppliedDamage);
+	const FFE_CombatDamageResult Glancing = Apply(TEXT("head"), EFE_DamageHitType::Direct, true, 0.4f);
+	TestTrue(TEXT("Glancing quality reaches actual GE execution"), Glancing.bDamageApplied &&
+		Glancing.AppliedDamage >= Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, -1.0f, 0.4f) - KINDA_SMALL_NUMBER &&
+		Glancing.AppliedDamage <= Calculation->CalculateDamage(20.0f, 5.0f, 2.0f, 1.0f, 0.4f) + KINDA_SMALL_NUMBER);
+	TestEqual(TEXT("Glancing does not overwrite anatomical region multiplier"), Glancing.HitRegionMultiplier, 2.0f);
 	CheckDamage(TEXT("Multiple bones can share one region"), Apply(TEXT("neck_01")), 2.0f);
 	CheckDamage(TEXT("Leg multiplier halves post-defense damage"), Apply(TEXT("thigh_l")), 0.5f);
 	CheckDamage(TEXT("Unconfigured bone defaults to x1"), Apply(TEXT("spine_02")), 1.0f);

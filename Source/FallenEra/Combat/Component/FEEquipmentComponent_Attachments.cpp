@@ -16,7 +16,7 @@
 bool UFE_EquipmentComponent::SetWeaponAttachments(const TArray<FFE_WeaponAttachmentInstance>& Attachments)
 {
 	const UFE_RangedWeaponItemData* Weapon = Cast<UFE_RangedWeaponItemData>(CurrentWeaponData);
-	if (!GetOwner() || !GetOwner()->HasAuthority() || !Weapon || !Weapon->bSupportsAiming || !CanChangeEquipment())
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !Weapon || !Weapon->Template.bSupportsAiming || !CanChangeEquipment())
 	{
 		return false;
 	}
@@ -29,6 +29,8 @@ bool UFE_EquipmentComponent::SetWeaponAttachments(const TArray<FFE_WeaponAttachm
 	}
 	WeaponAttachmentLoadout.WeaponTag = GetCurrentItemTag();
 	WeaponAttachmentLoadout.Attachments = Attachments;
+	CurrentWeaponInstance.bOverrideAttachments = true;
+	CurrentWeaponInstance.Attachments = Attachments;
 	LastEquipmentChangeTime = GetWorld()->GetTimeSeconds();
 	GetOwner()->ForceNetUpdate();
 	RefreshWeaponAttachments();
@@ -47,9 +49,13 @@ void UFE_EquipmentComponent::InitializeWeaponAttachments()
 	{
 		WeaponAttachmentLoadout.WeaponTag = GetCurrentItemTag();
 		WeaponAttachmentLoadout.Attachments.Reset();
-		if (Weapon && Weapon->bSupportsAiming)
+		if (Weapon && Weapon->Template.bSupportsAiming)
 		{
-			for (const auto& Definition : Weapon->DefaultAttachments)
+			if (CurrentWeaponInstance.bOverrideAttachments)
+			{
+				WeaponAttachmentLoadout.Attachments = CurrentWeaponInstance.Attachments;
+			}
+			else for (const auto& Definition : Weapon->Template.DefaultAttachments)
 			{
 				if (!Definition.IsNull())
 				{
@@ -102,7 +108,7 @@ void UFE_EquipmentComponent::RefreshWeaponAttachments()
 {
 	ClearWeaponAttachments();
 	const UFE_RangedWeaponItemData* Weapon = Cast<UFE_RangedWeaponItemData>(CurrentWeaponData);
-	if (bArmorEndingPlay || !Weapon || !Weapon->bSupportsAiming || WeaponAttachmentLoadout.WeaponTag != GetCurrentItemTag())
+	if (bArmorEndingPlay || !Weapon || !Weapon->Template.bSupportsAiming || WeaponAttachmentLoadout.WeaponTag != GetCurrentItemTag())
 	{
 		return;
 	}
@@ -111,9 +117,9 @@ void UFE_EquipmentComponent::RefreshWeaponAttachments()
 	{
 		if (!Entry.Definition.IsValid()) { Paths.AddUnique(Entry.Definition.ToSoftObjectPath()); }
 	}
-	if (!Weapon->DefaultSight.IsNull() && !Weapon->DefaultSight.IsValid())
+	if (!Weapon->Template.DefaultSight.IsNull() && !Weapon->Template.DefaultSight.IsValid())
 	{
-		Paths.AddUnique(Weapon->DefaultSight.ToSoftObjectPath());
+		Paths.AddUnique(Weapon->Template.DefaultSight.ToSoftObjectPath());
 	}
 	if (Paths.IsEmpty()) { FinishLoadingWeaponAttachments(); return; }
 	AttachmentLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(Paths,
@@ -156,10 +162,10 @@ void UFE_EquipmentComponent::FinishLoadingWeaponAttachments()
 			bAllLoaded &= Definition->Mesh.IsValid();
 		}
 	}
-	if (!Weapon->DefaultSight.IsNull())
+	if (!Weapon->Template.DefaultSight.IsNull())
 	{
-		Paths.AddUnique(Weapon->DefaultSight.ToSoftObjectPath());
-		if (!ActiveSightData) { ActiveSightData = Weapon->DefaultSight.Get(); }
+		Paths.AddUnique(Weapon->Template.DefaultSight.ToSoftObjectPath());
+		if (!ActiveSightData) { ActiveSightData = Weapon->Template.DefaultSight.Get(); }
 	}
 	if (ActiveSightData)
 	{
@@ -234,6 +240,7 @@ void UFE_EquipmentComponent::ApplyWeaponAttachmentVisuals()
 		CreateMesh(EquippedWorldWeaponMesh, false);
 		CreateMesh(EquippedFirstPersonWeaponMesh, true);
 	}
+	RefreshPerspectivePresentation();
 }
 
 UMeshComponent* UFE_EquipmentComponent::GetFirstPersonSightMesh() const

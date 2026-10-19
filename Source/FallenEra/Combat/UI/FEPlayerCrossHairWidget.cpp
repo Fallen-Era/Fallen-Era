@@ -103,7 +103,7 @@ void UFE_PlayerCrossHairWidget::OnWeaponChanged(const UFE_WeaponItemData* Weapon
 	Overlay_CrossHairContainer->ClearChildren();
 	ActiveCrosshairWidget = nullptr;
 	TSubclassOf<UFE_CrossHairWidget> WidgetClass = WeaponData
-		? WeaponData->CrosshairWidgetClass.Get()
+		? WeaponData->Template.CrosshairWidgetClass.Get()
 		: nullptr;
 	if (WidgetClass && GetOwningPlayer())
 	{

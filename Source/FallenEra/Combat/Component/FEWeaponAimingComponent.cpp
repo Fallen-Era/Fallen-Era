@@ -33,6 +33,11 @@ bool UFE_WeaponAimingComponent::CanAim() const
 	const UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
 	if (!Equipment || !Equipment->AreWeaponAttachmentsReady() || !Equipment->GetActiveSightData()) { return false; }
 	if (!IsLocallyControlled()) { return true; }
+	if (!IFE_CombatPresentation::UsesFirstPersonView(GetOwner()))
+	{
+		return Cast<UFE_RangedWeaponItemData>(Equipment->GetCurrentWeaponData()) &&
+			IFE_CombatPresentation::FindCombatCamera(GetOwner()) && Equipment->GetEquippedWorldWeaponMesh();
+	}
 	const UFE_WeaponSightData* Data = Equipment->GetActiveSightData();
 	const UMeshComponent* Mesh = Equipment->GetFirstPersonSightMesh();
 	const USkeletalMeshComponent* Arms = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner());
@@ -47,6 +52,8 @@ bool UFE_WeaponAimingComponent::BeginAim()
 	if (!CanAim()) { return false; }
 	// Repeated held input must not recapture the aimed transform.
 	if (bIsAiming) { return true; }
+	// ADS must capture the uneffected baseline, not the previous frame's charge sway.
+	StopChargeSwayPresentation();
 	bIsAiming = true;
 	if (UFE_PlayerMovementStatsComponent* Movement = GetOwner()->FindComponentByClass<UFE_PlayerMovementStatsComponent>();
 		Movement && Movement->IsSprinting())
@@ -60,7 +67,8 @@ bool UFE_WeaponAimingComponent::BeginAim()
 		UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
 		Sight = Equipment->GetActiveSightData();
 		Camera = IFE_CombatPresentation::FindCombatCamera(GetOwner());
-		WeaponMesh = Equipment->GetEquippedFirstPersonWeaponMesh();
+		bFirstPersonPresentation = IFE_CombatPresentation::UsesFirstPersonView(GetOwner());
+		WeaponMesh = bFirstPersonPresentation ? Equipment->GetEquippedFirstPersonWeaponMesh() : Equipment->GetEquippedWorldWeaponMesh();
 		ArmsMesh = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner());
 		OriginalArmsTransform = ArmsMesh->GetRelativeTransform();
 		SightMesh = Equipment->GetFirstPersonSightMesh();
@@ -71,7 +79,7 @@ bool UFE_WeaponAimingComponent::BeginAim()
 		bCapturedPresentation = true;
 		if (const UFE_RangedWeaponItemData* Weapon = Cast<UFE_RangedWeaponItemData>(Equipment->GetCurrentWeaponData()))
 		{
-			CachedSwaySettings = Weapon->AimSwaySettings;
+			CachedSwaySettings = Weapon->Template.AimSwaySettings;
 		}
 		ResetSway();
 		// Final socket transforms are measured after skeletal evaluation, including weapon/optic poses.
@@ -112,8 +120,25 @@ void UFE_WeaponAimingComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	FActorComponentTickFunction* TickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, TickFunction);
+	if (!bCapturedPresentation)
+	{
+		if (!IsLocallyControlled() || !ChargeSwaySource.IsValid() || !bChargeSwayCaptured ||
+			!Camera.IsValid() || !ArmsMesh.IsValid() || !ArmsMesh->GetAttachParent())
+		{
+			StopChargeSwayPresentation();
+			SetComponentTickEnabled(false);
+			return;
+		}
+		UpdateSway(DeltaTime);
+		const FTransform ParentWorld = ArmsMesh->GetAttachParent()->GetSocketTransform(ArmsMesh->GetAttachSocketName());
+		const FTransform CameraWorld = Camera->GetComponentTransform();
+		const FTransform BaseInCamera = (ChargeArmsTransform * ParentWorld).GetRelativeTransform(CameraWorld);
+		const FTransform SwayWorld = BaseInCamera * GetAimSwayTransform() * CameraWorld;
+		ArmsMesh->SetRelativeTransform(SwayWorld.GetRelativeTransform(ParentWorld));
+		return;
+	}
 	if (!IsLocallyControlled() || !Sight || !Camera.IsValid() || !WeaponMesh.IsValid() || !ArmsMesh.IsValid() ||
-		!ArmsMesh->GetAttachParent() || (Sight->Mode != EFE_WeaponSightMode::Scope2D &&
+		!ArmsMesh->GetAttachParent() || (bFirstPersonPresentation && Sight->Mode != EFE_WeaponSightMode::Scope2D &&
 			(!SightMesh.IsValid() || !SightMesh->DoesSocketExist(Sight->AimSocketName))))
 	{
 		RestorePresentation();
@@ -131,6 +156,51 @@ void UFE_WeaponAimingComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	}
 }
 
+void UFE_WeaponAimingComponent::BeginChargeSway(UObject* Source, const FFE_WeaponAimSwaySettings& Settings)
+{
+	if (!IsLocallyControlled() || !IsValid(Source)) { return; }
+	if (ChargeSwaySource.Get() == Source) { return; }
+	StopChargeSwayPresentation();
+	ChargeSwaySource = Settings.bEnabled ? Source : nullptr;
+	ChargeSwaySettings = Settings;
+	if (ChargeSwaySource.IsValid() && !bCapturedPresentation) { StartChargeSwayPresentation(); }
+}
+
+void UFE_WeaponAimingComponent::EndChargeSway(UObject* Source)
+{
+	if (ChargeSwaySource.Get() != Source) { return; }
+	ChargeSwaySource.Reset();
+	StopChargeSwayPresentation();
+	if (!bCapturedPresentation) { SetComponentTickEnabled(false); }
+}
+
+void UFE_WeaponAimingComponent::StartChargeSwayPresentation()
+{
+	if (!IsLocallyControlled() || !IFE_CombatPresentation::UsesFirstPersonView(GetOwner())) { return; }
+	Camera = IFE_CombatPresentation::FindCombatCamera(GetOwner());
+	ArmsMesh = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner());
+	if (!Camera.IsValid() || !ArmsMesh.IsValid() || !ArmsMesh->GetAttachParent()) { return; }
+	ChargeArmsTransform = ArmsMesh->GetRelativeTransform();
+	CachedSwaySettings = ChargeSwaySettings;
+	bChargeSwayCaptured = true;
+	ResetSway();
+	SetComponentTickEnabled(true);
+}
+
+void UFE_WeaponAimingComponent::StopChargeSwayPresentation()
+{
+	if (!bChargeSwayCaptured) { return; }
+	if (ArmsMesh.IsValid()) { ArmsMesh->SetRelativeTransform(ChargeArmsTransform); }
+	bChargeSwayCaptured = false;
+	ResetSway();
+	if (!bCapturedPresentation)
+	{
+		Camera.Reset();
+		ArmsMesh.Reset();
+		SetComponentTickEnabled(false);
+	}
+}
+
 void UFE_WeaponAimingComponent::ResetSway()
 {
 	SwayLocation = SwayLocationVelocity = SwayRotation = SwayRotationVelocity = FVector::ZeroVector;
@@ -140,7 +210,7 @@ void UFE_WeaponAimingComponent::ResetSway()
 
 void UFE_WeaponAimingComponent::UpdateSway(float DeltaTime)
 {
-	if (!CachedSwaySettings.bEnabled || Sight->Mode == EFE_WeaponSightMode::Scope2D)
+	if (!CachedSwaySettings.bEnabled || (Sight && (!bFirstPersonPresentation || Sight->Mode == EFE_WeaponSightMode::Scope2D)))
 	{
 		ResetSway();
 		return;
@@ -190,7 +260,7 @@ void UFE_WeaponAimingComponent::UpdatePresentation()
 		ArmsMesh->SetVisibility(bOriginalArmsVisible && Alpha < 0.5f, false);
 		if (ScopeWidget) { ScopeWidget->SetRenderOpacity(Alpha); }
 	}
-	else
+	else if (bFirstPersonPresentation)
 	{
 		// Remove arbitrary animated socket drift, but explicitly preserve intentional camera-local sway.
 		const FTransform SightInArms = SightMesh->GetSocketTransform(Sight->AimSocketName)
@@ -220,6 +290,8 @@ FTransform UFE_WeaponAimingComponent::CalculateAlignedArmsTransform(const FTrans
 
 void UFE_WeaponAimingComponent::RestorePresentation()
 {
+	// EndAim may be called while only charging (for example during equipment cancellation).
+	StopChargeSwayPresentation();
 	if (bCapturedPresentation)
 	{
 		if (Camera.IsValid())
@@ -251,6 +323,7 @@ void UFE_WeaponAimingComponent::RestorePresentation()
 	ArmsMesh.Reset();
 	SightMesh.Reset();
 	SetComponentTickEnabled(false);
+	if (ChargeSwaySource.IsValid()) { StartChargeSwayPresentation(); }
 	AimAlphaChanged.Broadcast(0.0f);
 }
 
@@ -268,6 +341,7 @@ FTransform UFE_WeaponAimingComponent::GetWeaponSocketWorldTransform(FName Socket
 
 void UFE_WeaponAimingComponent::EndPlay(const EEndPlayReason::Type Reason)
 {
+	EndChargeSway(ChargeSwaySource.Get());
 	EndAim(true);
 	Super::EndPlay(Reason);
 }

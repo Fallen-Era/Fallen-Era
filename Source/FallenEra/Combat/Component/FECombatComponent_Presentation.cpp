@@ -269,7 +269,7 @@ void UFE_CombatComponent::StartChargeCameraPresentation(
 	float BlendOutDuration)
 {
 	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn || !Pawn->IsLocallyControlled())
+	if (!Pawn || !Pawn->IsLocallyControlled() || !IFE_CombatPresentation::UsesFirstPersonView(Pawn))
 	{
 		return;
 	}
@@ -458,14 +458,14 @@ void UFE_CombatComponent::PlayWeaponAttackEffects(
 {
 	const APawn* Pawn = Cast<APawn>(GetOwner());
 	if (!Pawn || !WeaponData || !AttackData) { return; }
-	const int32 AttackIndex = WeaponData->AttackActions.IndexOfByPredicate(
+	const int32 AttackIndex = WeaponData->Template.AttackActions.IndexOfByPredicate(
 		[AttackData](const TObjectPtr<UFE_WeaponAttackData>& Entry) { return Entry.Get() == AttackData; });
 	if (AttackIndex == INDEX_NONE) { return; }
 	if (Pawn->HasAuthority())
 	{
-		if (!WeaponData->AttackSound.IsNull() && WeaponData->AttackNoiseLoudness > 0.0f)
+		if (!WeaponData->Template.AttackSound.IsNull() && WeaponData->Template.AttackNoiseLoudness > 0.0f)
 		{
-			ReportCombatNoise(WeaponData->AttackNoiseLoudness, WeaponData->AttackNoiseMaxRange, TEXT("WeaponAttack"));
+			ReportCombatNoise(WeaponData->Template.AttackNoiseLoudness, WeaponData->Template.AttackNoiseMaxRange, TEXT("WeaponAttack"));
 		}
 		MulticastPlayWeaponAttackEffects(const_cast<UFE_WeaponItemData*>(WeaponData), AttackIndex, bPredictedByOwner);
 	}
@@ -502,10 +502,10 @@ void UFE_CombatComponent::MulticastPlayWeaponAttackEffects_Implementation(
 
 void UFE_CombatComponent::PlayWeaponDataEffectsLocal(const UFE_WeaponItemData* WeaponData, int32 AttackIndex)
 {
-	if (!WeaponData || !WeaponData->AttackActions.IsValidIndex(AttackIndex)) { return; }
+	if (!WeaponData || !WeaponData->Template.AttackActions.IsValidIndex(AttackIndex)) { return; }
 	const UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
 	if (!Equipment || Equipment->GetCurrentWeaponData() != WeaponData || bDeathCollisionDisabled) { return; }
-	const UFE_WeaponAttackData* AttackData = WeaponData->AttackActions[AttackIndex];
+	const UFE_WeaponAttackData* AttackData = WeaponData->Template.AttackActions[AttackIndex];
 	FName SocketName = NAME_None;
 	if (const UFE_HitscanAttackData* Hitscan = Cast<UFE_HitscanAttackData>(AttackData)) { SocketName = Hitscan->MuzzleSocketName; }
 	else if (const UFE_ProjectileAttackDataBase* Projectile = Cast<UFE_ProjectileAttackDataBase>(AttackData))
@@ -513,9 +513,9 @@ void UFE_CombatComponent::PlayWeaponDataEffectsLocal(const UFE_WeaponItemData* W
 		SocketName = Projectile->ProjectileSpawnSocketName;
 	}
 	const UFE_RangedWeaponItemData* Ranged = Cast<UFE_RangedWeaponItemData>(WeaponData);
-	PlayWeaponAttackEffectsLocal(WeaponData->AttackSound.Get(), WeaponData->AttackSoundVolume, WeaponData->AttackSoundPitch,
-		Ranged ? Ranged->MuzzleNiagaraSystem.Get() : nullptr, Ranged ? Ranged->MuzzleParticleSystem.Get() : nullptr,
-		SocketName, Ranged ? Ranged->MuzzleNiagaraScale : FVector::OneVector);
+	PlayWeaponAttackEffectsLocal(WeaponData->Template.AttackSound.Get(), WeaponData->Template.AttackSoundVolume, WeaponData->Template.AttackSoundPitch,
+		Ranged ? Ranged->Template.MuzzleNiagaraSystem.Get() : nullptr, Ranged ? Ranged->Template.MuzzleParticleSystem.Get() : nullptr,
+		SocketName, Ranged ? Ranged->Template.MuzzleNiagaraScale : FVector::OneVector);
 }
 
 void UFE_CombatComponent::PlayWeaponAttackEffectsLocal(
@@ -536,7 +536,7 @@ void UFE_CombatComponent::PlayWeaponAttackEffectsLocal(
 	UMeshComponent* WeaponMesh = nullptr;
 	if (const UFE_EquipmentComponent* Equipment = Character->FindComponentByClass<UFE_EquipmentComponent>())
 	{
-		WeaponMesh = Character->IsLocallyControlled()
+		WeaponMesh = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonView(Character)
 			? Equipment->GetEquippedFirstPersonWeaponMesh()
 			: Equipment->GetEquippedWorldWeaponMesh();
 		if (!WeaponMesh)
@@ -694,6 +694,16 @@ void UFE_CombatComponent::RestoreChargePresentation()
 	if (ChargeState.bBow) { SetBowVisualAlpha(GetBowChargeAlpha()); }
 }
 
+void UFE_CombatComponent::RefreshPerspectivePresentation()
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const auto& State = Pawn && Pawn->IsLocallyControlled() ? LocalChargeState : ChargeState;
+	if (State.StartServerTime >= 0.0f && State.ProjectileClass.IsValid() && !bDeathCollisionDisabled)
+	{
+		StartChargeProjectilePresentationLocal(State.ProjectileClass.Get(), State.AttachmentTarget, State.SocketName, State.Offset);
+	}
+}
+
 void UFE_CombatComponent::StartChargeProjectilePresentationLocal(
 	TSubclassOf<AFE_CombatProjectile> ProjectileClass,
 	EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
@@ -730,14 +740,14 @@ void UFE_CombatComponent::StartChargeProjectilePresentationLocal(
 	{
 		if (const UFE_EquipmentComponent* Equipment = Character->FindComponentByClass<UFE_EquipmentComponent>())
 		{
-			AttachParent = Character->IsLocallyControlled() && Equipment->GetEquippedFirstPersonWeaponMesh()
+			AttachParent = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonView(Character) && Equipment->GetEquippedFirstPersonWeaponMesh()
 				? static_cast<USceneComponent*>(Equipment->GetEquippedFirstPersonWeaponMesh())
 				: static_cast<USceneComponent*>(Equipment->GetEquippedWorldWeaponMesh());
 		}
 	}
 	else
 	{
-		AttachParent = Character->IsLocallyControlled()
+		AttachParent = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonView(Character)
 			? IFE_CombatPresentation::FindFirstPersonMesh(Character)
 			: nullptr;
 		if (!AttachParent)

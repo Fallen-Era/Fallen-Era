@@ -67,7 +67,13 @@
    머리에 head Body가 없으면 head 이름을 등록해도 판정되지 않는다.
    Mesh의 Query Collision을 활성화하고 PhysicsAsset 기반 충돌을 사용한다.
    캡슐에 먼저 맞아 본이 없다면 그 액터의 Mesh에 같은 경로로 상세 검사를 한다.
-   근접은 같은 Sphere Sweep 반지름으로 상세 검사한다.
+   플레이어 근접은 PlayerMeleeTrace 중앙 LineTrace를 정타 선택에만 사용한다.
+   PlayerMeleeAreaTrace Box Sweep은 중앙 충돌 거리와 무관한 전체 범위로 Mesh를 직접 판정한다.
+   중앙 적은 기존 피해 x1, 나머지 적은 IndirectDamageMultiplier (기본 x0.4)를 최종 피해에 곱한다.
+   부위 배율과 정타/간접 배율은 별개이며, 같은 공격에서는 최초 접촉의 부위와 배율을 유지한다.
+   범위 채널의 적 Mesh는 Overlap, 벽/블록은 Block으로 설정한다.
+   본이 없는 경우에만 동일 경로의 Line Trace로 상세 검사하며 임의의 가까운 본을 선택하지 않는다.
+   적 AI의 소켓 기반 근접은 기존 Sphere Sweep 반지름으로 상세 검사한다.
    상세 검사가 실패해도 기존 캡슐 타격은 유지하며 배율 1을 사용한다.
    현재 위치에서 가까운 본을 임의로 골라 헤드샷으로 만들지 않는다.
    완전히 정확한 Mesh-only 판정이 필요하면 전용 공격 채널에서 Capsule을 Ignore,

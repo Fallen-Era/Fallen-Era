@@ -5,6 +5,7 @@
 #include "GameplayTagContainer.h"
 #include "AbilitySystemComponent.h"
 #include "Combat/Weapon/Attachment/FEWeaponAttachmentData.h"
+#include "Combat/Item/FEEquipmentInstanceData.h"
 #include "FEEquipmentComponent.generated.h"
 
 class UAnimInstance;
@@ -57,6 +58,14 @@ public:
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment")
 	const UFE_WeaponItemData* GetCurrentWeaponData() const { return CurrentWeaponData; }
 
+	/** Server integration boundary for generated item data. Does not mutate the shared DA. */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment|Instance")
+	bool SetWeaponInstanceData(const FFE_WeaponInstanceData& NewInstance);
+
+	/** Server snapshot; client combat stats continue to come from replicated GAS attributes. */
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Instance")
+	FFE_WeaponInstanceData GetWeaponInstanceData() const { return CurrentWeaponInstance; }
+
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment")
 	const UFE_WeaponAttackData* GetCurrentAttackForInputTag(FGameplayTag InputTag) const;
 
@@ -68,6 +77,8 @@ public:
 
 	UMeshComponent* GetEquippedWorldWeaponMesh() const { return EquippedWorldWeaponMesh; }
 	UMeshComponent* GetEquippedFirstPersonWeaponMesh() const { return EquippedFirstPersonWeaponMesh; }
+	/** Updates owner visibility only; never reloads items or regrants abilities. */
+	void RefreshPerspectivePresentation();
 
 	FOnFEWeaponChanged& OnWeaponChanged() { return WeaponChangedDelegate; }
 	FOnFEWeaponChanged& OnWeaponAttachmentsChanged() { return WeaponAttachmentsChangedDelegate; }
@@ -86,6 +97,12 @@ public:
 	/** Server only. Replaces just this armor's slot; does not alter weapon equipment. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment|Armor")
 	bool EquipArmor(UFE_ArmorItemData* ArmorData);
+
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment|Armor")
+	bool EquipArmorInstance(UFE_ArmorItemData* ArmorData, const FFE_ArmorInstanceData& NewInstance);
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Armor")
+	FFE_ArmorInstanceData GetArmorInstanceData(FGameplayTag SlotTag) const;
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment|Armor")
 	bool UnequipArmor(FGameplayTag SlotTag);
@@ -179,6 +196,13 @@ protected:
 	FOnFEWeaponChanged WeaponChangedDelegate;
 
 private:
+	UPROPERTY(Transient)
+	FFE_WeaponInstanceData CurrentWeaponInstance;
+	/** Retains only the active definition while asynchronous refresh temporarily clears CurrentWeaponData. */
+	UPROPERTY(Transient)
+	TObjectPtr<UFE_WeaponItemData> WeaponInstanceTemplate;
+	UPROPERTY(Transient)
+	TMap<FGameplayTag, FFE_ArmorInstanceData> ArmorInstances;
 	TWeakObjectPtr<USkeletalMeshComponent> DefaultFirstPersonMesh;
 	FTransform UnequippedFirstPersonMeshTransform;
 	void RestoreFirstPersonMeshTransform();
@@ -221,5 +245,5 @@ private:
 	void RefreshArmorEquipment();
 	void FinishLoadingDefaultArmor();
 	void ClearArmorEffects();
-	FActiveGameplayEffectHandle ApplyArmorEffect(UFE_ArmorItemData* ArmorData);
+	FActiveGameplayEffectHandle ApplyArmorEffect(UFE_ArmorItemData* ArmorData, const FFE_ArmorInstanceData& ArmorInstance);
 };

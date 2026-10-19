@@ -10,6 +10,7 @@ namespace FallenEraCombatGameplayTags
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Combat_Attack);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Combat_Aim);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_Aiming);
+	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_KnockedDown);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Equipment_WeaponSlot_Sight);
 
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Condition_Bleeding);
@@ -17,6 +18,8 @@ namespace FallenEraCombatGameplayTags
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Immune_Knockback);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Immune_Stun);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Immune_HitReaction);
+	/** Cosmetic body simulation only; independent of stun and hit-montage immunity. */
+	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Immune_PhysicalReaction);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Movement_Walking);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Movement_Sprinting);
 
@@ -24,6 +27,7 @@ namespace FallenEraCombatGameplayTags
 
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_AttackPower);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_Damage_HitRegionMultiplier);
+	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_Damage_HitQualityMultiplier);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_Condition_HealthLoss);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_DefensePower);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_KnockbackResistance);

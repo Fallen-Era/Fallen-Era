@@ -15,6 +15,7 @@
 class UInputComponent;
 class USkeletalMeshComponent;
 class UCameraComponent;
+class USpringArmComponent;
 class UInputAction;
 class UInputMappingContext;
 class UAbilitySystemComponent;
@@ -64,6 +65,12 @@ class AFallenEraCharacter : public ACharacter, public IAbilitySystemInterface,
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UCameraComponent* FirstPersonCameraComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<USpringArmComponent> ThirdPersonSpringArm;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UCameraComponent> ThirdPersonCameraComponent;
+
 protected:
 
 	/** Jump Input Action */
@@ -92,7 +99,22 @@ public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UFallenEraAbilitySystemComponent* GetFallenEraAbilitySystemComponent() const;
 	virtual USkeletalMeshComponent* GetCombatFirstPersonMesh() const override { return GetFirstPersonMesh(); }
-	virtual UCameraComponent* GetCombatCamera() const override { return GetFirstPersonCameraComponent(); }
+	virtual UCameraComponent* GetCombatCamera() const override;
+	virtual bool IsCombatFirstPersonView() const override { return !bThirdPersonView; }
+	virtual void CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult) override;
+	virtual void PawnClientRestart() override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	UFUNCTION(BlueprintCallable, Category="FallenEra|Camera")
+	void TogglePerspective();
+	UFUNCTION(BlueprintCallable, Category="FallenEra|Camera")
+	void SetThirdPersonView(bool bEnabled);
+	UFUNCTION(BlueprintPure, Category="FallenEra|Camera")
+	bool IsThirdPersonView() const { return bThirdPersonView; }
+	UFUNCTION(BlueprintPure, Category="FallenEra|Camera")
+	UCameraComponent* GetThirdPersonCameraComponent() const { return ThirdPersonCameraComponent; }
+	UFUNCTION(BlueprintPure, Category="FallenEra|Camera")
+	USpringArmComponent* GetThirdPersonSpringArm() const { return ThirdPersonSpringArm; }
 	virtual FFE_CombatDamageResult ReceiveCombatDamage_Implementation(
 		const FFE_CombatDamageRequest& DamageRequest) override;
 	virtual FGenericTeamId GetGenericTeamId() const override;
@@ -141,6 +163,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
 	TObjectPtr<UInputAction> CombatSwapAction;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Input")
+	TObjectPtr<UInputAction> CombatTogglePerspectiveAction;
+
 	/** Sprint Input Action assigned by the Character Blueprint and mapped by IMC_Default. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Movement|Input")
 	TObjectPtr<UInputAction> SprintAction;
@@ -177,6 +202,7 @@ protected:
 	void HandleCombatRightClickStarted(const FInputActionValue& Value);
 	void HandleCombatRightClickReleased(const FInputActionValue& Value);
 	void HandleCombatSwap(const FInputActionValue& Value);
+	void HandleCombatTogglePerspective(const FInputActionValue& Value);
 	void HandleSprintStarted(const FInputActionValue& Value);
 	void HandleSprintReleased(const FInputActionValue& Value);
 
@@ -221,6 +247,15 @@ public:
 
 	/** Returns first person camera component **/
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCameraComponent; }
+
+private:
+	/** Owner predicts the change; the server needs the same camera for authoritative attack traces. */
+	UPROPERTY(ReplicatedUsing=OnRep_ThirdPersonView)
+	bool bThirdPersonView = false;
+	UFUNCTION() void OnRep_ThirdPersonView();
+	UFUNCTION(Server, Reliable, WithValidation) void ServerSetThirdPersonView(bool bEnabled);
+	void ApplyPerspectivePresentation();
+	void ResetPerspectiveAim();
 
 };
 

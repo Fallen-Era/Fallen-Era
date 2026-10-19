@@ -1,0 +1,106 @@
+ProcHitReact 적 피격 적용 및 설정
+================================
+
+1. 적용 범위
+- AFE_EnemyCharacter가 FE_ProceduralHitReactionComponent를 기본 컴포넌트로 생성한다.
+- 적 BP에 HitReact/BP_HitReact를 다시 추가하지 않는다. 중복 컴포넌트는 같은 메시의 물리 상태를 덮어쓸 수 있다.
+- 기존 ABP_HT_EnemyCharacter와 Hit Montage Slot은 변경하지 않는다.
+- 데미지, 공격 취소, 경직, 넉백은 기존 CombatComponent/GAS에서 서버 권한으로 처리한다.
+- 물리 반응은 연출이며 전용 서버에서는 실행하지 않는다. 물리 포즈 자체를 복제하지 않는다.
+
+2. 에디터 설정 위치
+- 적 BP의 AISettingsDataAssets에서 사용하는 DA를 연다.
+- AISettings > Reaction > Physical Hit Reaction에서 설정한다.
+  Enabled: 물리 반응 사용 여부.
+  Profile: /Game/Combat/DataAssets/HitReaction/HRP_Enemy_Physical
+  Impulse Strength: 질량과 무관한 속도 변화 크기(cm/s), 기본 150.
+  Max Distance: 로컬 카메라에서 물리 반응을 표시할 최대 거리(cm), 기본 2500. 0이면 거리 제한 없음.
+  Require Recently Rendered: 화면에 최근 표시된 적만 연출. 기본 true.
+- 기존 에셋에 새 필드가 없으면 위 기본값이 사용된다. 랜덤 AISettings를 쓴다면 모든 후보 DA를 확인한다.
+- Enabled=false이면 기존 Hit Montage 방식으로 동작한다.
+- Profile 로딩은 비동기이며 완료 전에는 기존 몽타주로 대체한다. 연출 로딩이 AI/GAS 초기화를 지연하지 않는다.
+- 스폰 사전 로딩 목록에도 프로필을 포함하여 첫 피격 로딩을 줄인다.
+
+3. 부위 선택
+- 기존 HitZoneMappingData를 공유한다. 별도의 피격용 Bone->Zone 목록을 중복 작성하지 않는다.
+- Head / Arms / Legs: 맞은 본의 부모를 따라 같은 Zone에서 가장 상위의 Physics Body를 선택한다.
+  예: hand_l 피격 -> upperarm_l부터 왼팔 체인 시뮬레이션, 충격은 hand_l 바디에 적용.
+  예: head 피격 -> neck_01부터 머리 체인 시뮬레이션.
+- 좌우 부위는 부모 체인으로 구분하므로 왼팔 피격으로 오른팔까지 시뮬레이션하지 않는다.
+- Torso / Default / 매핑 없음 / 유효한 Physics Body 없음: 기존 Hit Montage로 대체한다.
+- 범위 데미지(수류탄 등)는 임의의 본을 선택하지 않고 기존 반응을 유지한다.
+- 기본 매핑은 /Game/Combat/DataAssets/HitBoneMultiplier/DA_Enemy1_HitZone이다.
+- 커스텀 프로필의 RemapSimulatedBones가 자동 선택한 루트를 다른 본으로 바꾸면 안전상 물리 반응을 거절한다.
+  본 선택은 기존 HitZoneMappingData에서 관리하고 프로필 RemapSimulatedBones는 비워둔다.
+
+4. Physics Asset / Collision
+- 적 Skeletal Mesh에 Physics Asset이 있어야 하며 반응할 본에 Physics Body가 있어야 한다.
+- Mesh 전체의 Simulate Physics를 직접 켜지 않는다.
+- 캡슐은 이동 충돌, EnemyMesh는 피격 판정과 부분 물리를 담당한다.
+- EnemyMesh의 PlayerHitscanTrace / PlayerMeleeTrace / PlayerMeleeAreaTrace 응답을 기존대로 유지한다.
+- Ragdoll 프리셋으로 교체하지 않는다. 플러그인이 QueryOnly를 반응 중 QueryAndPhysics로 전환하고 정상 종료 시 복구한다.
+- 사망 시에는 반응을 먼저 정리하고 최종 NoCollision을 설정한다.
+- 몸이 거의 움직이지 않으면 관절 Swing/Twist 제한, Body Physics Type, 아래 프로필 가중치를 확인한다.
+- 기본 프로필은 PhysicalAnimProfile과 ConstraintProfile이 None이다.
+  별도 물리 애니메이션 드라이브를 쓰려면 PhysicalAnimationComponent를 추가하고 Physics Asset에서 만든 프로필 이름을 지정한다.
+
+5. 기본 프로필 값 및 튜닝
+- Blend In: 0.04초
+- Hold: 0.15초
+- Blend Out: 0.30초
+- Max Blend Weight: 0.85
+- Bone Blend Rate: 10
+- Cooldown: 0.05초
+- Max Blend Handling: ImpulseOnly / Max Active Blends: 3 (적 한 개체당)
+- LOD Threshold: 1 (LOD 0, 1에서 새 반응 허용)
+- Bone Overrides: neck_01=0.8, thigh_l/thigh_r=0.45, 팔은 기본 가중치 사용.
+- 위 값은 시작점이며 최종 연출은 PIE에서 튜닝한다. 다른 스켈레톤이면 본 이름도 수정한다.
+- 더 흐느적거리게: Hold/MaxBlendWeight를 올리고 관절 제약을 확인.
+- 기본 활성화된 LegKnockdown은 직접 다리 피격을 전신 레그돌/기상으로 전환한다.
+  다리 부분 물리 튜닝은 AISettings.LegKnockdown.bEnabled=false일 때 적용된다. LegKnockdownSetup.txt 참고.
+- 실제 캐릭터 전체 넉백은 기존 AttackReactionData.KnockbackAmount가 담당한다. ImpulseStrength와 별개다.
+
+6. 공격 취소 / 면역
+- 약한 피격을 공격이 버텨도 물리 연출은 가능하다. 공격 GA와 공격 몽타주는 유지한다.
+- 강한 피격은 기존 판정대로 공격 취소/경직 후 물리 연출을 실행한다.
+- State.Immune.Stun: 기존 경직/공격 취소 및 이에 따른 Hit Montage를 차단한다. 부분 물리 흔들림은 허용한다.
+- State.Immune.HitReaction: 기존 Hit Montage를 차단한다. 부분 물리 흔들림은 허용한다.
+- State.Immune.PhysicalReaction: 부분 물리 흔들림과 다리 피격 레그돌 진입을 차단한다. 경직/몽타주/넉백 면역을 부여하지 않는다.
+- State.Immune.Knockback: 기존 캐릭터 전체 넉백을 차단한다. 부분 물리 흔들림과 별개다.
+- HeavyZombie 초기화 GE의 기존 Stun/HitReaction/Knockback 면역 태그는 유지해도 물리 반응이 가능하다.
+  물리 반응까지 막으려면 해당 GE의 Target Tags Gameplay Effect Component에서 State.Immune.PhysicalReaction을 추가한다.
+- 물리 연출에 성공한 피격은 Hit Montage를 중복 재생하지 않는다.
+- 물리 연출이 불가하면 서버가 허용한 기존 Hit Montage로 대체한다.
+  공격 보호/면역으로 몽타주가 금지된 경우 이를 무시하고 대체 몽타주를 재생하지 않는다.
+- 메시의 Override Min LOD가 2라면 프로필 LOD Threshold도 2 이상이어야 한다.
+  기본 프로필의 Threshold=1을 그대로 두면 면역 정책과 무관하게 물리 반응이 거절된다. -1은 LOD 제한 해제다.
+- 별도의 OnTakeAnyDamage나 GameplayCue.Impact에서도 중복 호출하지 않는다.
+
+7. 네트워크 및 성능
+- 서버의 기존 피격 Multicast에 HitBone, 정규화한 충격 방향, 공격 중단 여부를 추가한다.
+- 각 클라이언트와 리슨서버가 자기 화면 기준으로 거리/렌더링/LOD를 확인한다.
+- 전용 서버와 화면 밖/원거리 적은 물리 연출을 생략한다.
+- 활성 반응 동안만 URO를 임시 해제하고 원래 값으로 복구한다.
+- 반응이 끝나면 플러그인 Tick이 중지된다. 사망/EndPlay는 비동기 로딩과 진행 중인 반응도 정리한다.
+- 많은 적이 동시에 맞는 경우에는 실제 PIE/패키지 빌드의 Chaos 비용을 Unreal Insights로 측정한다.
+
+8. 확인 순서
+1) 에디터를 재시작하여 새 네이티브 컴포넌트와 구조체를 로드한다.
+2) 적 BP에 중복 HitReact 컴포넌트가 없는지 확인한다.
+3) 사용하는 모든 AISettings에 HitZoneMappingData와 Physical Hit Reaction 설정이 있는지 확인한다.
+4) 반응 면역 GE를 적용하지 않은 적으로 머리/왼팔/오른팔/다리를 각각 공격한다.
+5) 몸통은 기존 Hit Montage, 머리/팔은 부분 물리, 다리는 기본 활성화된 레그돌/기상인지 확인한다.
+6) 공격 중 약한 피격/강한 피격을 비교한다.
+7) 사망 후 NoCollision이 유지되는지 확인한다.
+8) 리슨서버와 클라이언트 창에서 모두 재생되는지 확인한다.
+콘솔: p.HitReact.Draw 1 / p.HitReact.Draw 0
+
+9. 플러그인 관리
+- 로컬 수정: Physics Asset의 바디 저장 순서와 관계없이 요청한 시작 본을 먼저 검사한다.
+  (foot_r가 thigh_r보다 앞에 저장되어 있어도 thigh_r부터 시뮬레이션한다.)
+- Impulse는 대상 바디의 실제 시뮬레이션 활성화 후 적용한다. 첫 프레임 가중치가 0이면 기존 Tick에서 재시도한다.
+  반응이 끝나거나 바디가 없으면 대기 충격을 폐기하며 메시 전체 Simulate Physics를 강제로 켜지 않는다.
+- 프로젝트는 Plugins/ProcHitReact_560의 소스를 사용하며 .uproject에서 명시적으로 활성화한다.
+- UE 5.6 바이너리 고정 설정 대신 소스 플러그인으로 UE 5.8에서 빌드한다.
+- Build.cs에는 모듈 의존성 ProcHitReact만 추가했으며 PublicIncludePaths는 변경하지 않았다.
+- 플러그인은 MIT 라이선스다. 소스/재배포 시 원본 LICENSE와 저작권 표기를 유지한다.

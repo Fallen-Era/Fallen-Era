@@ -30,6 +30,14 @@ EFE_StaggerStrength UFE_CombatComponent::GetIgnoredStaggerStrength() const
 	return Strength;
 }
 
+bool UFE_CombatComponent::CanActorPlayPhysicalHitReaction(AActor* Actor)
+{
+	if (!IsActorAlive(Actor)) { return false; }
+	const UAbilitySystemComponent* ASC = FindAbilitySystemComponent(Actor);
+	return !ASC || (!ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Immune_PhysicalReaction) &&
+		!ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_KnockedDown));
+}
+
 FFE_DamageReactionDecision UFE_CombatComponent::ResolveDamageReaction(const FFE_AttackReactionData& ReactionData) const
 {
 	FFE_DamageReactionDecision Decision;

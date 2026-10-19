@@ -4,6 +4,8 @@
 #include "GameplayTagContainer.h"
 #include "Combat/Condition/FECharacterConditionTypes.h"
 #include "Combat/Reaction/FECombatReactionTypes.h"
+#include "Combat/Reaction/FEProceduralHitReactionSettings.h"
+#include "Combat/Reaction/FEKnockdownSettings.h"
 #include "FEAISettings.generated.h"
 
 class UAnimMontage;
@@ -171,6 +173,14 @@ struct FALLENERA_API FSAISettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Reaction")
 	TArray<TObjectPtr<UAnimMontage>> HitReactionMontages;
+
+	/** Head/limbs prefer physics; torso or unavailable physics retain the montage fallback. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Reaction")
+	FFE_ProceduralHitReactionSettings PhysicalHitReaction;
+
+	/** Direct leg hits temporarily knock this enemy down, then restore pursuit if alive. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Reaction")
+	FFE_KnockdownSettings LegKnockdown;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Animation")
 	TObjectPtr<UBlendSpace> LocomotionBlendSpace;

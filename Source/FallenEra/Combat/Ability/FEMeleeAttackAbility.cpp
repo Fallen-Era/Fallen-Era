@@ -4,17 +4,18 @@
 #include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 #include "Abilities/Tasks/AbilityTask_WaitInputRelease.h"
 #include "Animation/AnimMontage.h"
-#include "Components/SkeletalMeshComponent.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/World.h"
-#include "Combat/Ability/Tasks/FEMeleeTraceTask.h"
 #include "GameFramework/Character.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Collision/FECollisionChannels.h"
+#include "Combat/Collision/FECameraMeleeTrace.h"
+#include "GameFramework/Controller.h"
 
 ECollisionChannel UFE_MeleeAttackAbility::GetAttackTraceChannel() const
 {
-	return FECollisionChannels::PlayerHitscanTrace;
+	return FECollisionChannels::PlayerMeleeTrace;
 }
 
 void UFE_MeleeAttackAbility::ActivateAbility(
@@ -33,10 +34,10 @@ void UFE_MeleeAttackAbility::ActivateAbility(
 	AttackSelectionOrdinal = 0;
 	bAttackAutomatic = false;
 	bAttackInProgress = false;
-	bMeleeTraceActive = false;
+	bAttackTraceConsumed = false;
 	FirstHitsThisAttack.Reset();
-	NextRepeatedHitTimes.Reset();
 	CachedComboAttacks.Reset();
+	AreaTargetsHit = 0;
 
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponItemData* WeaponData = CombatCharacter ? GetWeaponData(CombatCharacter) : nullptr;
@@ -47,7 +48,7 @@ void UFE_MeleeAttackAbility::ActivateAbility(
 		return;
 	}
 
-	for (const UFE_WeaponAttackData* AttackData : WeaponData->AttackActions)
+	for (const UFE_WeaponAttackData* AttackData : WeaponData->Template.AttackActions)
 	{
 		UFE_MeleeAttackData* MeleeAttack = const_cast<UFE_MeleeAttackData*>(Cast<UFE_MeleeAttackData>(AttackData));
 		if (MeleeAttack && MeleeAttack->InputTag == FirstAttack->InputTag &&
@@ -63,7 +64,7 @@ void UFE_MeleeAttackAbility::ActivateAbility(
 	}
 
 	if (const UFE_MeleeWeaponItemData* MeleeWeaponData = Cast<UFE_MeleeWeaponItemData>(WeaponData);
-		MeleeWeaponData && MeleeWeaponData->AttackSequenceMode == EFE_MeleeAttackSequenceMode::RandomSingle)
+		MeleeWeaponData && MeleeWeaponData->Template.AttackSequenceMode == EFE_MeleeAttackSequenceMode::RandomSingle)
 	{
 		CurrentComboIndex = SelectDeterministicRandomAttackIndex();
 	}
@@ -107,9 +108,10 @@ void UFE_MeleeAttackAbility::EndAbility(
 		FallbackIntervalTask->EndTask();
 		FallbackIntervalTask = nullptr;
 	}
-	StopMeleeTrace();
+	bAttackTraceConsumed = true;
 	FirstHitsThisAttack.Reset();
-	NextRepeatedHitTimes.Reset();
+	WorldTargetThisAttack.Reset();
+	bWorldTargetSelected = false;
 	bAttackInProgress = false;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
@@ -124,76 +126,94 @@ void UFE_MeleeAttackAbility::ExecuteAttack(
 	{
 		return;
 	}
-	const USkeletalMeshComponent* Mesh = CombatCharacter->GetMesh();
-	const FVector Start = Mesh && Mesh->DoesSocketExist(MeleeAttackData->StartSocket)
-		? Mesh->GetSocketLocation(MeleeAttackData->StartSocket)
-		: CombatCharacter->GetActorLocation();
-	const FVector End = Mesh && Mesh->DoesSocketExist(MeleeAttackData->EndSocket)
-		? Mesh->GetSocketLocation(MeleeAttackData->EndSocket)
-		: Start + CombatCharacter->GetActorForwardVector() * 100.0f;
-
-	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_PlayerMeleeAttack), false, CombatCharacter);
-	QueryParams.bReturnPhysicalMaterial = true;
+	if (bWorldTargetSelected && MeleeAttackData->MaxHitCount > 0 &&
+		AreaTargetsHit >= MeleeAttackData->MaxHitCount)
+	{
+		return;
+	}
+	FVector ViewStart = CombatCharacter->GetPawnViewLocation();
+	FRotator ViewRotation = CombatCharacter->GetBaseAimRotation();
+	if (const AController* Controller = CombatCharacter->GetController())
+	{
+		Controller->GetPlayerViewPoint(ViewStart, ViewRotation);
+	}
+	FFE_CameraMeleeTraceVolume Volume = FECameraMeleeTrace::MakeVolume(
+		ViewStart, ViewRotation, MeleeAttackData->TraceRange, MeleeAttackData->TraceHalfExtent);
 	TArray<FHitResult> Hits;
-	const FCollisionShape TraceShape = FCollisionShape::MakeSphere(FMath::Max(0.0f, MeleeAttackData->TraceRadius));
-	CombatCharacter->GetWorld()->SweepMultiByChannel(
-		Hits, Start, End, FQuat::Identity, GetAttackTraceChannel(), TraceShape, QueryParams);
+	FHitResult CenterHit;
+	FECameraMeleeTrace::Sweep(*CombatCharacter->GetWorld(), CombatCharacter, Volume, GetAttackTraceChannel(), Hits, &CenterHit);
+#if ENABLE_DRAW_DEBUG
+	if (MeleeAttackData->bDrawDebugTrace)
+	{
+		const FColor Color = Hits.IsEmpty() ? FColor::Green : FColor::Red;
+		const float Duration = FMath::Max(0.0f, MeleeAttackData->DebugTraceDuration);
+		DrawDebugLine(CombatCharacter->GetWorld(), ViewStart,
+			ViewStart + ViewRotation.Vector() * MeleeAttackData->TraceRange, Color, false, Duration);
+		if (!Hits.IsEmpty() && Hits[0].bBlockingHit)
+		{
+			DrawDebugPoint(CombatCharacter->GetWorld(), Hits[0].ImpactPoint, 10.0f, FColor::Yellow, false, Duration);
+		}
+		if (Volume.bValid)
+		{
+			// Constant rotation and a straight sweep form one box spanning the full configured reach.
+			FVector SweptHalfExtent = Volume.HalfExtent;
+			SweptHalfExtent.X += FVector::Distance(Volume.Start, Volume.End) * 0.5f;
+			DrawDebugBox(CombatCharacter->GetWorld(), (Volume.Start + Volume.End) * 0.5f,
+				SweptHalfExtent, Volume.Rotation, Color, false, Duration);
+		}
+	}
+#endif
 	if (Hits.IsEmpty())
 	{
 		return;
 	}
 
-	TSet<AActor*> HitActorsThisFrame;
-	const float CurrentTime = CombatCharacter->GetWorld()->GetTimeSeconds();
 	for (const FHitResult& Hit : Hits)
 	{
 		AActor* TargetActor = Hit.GetActor();
+		const bool bWorldTarget = !FECameraMeleeTrace::IsAreaTarget(Hit);
+		if (bWorldTarget && bWorldTargetSelected &&
+			(!TargetActor || WorldTargetThisAttack.Get() != TargetActor))
+		{
+			continue;
+		}
 		if (!TargetActor)
 		{
 			if (Hit.bBlockingHit)
 			{
+				bWorldTargetSelected = true;
 				ApplyDamage(CombatCharacter, WeaponData, MeleeAttackData, nullptr, Hit);
-				break;
 			}
 			continue;
 		}
-		if (HitActorsThisFrame.Contains(TargetActor))
-		{
-			continue;
-		}
-		HitActorsThisFrame.Add(TargetActor);
-
 		const TWeakObjectPtr<AActor> TargetKey(TargetActor);
 		const bool bAlreadyDamaged = FirstHitsThisAttack.Contains(TargetKey);
-		if (!MeleeAttackData->bAllowMultipleHits && bAlreadyDamaged)
+		if (bAlreadyDamaged)
 		{
 			continue;
 		}
-		if (!bAlreadyDamaged && MeleeAttackData->MaxHitCount > 0 &&
-			FirstHitsThisAttack.Num() >= MeleeAttackData->MaxHitCount)
+		if (!bWorldTarget && !bAlreadyDamaged && MeleeAttackData->MaxHitCount > 0 &&
+			AreaTargetsHit >= MeleeAttackData->MaxHitCount)
 		{
 			continue;
 		}
-		if (MeleeAttackData->bAllowMultipleHits && bAlreadyDamaged)
+		FFE_MeleeHit* FirstHit = FirstHitsThisAttack.Find(TargetKey);
+		if (!FirstHit)
 		{
-			const float* NextHitTime = NextRepeatedHitTimes.Find(TargetKey);
-			if (NextHitTime && CurrentTime < *NextHitTime)
-			{
-				continue;
-			}
+			const float QualityMultiplier = bWorldTarget || TargetActor == CenterHit.GetActor()
+				? 1.0f : MeleeAttackData->IndirectDamageMultiplier;
+			FirstHit = &FirstHitsThisAttack.Add(TargetKey,
+				{ UFE_CombatComponent::RefineDirectDamageHit(Hit), QualityMultiplier });
+			if (!bWorldTarget) { ++AreaTargetsHit; }
 		}
-
-		const FHitResult& FirstHit = bAlreadyDamaged ? FirstHitsThisAttack.FindChecked(TargetKey)
-			: FirstHitsThisAttack.Add(TargetKey, UFE_CombatComponent::RefineDirectDamageHit(Hit, MeleeAttackData->TraceRadius));
-		ApplyDamage(CombatCharacter, WeaponData, MeleeAttackData, TargetActor, FirstHit);
-		if (MeleeAttackData->bAllowMultipleHits)
+		if (bWorldTarget)
 		{
-			NextRepeatedHitTimes.Add(
-				TWeakObjectPtr<AActor>(TargetActor),
-				CurrentTime + FMath::Max(0.01f, MeleeAttackData->RepeatedHitInterval));
+			bWorldTargetSelected = true;
+			WorldTargetThisAttack = TargetActor;
 		}
-		else if (MeleeAttackData->MaxHitCount > 0 &&
-			FirstHitsThisAttack.Num() >= MeleeAttackData->MaxHitCount)
+		ApplyDamage(CombatCharacter, WeaponData, MeleeAttackData, TargetActor, FirstHit->Hit, FirstHit->QualityMultiplier);
+		if (bWorldTargetSelected && MeleeAttackData->MaxHitCount > 0 &&
+			AreaTargetsHit >= MeleeAttackData->MaxHitCount)
 		{
 			break;
 		}
@@ -213,43 +233,24 @@ void UFE_MeleeAttackAbility::PerformCurrentAttack()
 	}
 
 	bAttackInProgress = true;
+	bAttackTraceConsumed = false;
 	FirstHitsThisAttack.Reset();
-	NextRepeatedHitTimes.Reset();
+	WorldTargetThisAttack.Reset();
+	bWorldTargetSelected = false;
 	CacheAttackContext(WeaponData, AttackData);
+	AreaTargetsHit = 0;
 	WaitForAttackEvents();
 	PlayAttackPresentation(CombatCharacter, WeaponData, AttackData);
 }
 
-void UFE_MeleeAttackAbility::StartMeleeTrace()
-{
-	if (bMeleeTraceActive)
-	{
-		return;
-	}
-
-	bMeleeTraceActive = true;
-	MeleeTraceTask = UFE_MeleeTraceTask::StartMeleeTrace(this);
-	MeleeTraceTask->OnTraceTick.AddDynamic(this, &UFE_MeleeAttackAbility::ExecuteCurrentTrace);
-	MeleeTraceTask->ReadyForActivation();
-}
-
-void UFE_MeleeAttackAbility::StopMeleeTrace()
-{
-	if (MeleeTraceTask)
-	{
-		MeleeTraceTask->EndTask();
-		MeleeTraceTask = nullptr;
-	}
-
-	bMeleeTraceActive = false;
-}
-
 void UFE_MeleeAttackAbility::ExecuteCurrentTrace()
 {
-	if (!bMeleeTraceActive || !bAttackInProgress)
+	if (bAttackTraceConsumed || !bAttackInProgress)
 	{
 		return;
 	}
+	// A miss also consumes the swing; later frames/notifies must not turn it into a hit.
+	bAttackTraceConsumed = true;
 
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponItemData* WeaponData = GetCachedWeaponData();
@@ -279,7 +280,7 @@ void UFE_MeleeAttackAbility::WaitForAttackEvents()
 	}
 	else
 	{
-		StartMeleeTrace();
+		ExecuteCurrentTrace();
 	}
 
 	const FGameplayTag EndEventTag = AttackData->AttackEndEventTag;
@@ -314,7 +315,7 @@ void UFE_MeleeAttackAbility::OnAttackStartEvent(FGameplayEventData Payload)
 	(void)Payload;
 	if (bAttackInProgress)
 	{
-		StartMeleeTrace();
+		ExecuteCurrentTrace();
 	}
 }
 
@@ -336,8 +337,8 @@ void UFE_MeleeAttackAbility::OnAttackEndEvent(FGameplayEventData Payload)
 		AttackWindowTask->EndTask();
 		AttackWindowTask = nullptr;
 	}
-	StopMeleeTrace();
-	// Trace end and attack reset are separate. Keep the ability locked until the
+	bAttackTraceConsumed = true;
+	// Trace consumption and attack reset are separate. Keep the ability locked until the
 	// reset event (or bounded fallback) allows the next attack.
 }
 
@@ -373,7 +374,7 @@ void UFE_MeleeAttackAbility::CompleteCurrentAttack()
 		FallbackIntervalTask->EndTask();
 		FallbackIntervalTask = nullptr;
 	}
-	StopMeleeTrace();
+	bAttackTraceConsumed = true;
 	bAttackInProgress = false;
 	if (bInputReleased || !bAttackAutomatic)
 	{
@@ -382,7 +383,7 @@ void UFE_MeleeAttackAbility::CompleteCurrentAttack()
 	}
 
 	if (const UFE_MeleeWeaponItemData* MeleeWeaponData = Cast<UFE_MeleeWeaponItemData>(GetCachedWeaponData());
-		MeleeWeaponData && MeleeWeaponData->AttackSequenceMode == EFE_MeleeAttackSequenceMode::RandomSingle)
+		MeleeWeaponData && MeleeWeaponData->Template.AttackSequenceMode == EFE_MeleeAttackSequenceMode::RandomSingle)
 	{
 		CurrentComboIndex = SelectDeterministicRandomAttackIndex();
 	}

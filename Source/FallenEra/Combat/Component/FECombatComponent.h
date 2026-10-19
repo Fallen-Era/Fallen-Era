@@ -7,6 +7,7 @@
 #include "GameplayTagContainer.h"
 #include "Combat/Interface/FEDamageable.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
+#include "Combat/Reaction/FEProceduralHitReactionSettings.h"
 #include "FECombatComponent.generated.h"
 
 class UGameplayEffect;
@@ -82,6 +83,8 @@ public:
 		float BlendInDuration,
 		float BlendOutDuration);
 	void StopChargeCameraPresentation();
+	/** Reattach a held projectile preview without restarting the charge or its montage. */
+	void RefreshPerspectivePresentation();
 
 	/** Owning-client presentation state consumed by BowCrossHairWidget. */
 	void SetBowChargeAlpha(float NewChargeAlpha);
@@ -107,7 +110,8 @@ public:
 		AActor* TargetActor,
 		const FHitResult& HitResult,
 		const UFE_WeaponAttackData* AttackData,
-		EFE_DamageHitType HitType = EFE_DamageHitType::Direct);
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
+		float HitQualityMultiplier = 1.0f);
 
 	/** Applies a custom damage GameplayEffect; damage is calculated from attributes by the effect. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat")
@@ -119,7 +123,8 @@ public:
 		TSubclassOf<UGameplayEffect> DamageEffectClass,
 		const FHitResult& HitResult,
 		const UFE_WeaponAttackData* AttackData,
-		EFE_DamageHitType HitType = EFE_DamageHitType::Direct);
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
+		float HitQualityMultiplier = 1.0f);
 
 	/** GAS receiver implementation used by Damageable actors that own an ASC. */
 	FFE_CombatDamageResult ApplyGameplayEffectDamage(const FFE_CombatDamageRequest& DamageRequest);
@@ -156,6 +161,10 @@ public:
 	EFE_StaggerStrength GetIgnoredStaggerStrength() const;
 
 	FFE_DamageReactionDecision ResolveDamageReaction(const FFE_AttackReactionData& ReactionData) const;
+
+	/** Cosmetic policy shared by server dispatch and client simulation. Does not cancel abilities. */
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Reaction")
+	static bool CanActorPlayPhysicalHitReaction(AActor* Actor);
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Reaction")
 	float CalculateReceivedKnockback(float IncomingKnockback) const;
@@ -261,7 +270,8 @@ private:
 		TSubclassOf<UGameplayEffect> EffectClass,
 		const FHitResult* HitResult = nullptr,
 		const UFE_WeaponAttackData* AttackData = nullptr,
-		EFE_DamageHitType HitType = EFE_DamageHitType::Direct);
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
+		float HitQualityMultiplier = 1.0f);
 	/** Debug-only, server confirmed message sent to the attacking player's owning client. */
 	UFUNCTION(Client, Unreliable)
 	void ClientShowHitDamageDebug(const FString& Message);
@@ -273,6 +283,8 @@ private:
 		const FHitResult& HitResult,
 		const UFE_WeaponAttackData* AttackData) const;
 	void ClearStunState();
+	void ApplyDamageReactionInternal(const AActor* DamageSource, const FFE_AttackReactionData& ReactionData,
+		const FHitResult* HitResult);
 	void PlayHitReactionMontage(UAnimMontage* HitMontage);
 	void PlayDeathMontage(UAnimMontage* Montage);
 	void ApplyDeathCollisionState();
@@ -281,7 +293,7 @@ private:
 	void OnRep_DeathCollisionDisabled();
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayDamageReaction(UAnimMontage* HitMontage);
+	void MulticastPlayDamageReaction(UAnimMontage* HitMontage, const FFE_ProceduralHitReactionEvent& Event);
 
 	UPROPERTY(Replicated)
 	float DeathStartServerTime = 0.0f;

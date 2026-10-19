@@ -37,6 +37,12 @@ void FSAISettings::GatherAssetPaths(TArray<FSoftObjectPath>& OutPaths, bool bInc
 	AddPath(DeathMontage.ToSoftObjectPath());
 	AddPath(HitZoneMappingData.ToSoftObjectPath());
 	AddPath(HitZoneMultiplierData.ToSoftObjectPath());
+	if (PhysicalHitReaction.bEnabled) { AddPath(PhysicalHitReaction.Profile.ToSoftObjectPath()); }
+	if (LegKnockdown.bEnabled)
+	{
+		AddPath(LegKnockdown.GetUpFaceUpMontage.ToSoftObjectPath());
+		AddPath(LegKnockdown.GetUpFaceDownMontage.ToSoftObjectPath());
+	}
 	if (!bIncludeServerAssets) { return; }
 	AddPath(AttackAbilityClass.ToSoftObjectPath());
 	for (const auto& AbilitySet : DefaultAbilitySets) { AddPath(AbilitySet.ToSoftObjectPath()); }
@@ -50,6 +56,8 @@ bool FSAISettings::AreAssetsLoaded(bool bIncludeServerAssets) const
 	GatherAssetPaths(Paths, bIncludeServerAssets);
 	for (const FSoftObjectPath& Path : Paths)
 	{
+		// Cosmetic profile loading is owned by ProcHitReact and must not delay GAS/AI startup.
+		if (Path == PhysicalHitReaction.Profile.ToSoftObjectPath()) { continue; }
 		if (!Path.ResolveObject()) { return false; }
 	}
 	return true;

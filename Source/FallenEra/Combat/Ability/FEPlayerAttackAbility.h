@@ -64,7 +64,8 @@ protected:
 		const UFE_WeaponItemData* WeaponData,
 		const UFE_WeaponAttackData* AttackData,
 		AActor* TargetActor,
-		const FHitResult& HitResult) const;
+		const FHitResult& HitResult,
+		float HitQualityMultiplier = 1.0f) const;
 
 	/** Resolves intrinsic + attribute penalty + recovered bloom without advancing bloom. */
 	float CalculateSpreadAngle(

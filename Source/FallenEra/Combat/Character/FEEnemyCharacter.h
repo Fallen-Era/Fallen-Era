@@ -11,6 +11,8 @@
 #include "FEEnemyCharacter.generated.h"
 
 class UFE_CombatComponent;
+class UFE_ProceduralHitReactionComponent;
+class UFE_KnockdownComponent;
 class UFE_EquipmentComponent;
 class UFE_EnemyMeleeAttackAbility;
 class UFE_AISettingsDataAsset;
@@ -120,6 +122,12 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat")
 	TObjectPtr<UFE_CombatComponent> CombatComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Reaction")
+	TObjectPtr<UFE_ProceduralHitReactionComponent> PhysicalHitReactionComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Reaction")
+	TObjectPtr<UFE_KnockdownComponent> KnockdownComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Equipment")
 	TObjectPtr<UFE_EquipmentComponent> EquipmentComponent;

@@ -14,7 +14,7 @@ class USkeletalMeshComponent;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEAimAlphaChanged, float);
 
-/** Local ADS presentation only. Ability/Equipment own input, authority and stat changes. */
+/** Local ADS/charge sway presentation. Ability/Equipment own input, authority and stat changes. */
 UCLASS(ClassGroup=(Combat), meta=(BlueprintSpawnableComponent))
 class FALLENERA_API UFE_WeaponAimingComponent : public UActorComponent
 {
@@ -30,6 +30,9 @@ public:
 		const FTransform& DesiredSightInParent, const FVector& ArmsScale);
 	bool BeginAim();
 	void EndAim(bool bImmediate = false);
+	/** Charge-only motion: no optic alignment, FOV changes, or ADS state/stat changes. */
+	void BeginChargeSway(UObject* Source, const FFE_WeaponAimSwaySettings& Settings);
+	void EndChargeSway(UObject* Source);
 	/** Intentional camera-local offset. Do not also add this offset to the same weapon in AnimBP. */
 	UFUNCTION(BlueprintPure, Category="Combat|Aim")
 	FTransform GetAimSwayTransform() const;
@@ -64,6 +67,11 @@ private:
 	FRotator PreviousViewRotation = FRotator::ZeroRotator;
 	float MovementPhase = 0.0f;
 	bool bCapturedPresentation = false;
+	bool bFirstPersonPresentation = true;
+	TWeakObjectPtr<UObject> ChargeSwaySource;
+	FFE_WeaponAimSwaySettings ChargeSwaySettings;
+	FTransform ChargeArmsTransform;
+	bool bChargeSwayCaptured = false;
 	bool bOriginalArmsVisible = true;
 	bool bOriginalWeaponVisible = true;
 	FOnFEAimAlphaChanged AimAlphaChanged;
@@ -72,4 +80,6 @@ private:
 	void UpdateSway(float DeltaTime);
 	void ResetSway();
 	void RestorePresentation();
+	void StartChargeSwayPresentation();
+	void StopChargeSwayPresentation();
 };

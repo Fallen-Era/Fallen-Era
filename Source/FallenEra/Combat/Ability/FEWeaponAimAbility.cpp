@@ -24,7 +24,7 @@ bool UFE_WeaponAimAbility::CanActivateAbility(const FGameplayAbilitySpecHandle H
 	const UFE_EquipmentComponent* Equipment = Actor->FindComponentByClass<UFE_EquipmentComponent>();
 	const UFE_RangedWeaponItemData* Weapon = Equipment ? Cast<UFE_RangedWeaponItemData>(Equipment->GetCurrentWeaponData()) : nullptr;
 	const UFE_WeaponAimingComponent* Component = Actor->FindComponentByClass<UFE_WeaponAimingComponent>();
-	return Weapon && Weapon->bSupportsAiming && GetSourceObject(Handle, ActorInfo) == Weapon && Component && Component->CanAim();
+	return Weapon && Weapon->Template.bSupportsAiming && GetSourceObject(Handle, ActorInfo) == Weapon && Component && Component->CanAim();
 }
 
 void UFE_WeaponAimAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handle,

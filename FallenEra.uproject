@@ -17,6 +17,10 @@
 	],
 	"Plugins": [
 		{
+			"Name": "ProcHitReact",
+			"Enabled": true
+		},
+		{
 			"Name": "ModelingToolsEditorMode",
 			"Enabled": true,
 			"TargetAllowList": [

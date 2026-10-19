@@ -4,6 +4,7 @@
 #include "Engine/DataAsset.h"
 #include "GameplayTagContainer.h"
 #include "Combat/Reaction/FECombatReactionTypes.h"
+#include "Combat/Item/FEEquipmentInstanceData.h"
 #include "FEWeaponItemData.generated.h"
 
 class UAnimInstance;
@@ -34,24 +35,6 @@ enum class EFE_ChargedProjectileAttachmentTarget : uint8
 {
 	CharacterMesh,
 	WeaponMesh
-};
-
-/** Persistent stats granted while a weapon is equipped. */
-USTRUCT(BlueprintType)
-struct FALLENERA_API FFE_WeaponStat
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon Stat", meta=(ClampMin="0.0"))
-	float Offense = 0.0f;
-
-	/** Equipped baseline. 1 is perfect accuracy; temporary GAS effects may lower it. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon Stat", meta=(ClampMin="0.0", ClampMax="1.0"))
-	float Accuracy = 1.0f;
-
-	/** Equipped baseline. 1 removes recoil; temporary GAS effects may lower it. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon Stat", meta=(ClampMin="0.0", ClampMax="1.0"))
-	float RecoilControl = 1.0f;
 };
 
 /** Accuracy penalty and lazy, shot-driven bloom. Intrinsic weapon spread remains separate. */
@@ -188,42 +171,45 @@ public:
 	TSoftClassPtr<UGameplayAbility> AbilityClass;
 };
 
-/** Extra trace parameters for a melee attack. */
+/** Camera-directed melee volume, independent of weapon animation and mesh sockets. */
 UCLASS(BlueprintType, EditInlineNew, DefaultToInstanced)
 class FALLENERA_API UFE_MeleeAttackData : public UFE_WeaponAttackData
 {
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace")
-	FName StartSocket;
+	/** Forward reach measured from the camera to the front of the swept volume. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="0.0", Units="cm"))
+	float TraceRange = 200.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace")
-	FName EndSocket;
+	/** Camera-local half sizes: X = depth, Y = horizontal width, Z = vertical height. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="0.1", Units="cm"))
+	FVector TraceHalfExtent = FVector(10.0f, 30.0f, 30.0f);
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="0.0"))
-	float TraceRadius = 10.0f;
+	/** Final damage scale for box-only enemies. Center-ray hits and world hits use x1. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Damage", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float IndirectDamageMultiplier = 0.4f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace")
-	bool bAllowMultipleHits = false;
+	/** Shows the configured melee reach and full swept box at the single hit notify. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace|Debug", meta=(DisplayName="Debug Trace"))
+	bool bDrawDebugTrace = false;
 
-	/** Maximum unique targets affected by one attack window. Kept as MaxHitCount for existing assets. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace|Debug", meta=(ClampMin="0.0", Units="s", EditCondition="bDrawDebugTrace"))
+	float DebugTraceDuration = 0.0f;
+
+	/** Maximum unique enemy-area targets per swing; the center-only world target has a separate budget. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="1", DisplayName="Max Target Count"))
 	int32 MaxHitCount = 1;
-
-	/** Minimum seconds before the same target can be damaged again when multiple hits are enabled. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Trace", meta=(ClampMin="0.01", EditCondition="bAllowMultipleHits"))
-	float RepeatedHitInterval = 0.1f;
 
 	/** Fallback interval when AttackResetEventTag is not configured. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing", meta=(ClampMin="0.01"))
 	float AttackInterval = 0.4f;
 
-	/** AnimNotify gameplay event that starts the active socket trace window. */
+	/** AnimNotify gameplay event that executes one camera trace. If unset, traces once at attack start. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing", meta=(Categories="GameplayEvent"))
 	FGameplayTag AttackStartEventTag;
 
-	/** AnimNotify gameplay event that ends the active socket trace window. */
+	/** Optional legacy end event: suppresses a late hit notify, but does not reset the attack. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Melee|Timing", meta=(Categories="GameplayEvent"))
 	FGameplayTag AttackEndEventTag;
 
@@ -435,13 +421,11 @@ public:
 	float TrajectoryCollisionRadius = 5.0f;
 };
 
-/** Data-driven weapon definition cached by EquipmentComponent while equipped. */
-UCLASS(Abstract, BlueprintType)
-class FALLENERA_API UFE_WeaponItemData : public UPrimaryDataAsset
+/** Shared immutable weapon definition. AttackActions are asset-owned, not inventory instances. */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FFE_WeaponTemplateData
 {
 	GENERATED_BODY()
-
-public:
 	/** Persistent attack-power contribution applied while this weapon is equipped. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Stats")
 	FFE_WeaponStat WeaponStat;
@@ -509,31 +493,8 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Instanced, Category="Weapon|Attacks")
 	TArray<TObjectPtr<UFE_WeaponAttackData>> AttackActions;
 
-	UFUNCTION(BlueprintPure, Category="Weapon")
-	const UFE_WeaponAttackData* FindAttackForInputTag(FGameplayTag InInputTag) const;
-
-	UFUNCTION(BlueprintPure, Category="Weapon")
-	bool HasItemTag(FGameplayTag InItemTag) const;
-};
-
-/** Optional concrete asset type for melee weapons. */
-UCLASS(BlueprintType)
-class FALLENERA_API UFE_MeleeWeaponItemData : public UFE_WeaponItemData
-{
-	GENERATED_BODY()
-
-public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Melee")
 	EFE_MeleeAttackSequenceMode AttackSequenceMode = EFE_MeleeAttackSequenceMode::Combo;
-};
-
-/** Optional concrete asset type for ranged weapons. */
-UCLASS(BlueprintType)
-class FALLENERA_API UFE_RangedWeaponItemData : public UFE_WeaponItemData
-{
-	GENERATED_BODY()
-
-public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Aim")
 	FFE_WeaponAimSwaySettings AimSwaySettings;
 
@@ -559,5 +520,142 @@ public:
 
 	/** Shared scale for either muzzle Niagara or Particle. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Muzzle", meta=(DisplayName="Muzzle VFX Scale"))
+	FVector MuzzleNiagaraScale = FVector::OneVector;
+};
+
+/** DA Instance is an editable test seed; equipment copies it instead of mutating the DA. */
+UCLASS(Abstract, BlueprintType)
+class FALLENERA_API UFE_WeaponItemData : public UPrimaryDataAsset
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Template")
+	FFE_WeaponTemplateData Template;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Instance")
+	FFE_WeaponInstanceData Instance;
+	virtual void PostLoad() override;
+	virtual void Serialize(FArchive& Ar) override;
+	UFUNCTION(BlueprintPure, Category="Weapon")
+	const UFE_WeaponAttackData* FindAttackForInputTag(FGameplayTag InInputTag) const;
+	UFUNCTION(BlueprintPure, Category="Weapon")
+	bool HasItemTag(FGameplayTag InItemTag) const;
+protected:
+	bool NeedsTemplateMigration() const { return ItemDataVersion == 0; }
+private:
+	UPROPERTY()
+	int32 ItemDataVersion = 0;
+	// Load-only legacy fields. Gameplay exclusively reads Template and Instance.
+	/** Persistent attack-power contribution applied while this weapon is equipped. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	FFE_WeaponStat WeaponStat;
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	FGameplayTagContainer ItemTags;
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	FGameplayTagContainer WeaponTags;
+
+	/** Static weapon mesh. Used only when SkeletalMesh is empty. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftObjectPtr<UStaticMesh> Mesh;
+
+	/** Optional animated weapon mesh. When assigned, this takes priority over Mesh. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftObjectPtr<USkeletalMesh> SkeletalMesh;
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftClassPtr<UAnimInstance> WeaponAnimLayerClass;
+
+	/** Per-weapon crosshair widget. The HUD replaces its active child when equipment changes. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftClassPtr<UFE_CrossHairWidget> CrosshairWidgetClass;
+
+	/** AnimBP assigned directly to both equipped skeletal weapon meshes. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftClassPtr<UAnimInstance> WeaponMeshAnimInstanceClass;
+
+	/** Spatial sound played once whenever this weapon performs an attack. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftObjectPtr<USoundBase> AttackSound;
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	float AttackSoundVolume = 1.0f;
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	float AttackSoundPitch = 1.0f;
+
+	/** AI hearing loudness emitted by an authoritative attack that has an AttackSound. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	float AttackNoiseLoudness = 1.0f;
+
+	/** Optional hard cap for AI hearing. Zero uses the listener's HearingRange. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	float AttackNoiseMaxRange = 0.0f;
+
+	/** Surface-specific Niagara and sound presentation used by GameplayCue.Impact. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TObjectPtr<UFE_ImpactEffectData> ImpactEffectData;
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	FName AttachSocketName = TEXT("hand_r");
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	FTransform SocketOffset;
+
+	/** Absolute first-person arms transform relative to the camera, applied on equip. Not a weapon socket offset. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	FTransform FirstPersonMeshTransform = FTransform(FRotator(0.0f, -90.0f, 0.0f), FVector(0.0f, 0.0f, -160.0f));
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftClassPtr<UGameplayEffect> DefaultDamageEffect;
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	TArray<TObjectPtr<UFE_WeaponAttackData>> AttackActions;
+
+};
+
+UCLASS(BlueprintType)
+class FALLENERA_API UFE_MeleeWeaponItemData : public UFE_WeaponItemData
+{
+	GENERATED_BODY()
+public:
+	virtual void PostLoad() override;
+private:
+	UPROPERTY(meta=(DeprecatedProperty))
+	EFE_MeleeAttackSequenceMode AttackSequenceMode = EFE_MeleeAttackSequenceMode::Combo;
+};
+
+UCLASS(BlueprintType)
+class FALLENERA_API UFE_RangedWeaponItemData : public UFE_WeaponItemData
+{
+	GENERATED_BODY()
+public:
+	virtual void PostLoad() override;
+private:
+	UPROPERTY(meta=(DeprecatedProperty))
+	FFE_WeaponAimSwaySettings AimSwaySettings;
+
+	/** Opt in for firearms; bows/throwables keep their existing right-click behavior. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	bool bSupportsAiming = false;
+
+	/** Default parts for the current DA-based test inventory. Runtime inventory uses SetWeaponAttachments. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TArray<TSoftObjectPtr<UFE_WeaponAttachmentData>> DefaultAttachments;
+
+	/** Built-in sight when no sight part is equipped. Applies its accuracy bonus, but does not mount a mesh. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftObjectPtr<UFE_WeaponSightData> DefaultSight;
+
+	/** Optional muzzle flash spawned at the active ranged attack's socket. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftObjectPtr<UNiagaraSystem> MuzzleNiagaraSystem;
+
+	/** Legacy Cascade fallback used only when MuzzleNiagaraSystem is empty. */
+	UPROPERTY(meta=(DeprecatedProperty))
+	TSoftObjectPtr<UParticleSystem> MuzzleParticleSystem;
+
+	/** Shared scale for either muzzle Niagara or Particle. */
+	UPROPERTY(meta=(DeprecatedProperty))
 	FVector MuzzleNiagaraScale = FVector::OneVector;
 };

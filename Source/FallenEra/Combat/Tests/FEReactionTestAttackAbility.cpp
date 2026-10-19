@@ -13,7 +13,7 @@ void UFE_ReactionTestAttackAbility::ActivateAbility(const FGameplayAbilitySpecHa
 	const FGameplayEventData* TriggerEventData)
 {
 	const UFE_WeaponItemData* Weapon = Cast<UFE_WeaponItemData>(GetCurrentSourceObject());
-	CacheAttackContext(Weapon, Weapon && !Weapon->AttackActions.IsEmpty() ? Weapon->AttackActions[0].Get() : nullptr);
+	CacheAttackContext(Weapon, Weapon && !Weapon->Template.AttackActions.IsEmpty() ? Weapon->Template.AttackActions[0].Get() : nullptr);
 	TraceTask = UFE_MeleeTraceTask::StartMeleeTrace(this);
 	TraceTask->ReadyForActivation();
 }

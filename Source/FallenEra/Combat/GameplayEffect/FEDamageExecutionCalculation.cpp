@@ -72,9 +72,11 @@ void UFE_DamageExecutionCalculation::Execute_Implementation(
 
 	const float RequestedMultiplier = Spec.GetSetByCallerMagnitude(
 		FallenEraCombatGameplayTags::SetByCaller_Damage_HitRegionMultiplier, false, 1.0f);
+	const float HitQualityMultiplier = Spec.GetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_HitQualityMultiplier, false, 1.0f);
 	// Two uniform samples form a triangular distribution: ordinary hits are more common than extremes.
 	const float CenteredRoll = DamageVarianceRatio > 0.0f ? FMath::FRand() + FMath::FRand() - 1.0f : 0.0f;
-	const float FinalDamage = CalculateDamage(SourceAttackPower, TargetDefensePower, RequestedMultiplier, CenteredRoll);
+	const float FinalDamage = CalculateDamage(SourceAttackPower, TargetDefensePower, RequestedMultiplier, CenteredRoll, HitQualityMultiplier);
 
 	if (FinalDamage > 0.0f)
 	{
@@ -86,7 +88,7 @@ void UFE_DamageExecutionCalculation::Execute_Implementation(
 }
 
 float UFE_DamageExecutionCalculation::CalculateDamage(
-	float AttackPower, float DefensePower, float HitRegionMultiplier, float CenteredRoll) const
+	float AttackPower, float DefensePower, float HitRegionMultiplier, float CenteredRoll, float HitQualityMultiplier) const
 {
 	if (!FMath::IsFinite(AttackPower) || !FMath::IsFinite(DefensePower))
 	{
@@ -96,7 +98,8 @@ float UFE_DamageExecutionCalculation::CalculateDamage(
 	const float Roll = FMath::IsFinite(CenteredRoll) ? FMath::Clamp(CenteredRoll, -1.0f, 1.0f) : 0.0f;
 	const float RegionMultiplier = FMath::IsFinite(HitRegionMultiplier) ? FMath::Max(0.0f, HitRegionMultiplier) : 1.0f;
 	const float RolledAttackPower = FMath::Max(AttackPower, 0.0f) * (1.0f + Variance * Roll);
-	// Defense still precedes the hit-region multiplier; Area hits supply x1.
-	const float Damage = FMath::Max(RolledAttackPower - FMath::Max(DefensePower, 0.0f), 0.0f) * RegionMultiplier;
+	const float QualityMultiplier = FMath::IsFinite(HitQualityMultiplier) ? FMath::Clamp(HitQualityMultiplier, 0.0f, 1.0f) : 0.0f;
+	// Quality scales the final damage; never change source attributes or subtract defense a second time.
+	const float Damage = FMath::Max(RolledAttackPower - FMath::Max(DefensePower, 0.0f), 0.0f) * RegionMultiplier * QualityMultiplier;
 	return FMath::IsFinite(Damage) ? Damage : 0.0f;
 }

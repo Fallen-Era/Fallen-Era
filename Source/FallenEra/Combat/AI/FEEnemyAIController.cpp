@@ -8,6 +8,7 @@
 #include "Combat/Character/FEEnemyCharacter.h"
 #include "Combat/FECombatTeams.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEKnockdownComponent.h"
 #include "Combat/Interface/FEDamageable.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
@@ -257,6 +258,14 @@ void AFE_EnemyAIController::UpdateDecision()
 		StopMovement();
 		return;
 	}
+	if (const UFE_KnockdownComponent* Knockdown = EnemyCharacter->FindComponentByClass<UFE_KnockdownComponent>();
+		Knockdown && Knockdown->IsKnockedDown())
+	{
+		// Preserve target memory and perception. The next normal decision resumes pursuit after getting up.
+		StopMovement();
+		ClearFocus(EAIFocusPriority::Gameplay);
+		return;
+	}
 	if (UAbilitySystemComponent* AbilitySystem = EnemyCharacter->GetAbilitySystemComponent();
 		AbilitySystem && AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Stunned))
 	{
@@ -382,6 +391,14 @@ void AFE_EnemyAIController::UpdatePatrol(AFE_EnemyCharacter& EnemyCharacter)
 
 void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AActor& TargetActor)
 {
+	if (const UFE_KnockdownComponent* Knockdown = EnemyCharacter.FindComponentByClass<UFE_KnockdownComponent>();
+		Knockdown && Knockdown->IsKnockedDown())
+	{
+		// Target-facing rotation must wait for the get-up montage's actual Ended callback.
+		StopMovement();
+		ClearFocus(EAIFocusPriority::Gameplay);
+		return;
+	}
 	SetMovementSpeed(EnemyCharacter, EnemyCharacter.GetChaseMovementSpeed());
 	const float AttackRange = FMath::Max(0.0f, EnemyCharacter.GetAttackRange());
 	const bool bCanTrackActor = HasActiveSightStimulus(TargetActor) ||
