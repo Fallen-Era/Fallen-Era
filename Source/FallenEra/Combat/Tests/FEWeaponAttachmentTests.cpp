@@ -13,6 +13,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "UObject/UnrealType.h"
 #include "FallenEraCharacter.h"
+#include "FallenEraPlayerState.h"
 #include "Combat/FECombatGameplayTags.h"
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -86,6 +87,9 @@ bool FFE_WeaponAttachmentTest::RunTest(const FString& Parameters)
 	Movement->SetSprinting(true);
 	TestFalse(TEXT("Authority rejects sprint while aiming"), Movement->IsSprinting());
 	TestFalse(TEXT("Non-local actor never ticks ADS rendering"), Aiming->IsComponentTickEnabled());
+	Aiming->ApplyShotRecoil(Weapon->Template.VisualRecoilSettings, 0.0f);
+	TestTrue(TEXT("Remote characters do not accumulate local visual recoil"),
+		Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
 	TestTrue(TEXT("Removing mounted sight"), Equipment->SetWeaponAttachments({}));
 	TestFalse(TEXT("Replacing parts cancels active or blending-out ADS"), Aiming->IsAiming());
 	TestTrue(TEXT("Built-in irons restored"), Equipment->GetActiveSightData() == Irons);
@@ -142,6 +146,8 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	}
 	APlayerController* Controller = World->SpawnActor<APlayerController>();
 	Controller->SetAsLocalPlayerController();
+	Controller->PlayerState = World->SpawnActor<AFallenEraPlayerState>();
+	World->InitializeActorsForPlay(FURL());
 	Controller->Possess(Character);
 	TestTrue(TEXT("Test player is locally controlled"), Character->IsLocallyControlled());
 	USkeletalMeshComponent* Arms = Character->GetFirstPersonMesh();
@@ -225,6 +231,90 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Repeated held input is accepted"), Aiming->BeginAim());
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
 	TestTrue(TEXT("Repeated alignment does not drift the cached base"), Arms->GetRelativeTransform().Equals(StableAim, 0.001f));
+	FFE_WeaponVisualRecoilSettings VisualRecoil;
+	VisualRecoil.KickTranslation = FVector(-1.0f, 0.0f, 0.0f);
+	VisualRecoil.KickRotation = FRotator(0.6f, 0.0f, 0.0f);
+	const FRotator ViewBeforeVisualRecoil = Controller->GetControlRotation();
+	const FTransform CameraBeforeVisualRecoil = Character->GetFirstPersonCameraComponent()->GetRelativeTransform();
+	const float FOVBeforeVisualRecoil = Character->GetFirstPersonCameraComponent()->FieldOfView;
+	const FTransform WorldWeaponBeforeVisualRecoil = Equipment->GetEquippedWorldWeaponMesh()->GetComponentTransform();
+	Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
+	TestTrue(TEXT("Shot adds spring velocity without snapping the arms"), Arms->GetRelativeTransform().Equals(StableAim));
+	Aiming->TickComponent(1.0f / 60.0f, LEVELTICK_All, nullptr);
+	const FTransform FirstVisualKick = Aiming->GetVisualRecoilTransform();
+	TestFalse(TEXT("First frame creates a visual kick"), FirstVisualKick.Equals(FTransform::Identity, 0.0001f));
+	TestTrue(TEXT("Kick pulls toward the camera"), FirstVisualKick.GetTranslation().X < 0.0f);
+	TestTrue(TEXT("Kick lifts the muzzle"), FirstVisualKick.Rotator().Pitch > 0.0f);
+	const FTransform KickedSight = Equipment->GetFirstPersonSightMesh()->GetSocketTransform(Sight->AimSocketName)
+		.GetRelativeTransform(Character->GetFirstPersonCameraComponent()->GetComponentTransform());
+	TestTrue(TEXT("ADS alignment preserves shot offset instead of cancelling it"),
+		KickedSight.Equals(DesiredSight * FirstVisualKick, 0.001f));
+	TestTrue(TEXT("Visual recoil preserves arms scale"), Arms->GetRelativeScale3D().Equals(StableAim.GetScale3D()));
+	TestTrue(TEXT("Visual recoil never moves the world weapon"),
+		Equipment->GetEquippedWorldWeaponMesh()->GetComponentTransform().Equals(WorldWeaponBeforeVisualRecoil));
+	TestTrue(TEXT("Visual recoil never rotates ballistic aim"), Controller->GetControlRotation().Equals(ViewBeforeVisualRecoil));
+	TestTrue(TEXT("Visual recoil never moves or rotates the camera"),
+		Character->GetFirstPersonCameraComponent()->GetRelativeTransform().Equals(CameraBeforeVisualRecoil));
+	TestEqual(TEXT("Visual recoil never zooms the camera"), Character->GetFirstPersonCameraComponent()->FieldOfView, FOVBeforeVisualRecoil);
+	Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
+	TestTrue(TEXT("Automatic fire retains the current pose until the next update"),
+		Aiming->GetVisualRecoilTransform().Equals(FirstVisualKick));
+	for (int32 Shot = 0; Shot < 100; ++Shot) { Aiming->ApplyShotRecoil(VisualRecoil, 0.0f); }
+	Aiming->TickComponent(1.0f / 60.0f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Rapid fire has a bounded rotation"),
+		FMath::Abs(Aiming->GetVisualRecoilTransform().Rotator().Pitch) <= VisualRecoil.KickRotation.Pitch * VisualRecoil.MaxStack + 0.001f);
+	for (int32 Frame = 0; Frame < 120; ++Frame) { Aiming->TickComponent(1.0f / 60.0f, LEVELTICK_All, nullptr); }
+	TestTrue(TEXT("Only the cosmetic kick returns to identity"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
+	TestTrue(TEXT("Settled arms return to the exact aligned pose without drift"), Arms->GetRelativeTransform().Equals(StableAim, 0.001f));
+	for (const int32 FrameRate : {30, 60, 144})
+	{
+		Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
+		float PeakPitch = 0.0f;
+		for (int32 Frame = 0; Frame < FrameRate; ++Frame)
+		{
+			Aiming->TickComponent(1.0f / FrameRate, LEVELTICK_All, nullptr);
+			PeakPitch = FMath::Max(PeakPitch, Aiming->GetVisualRecoilTransform().Rotator().Pitch);
+		}
+		TestTrue(FString::Printf(TEXT("Single-shot peak remains stable at %d FPS"), FrameRate),
+			FMath::IsNearlyEqual(PeakPitch, VisualRecoil.KickRotation.Pitch, 0.06f));
+		TestTrue(TEXT("Recoil fully settles at all tested frame rates"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity, 0.001f));
+	}
+	Aiming->ApplyShotRecoil(VisualRecoil, 1.0f);
+	Aiming->TickComponent(0.03f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Perfect RecoilControl prevents visual kick"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
+	VisualRecoil.bEnabled = false;
+	Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
+	Aiming->TickComponent(0.03f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Weapon can disable visual recoil independently"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
+	VisualRecoil.bEnabled = true;
+	Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
+	Aiming->TickComponent(0.02f, LEVELTICK_All, nullptr);
+	Aiming->EndAim();
+	Aiming->TickComponent(0.05f, LEVELTICK_All, nullptr);
+	TestFalse(TEXT("Release blends out rather than instantly dropping the residual kick"),
+		Arms->GetRelativeTransform().Equals(Weapon->Template.FirstPersonMeshTransform));
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Release clears residual kick when ADS blend finishes"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
+	TestFalse(TEXT("Finished release has no recoil-only tick"), Aiming->IsComponentTickEnabled());
+	Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
+	TestFalse(TEXT("Hip fire does not enable ADS presentation tick"), Aiming->IsComponentTickEnabled());
+	const FRotator CameraRotationBeforeAngles = Character->GetFirstPersonCameraComponent()->GetRelativeRotation();
+	for (const FRotator& ViewAngle : {FRotator(80.0f, 137.0f, 0.0f), FRotator(-80.0f, -137.0f, 0.0f)})
+	{
+		Character->GetFirstPersonCameraComponent()->SetRelativeRotation(ViewAngle);
+		Aiming->BeginAim();
+		Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+		Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
+		Aiming->TickComponent(0.02f, LEVELTICK_All, nullptr);
+		const FTransform AngledSight = Equipment->GetFirstPersonSightMesh()->GetSocketTransform(Sight->AimSocketName)
+			.GetRelativeTransform(Character->GetFirstPersonCameraComponent()->GetComponentTransform());
+		TestTrue(TEXT("Recoil remains camera-local at steep pitch and yaw"),
+			AngledSight.Equals(DesiredSight * Aiming->GetVisualRecoilTransform(), 0.001f));
+		Aiming->EndAim(true);
+	}
+	Character->GetFirstPersonCameraComponent()->SetRelativeRotation(CameraRotationBeforeAngles);
+	Aiming->BeginAim();
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
 	Equipment->GetEquippedFirstPersonWeaponMesh()->SetRelativeLocation(FVector(0, 0, 5));
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
 	TestTrue(TEXT("Animated/socket offset changes remain centered with sway disabled"), Equipment->GetFirstPersonSightMesh()->GetSocketTransform(Sight->AimSocketName)
@@ -290,7 +380,9 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	Character->GetFirstPersonCameraComponent()->SetRelativeRotation(OriginalCameraRotation);
 	Sight->Mode = EFE_WeaponSightMode::Scope2D;
 	Aiming->BeginAim();
+	Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Hidden Scope2D arms do not get visual recoil"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
 	TestTrue(TEXT("Scope2D does not move arms to the 3D aim transform"), Arms->GetRelativeTransform().Equals(Weapon->Template.FirstPersonMeshTransform));
 	TestFalse(TEXT("Scope2D hides arms"), Arms->IsVisible());
 	TestFalse(TEXT("Scope2D hides the first-person weapon"), Equipment->GetEquippedFirstPersonWeaponMesh()->IsVisible());
@@ -325,8 +417,12 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Skeletal sight socket supports ADS"), Aiming->CanAim());
 	Aiming->BeginAim();
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
+	Aiming->TickComponent(0.02f, LEVELTICK_All, nullptr);
+	TestFalse(TEXT("Visual recoil is active before swapping"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
 	Equipment->EquipWeaponByItemTag(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
 	TestFalse(TEXT("Swap cancels ADS"), Aiming->IsAiming());
+	TestTrue(TEXT("Swap clears the previous weapon's visual kick"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
 	TestTrue(TEXT("Swap applies the new base, not the previous aim pose"), Arms->GetRelativeTransform().Equals(SecondWeapon->Template.FirstPersonMeshTransform));
 	Equipment->UnequipWeapon();
 	TestTrue(TEXT("Unequip restores original character arms pose"), Arms->GetRelativeTransform().Equals(UnequippedTransform));

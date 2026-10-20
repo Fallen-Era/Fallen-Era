@@ -4,6 +4,7 @@
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Component/FEWeaponAimingComponent.h"
+#include "Combat/Component/FEStaminaComponent.h"
 #include "Combat/FECombatGameplayTags.h"
 #include "Combat/GameplayEffect/FEMovementHandlingGameplayEffect.h"
 #include "GameFramework/Character.h"
@@ -55,6 +56,10 @@ void UFE_PlayerMovementStatsComponent::SetSprinting(bool bNewSprinting)
 	{
 		return;
 	}
+	if (bNewSprinting)
+	{
+		if (UFE_StaminaComponent* Stamina = OwnerActor->FindComponentByClass<UFE_StaminaComponent>()) { Stamina->BeginActionAttempt(); }
+	}
 
 	SetSprintingInternal(bNewSprinting);
 	if (!OwnerActor->HasAuthority())
@@ -78,7 +83,12 @@ void UFE_PlayerMovementStatsComponent::SetSprintingInternal(bool bNewSprinting)
 {
 	// Validate both local prediction and server RPC requests against the current ADS state.
 	const UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>();
-	bNewSprinting = bNewSprinting && (!Aiming || !Aiming->IsAiming());
+	UFE_StaminaComponent* Stamina = GetOwner()->FindComponentByClass<UFE_StaminaComponent>();
+	if (bNewSprinting && (!Aiming || !Aiming->IsAiming()) && Stamina && !Stamina->CanSprintWithStamina())
+	{
+		Stamina->NotifyActionRejected();
+	}
+	bNewSprinting = bNewSprinting && (!Aiming || !Aiming->IsAiming()) && (!Stamina || Stamina->CanSprintWithStamina());
 	if (bSprinting == bNewSprinting)
 	{
 		ApplyMovementSpeed();
@@ -148,6 +158,10 @@ void UFE_PlayerMovementStatsComponent::ApplyMovementState(EFE_PlayerMovementStat
 	if (!OwnerActor || !OwnerActor->HasAuthority())
 	{
 		return;
+	}
+	if (UFE_StaminaComponent* Stamina = OwnerActor->FindComponentByClass<UFE_StaminaComponent>())
+	{
+		Stamina->SetSprintDraining(NewState == EFE_PlayerMovementState::Sprinting);
 	}
 
 	UAbilitySystemComponent* AbilitySystem = UFE_CombatComponent::FindAbilitySystemComponent(OwnerActor);

@@ -4,6 +4,10 @@
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
 #include "Combat/Component/FECharacterStatusComponent.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Component/FEStaminaComponent.h"
+#include "Combat/Weapon/FEWeaponItemData.h"
+#include "Combat/FECombatGameplayTags.h"
 #include "FallenEraPlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
@@ -53,6 +57,7 @@ void UFE_PlayerStatusViewModel::UnbindSources()
 {
 	if (UAbilitySystemComponent* ASC = AbilitySystem.Get())
 	{
+		ASC->RegisterGameplayTagEvent(FallenEraCombatGameplayTags::State_Stamina_Exhausted).Remove(StaminaStateHandle);
 		const TArray<FGameplayAttribute> Attributes = StatusAttributes();
 		for (int32 Index = 0; Index < AttributeChangedHandles.Num(); ++Index)
 		{
@@ -63,10 +68,21 @@ void UFE_PlayerStatusViewModel::UnbindSources()
 	{
 		Status->OnActiveConditionsChanged().Remove(ConditionsChangedHandle);
 	}
+	if (UFE_EquipmentComponent* Equipment = EquipmentComponent.Get())
+	{
+		Equipment->OnAmmoChanged.RemoveDynamic(this, &ThisClass::RefreshAmmo);
+		Equipment->OnWeaponChanged().Remove(WeaponChangedHandle);
+	}
+	if (UFE_StaminaComponent* StaminaSource = StaminaComponent.Get()) { StaminaSource->OnActionRejected.Remove(StaminaRejectedHandle); }
 	AttributeChangedHandles.Reset();
+	StaminaStateHandle.Reset();
 	ConditionsChangedHandle.Reset();
 	AbilitySystem.Reset();
 	StatusComponent.Reset();
+	EquipmentComponent.Reset();
+	WeaponChangedHandle.Reset();
+	StaminaComponent.Reset();
+	StaminaRejectedHandle.Reset();
 }
 
 void UFE_PlayerStatusViewModel::HandlePawnChanged(APawn* Pawn) { RefreshSources(); }
@@ -76,14 +92,25 @@ void UFE_PlayerStatusViewModel::RefreshSources()
 	APlayerController* PC = Controller.Get();
 	APawn* Pawn = PC ? PC->GetPawn() : nullptr;
 	UAbilitySystemComponent* ASC = PC ? UFE_CombatComponent::FindAbilitySystemComponent(PC->PlayerState) : nullptr;
+	if (!ASC) { ASC = UFE_CombatComponent::FindAbilitySystemComponent(Pawn); }
 	UFE_CharacterStatusComponent* Status = Pawn ? Pawn->FindComponentByClass<UFE_CharacterStatusComponent>() : nullptr;
-	if (AbilitySystem.Get() != ASC || StatusComponent.Get() != Status)
+	UFE_EquipmentComponent* Equipment = Pawn ? Pawn->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+	UFE_StaminaComponent* StaminaSource = Pawn ? Pawn->FindComponentByClass<UFE_StaminaComponent>() : nullptr;
+	if (AbilitySystem.Get() != ASC || StatusComponent.Get() != Status || EquipmentComponent.Get() != Equipment || StaminaComponent.Get() != StaminaSource)
 	{
 		UnbindSources();
 		AbilitySystem = ASC;
 		StatusComponent = Status;
+		EquipmentComponent = Equipment;
+		StaminaComponent = StaminaSource;
+		if (StaminaSource)
+		{
+			StaminaRejectedHandle = StaminaSource->OnActionRejected.AddUObject(this, &ThisClass::HandleStaminaActionRejected);
+		}
 		if (ASC)
 		{
+			StaminaStateHandle = ASC->RegisterGameplayTagEvent(FallenEraCombatGameplayTags::State_Stamina_Exhausted)
+				.AddUObject(this, &ThisClass::HandleStaminaStateChanged);
 			for (const FGameplayAttribute& Attribute : StatusAttributes())
 			{
 				AttributeChangedHandles.Add(ASC->GetGameplayAttributeValueChangeDelegate(Attribute)
@@ -94,12 +121,41 @@ void UFE_PlayerStatusViewModel::RefreshSources()
 		{
 			ConditionsChangedHandle = Status->OnActiveConditionsChanged().AddUObject(this, &ThisClass::RefreshConditions);
 		}
+		if (Equipment)
+		{
+			Equipment->OnAmmoChanged.AddUniqueDynamic(this, &ThisClass::RefreshAmmo);
+			WeaponChangedHandle = Equipment->OnWeaponChanged().AddUObject(this, &ThisClass::HandleWeaponChanged);
+		}
 	}
 	RefreshValues();
 	RefreshConditions();
+	RefreshAmmo();
+}
+
+void UFE_PlayerStatusViewModel::HandleWeaponChanged(const UFE_WeaponItemData* Weapon)
+{
+	RefreshAmmo();
+}
+
+void UFE_PlayerStatusViewModel::RefreshAmmo()
+{
+	const UFE_EquipmentComponent* Equipment = EquipmentComponent.Get();
+	const UFE_WeaponItemData* Weapon = Equipment ? Equipment->GetCurrentWeaponData() : nullptr;
+	const FFE_WeaponAmmoState Ammo = Equipment ? Equipment->GetAmmoState() : FFE_WeaponAmmoState();
+	// Async weapon loading and owner-only ammo replication may complete in either order.
+	const bool bShowAmmo = Weapon && Weapon->Template.AmmoSettings.bUsesAmmo &&
+		Ammo.WeaponTag == Equipment->GetCurrentItemTag();
+	UE_MVVM_SET_PROPERTY_VALUE(bUsesAmmo, bShowAmmo);
+	UE_MVVM_SET_PROPERTY_VALUE(LoadedAmmo, bShowAmmo ? Ammo.LoadedAmmo : 0);
+	UE_MVVM_SET_PROPERTY_VALUE(ReserveAmmo, bShowAmmo ? Ammo.ReserveAmmo : 0);
+	AmmoChanged.Broadcast();
 }
 
 void UFE_PlayerStatusViewModel::HandleAttributeChanged(const FOnAttributeChangeData& Data) { RefreshValues(); }
+
+void UFE_PlayerStatusViewModel::HandleStaminaStateChanged(FGameplayTag Tag, int32 Count) { RefreshValues(); }
+
+void UFE_PlayerStatusViewModel::HandleStaminaActionRejected() { StaminaActionRejected.Broadcast(); }
 
 void UFE_PlayerStatusViewModel::RefreshValues()
 {
@@ -109,6 +165,7 @@ void UFE_PlayerStatusViewModel::RefreshValues()
 	UE_MVVM_SET_PROPERTY_VALUE(MaxHealth, Attributes ? Attributes->GetMaxHealth() : 1.0f);
 	UE_MVVM_SET_PROPERTY_VALUE(Stamina, Attributes ? Attributes->GetStamina() : 0.0f);
 	UE_MVVM_SET_PROPERTY_VALUE(MaxStamina, Attributes ? Attributes->GetMaxStamina() : 1.0f);
+	UE_MVVM_SET_PROPERTY_VALUE(bStaminaExhausted, ASC && ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Stamina_Exhausted));
 	ValuesChanged.Broadcast();
 }
 

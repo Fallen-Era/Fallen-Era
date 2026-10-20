@@ -6,6 +6,7 @@
 #include "AbilitySystemComponent.h"
 #include "Combat/Weapon/Attachment/FEWeaponAttachmentData.h"
 #include "Combat/Item/FEEquipmentInstanceData.h"
+#include "Combat/Item/FEWeaponAmmoData.h"
 #include "FEEquipmentComponent.generated.h"
 
 class UAnimInstance;
@@ -21,6 +22,7 @@ class USkeletalMeshComponent;
 struct FStreamableHandle;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEWeaponChanged, const UFE_WeaponItemData*);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnFEAmmoChanged);
 
 /** Owns weapon selection, presentation, granted weapon abilities, and equip-time effects. */
 UCLASS(ClassGroup=(Combat), meta=(BlueprintSpawnableComponent))
@@ -65,6 +67,28 @@ public:
 	/** Server snapshot; client combat stats continue to come from replicated GAS attributes. */
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Instance")
 	FFE_WeaponInstanceData GetWeaponInstanceData() const { return CurrentWeaponInstance; }
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Stamina")
+	float GetWeaponStaminaCost() const { return CurrentWeaponInstance.StaminaCost; }
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Ammo")
+	FFE_WeaponAmmoState GetAmmoState() const { return AmmoState; }
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Ammo")
+	int32 GetReserveAmmo(FGameplayTag AmmoType) const;
+	/** Server-only integration point for a future inventory. Replaces a loose-ammo stack. */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment|Ammo")
+	bool SetReserveAmmo(FGameplayTag AmmoType, int32 Count);
+	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment|Ammo")
+	bool RequestReload();
+	UPROPERTY(BlueprintAssignable, Category="FallenEra|Equipment|Ammo")
+	FOnFEAmmoChanged OnAmmoChanged;
+	bool CanFireWeaponAmmo(const UFE_WeaponItemData* Weapon) const;
+	bool ConsumeWeaponAmmo(const UFE_WeaponItemData* Weapon);
+	void RefundWeaponAmmo(const UFE_WeaponItemData* Weapon, FGuid InstanceId);
+	bool CanReloadWeapon() const;
+	bool BeginWeaponReload();
+	bool FinishWeaponReload();
+	void CancelWeaponReload();
+	void CompleteAmmoAttack(const UFE_WeaponItemData* Weapon, bool bCharged, bool bShotConsumed);
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment")
 	const UFE_WeaponAttackData* GetCurrentAttackForInputTag(FGameplayTag InputTag) const;
@@ -118,6 +142,9 @@ public:
 	bool bInitialArmorApplied = false;
 
 protected:
+	/** Seeded once on authority. Duplicate exact tags are combined; unrelated ammo never substitutes. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Equipment|Test Inventory")
+	TArray<FFE_AmmoStack> TestAmmoInventory;
 	/** Temporary test inventory. Replace with inventory data when that system is available. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Equipment|Test Inventory")
 	TArray<FGameplayTag> TestItemTags;
@@ -196,6 +223,19 @@ protected:
 	FOnFEWeaponChanged WeaponChangedDelegate;
 
 private:
+	UPROPERTY(ReplicatedUsing=OnRep_AmmoState)
+	FFE_WeaponAmmoState AmmoState;
+	UPROPERTY(Replicated, Transient)
+	TArray<FFE_AmmoStack> AmmoInventory;
+	UPROPERTY(Transient)
+	TMap<FGameplayTag, int32> TestLoadedAmmoByItemTag;
+	FGameplayTag AmmoInstanceItemTag;
+	bool bAmmoInventoryInitialized = false;
+	void InitializeAmmoInventory();
+	void InitializeWeaponAmmo();
+	void SaveLoadedWeaponAmmo();
+	void PublishAmmoState();
+	UFUNCTION() void OnRep_AmmoState();
 	UPROPERTY(Transient)
 	FFE_WeaponInstanceData CurrentWeaponInstance;
 	/** Retains only the active definition while asynchronous refresh temporarily clears CurrentWeaponData. */

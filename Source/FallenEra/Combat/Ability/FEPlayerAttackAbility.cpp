@@ -8,6 +8,7 @@
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
 #include "NiagaraSystem.h"
 #include "Particles/ParticleSystem.h"
@@ -26,6 +27,53 @@ UFE_PlayerAttackAbility::UFE_PlayerAttackAbility()
 	FGameplayTagContainer AttackAbilityTags;
 	AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Attack);
 	SetAssetTags(AttackAbilityTags);
+	ActivationBlockedTags.AddTag(FallenEraCombatGameplayTags::State_Combat_Reloading);
+	InputRetryBlockedTags.AddTag(FallenEraCombatGameplayTags::State_Combat_Reloading);
+}
+
+bool UFE_PlayerAttackAbility::CheckCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
+	FGameplayTagContainer* OptionalRelevantTags) const
+{
+	if (!Super::CheckCost(Handle, ActorInfo, OptionalRelevantTags)) { return false; }
+	const ACharacter* Character = ActorInfo ? Cast<ACharacter>(ActorInfo->AvatarActor.Get()) : nullptr;
+	const UFE_WeaponAttackData* Attack = ResolveAttackData(Handle, Character);
+	if (!Attack || (!Attack->IsA<UFE_HitscanAttackData>() && !Attack->IsA<UFE_ProjectileAttackDataBase>())) { return true; }
+	const UFE_WeaponItemData* Weapon = GetWeaponData(Character);
+	const UFE_EquipmentComponent* Equipment = Character ? Character->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+	return Weapon && (!Weapon->Template.AmmoSettings.bUsesAmmo || (Equipment && Equipment->CanFireWeaponAmmo(Weapon)));
+}
+
+bool UFE_PlayerAttackAbility::HasLoadedWeaponAmmo() const
+{
+	const AActor* Avatar = GetAvatarActorFromActorInfo();
+	const UFE_EquipmentComponent* Equipment = Avatar ? Avatar->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+	return Equipment && Equipment->CanFireWeaponAmmo(GetCachedWeaponData());
+}
+
+bool UFE_PlayerAttackAbility::CommitWeaponShotCost()
+{
+	if (!HasLoadedWeaponAmmo() || !CommitAbilityCost(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo)) { return false; }
+	AActor* Avatar = GetAvatarActorFromActorInfo();
+	if (Avatar->HasAuthority())
+	{
+		UFE_EquipmentComponent* Equipment = Avatar->FindComponentByClass<UFE_EquipmentComponent>();
+		AmmoShotInstanceId = Equipment->GetWeaponInstanceData().InstanceId;
+		if (!Equipment->ConsumeWeaponAmmo(GetCachedWeaponData())) { return false; }
+		bAmmoConsumedThisActivation = GetCachedWeaponData()->Template.AmmoSettings.bUsesAmmo;
+	}
+	return true;
+}
+
+void UFE_PlayerAttackAbility::RefundFailedProjectileAmmo()
+{
+	if (AActor* Avatar = GetAvatarActorFromActorInfo(); Avatar && Avatar->HasAuthority() && bAmmoConsumedThisActivation)
+	{
+		if (UFE_EquipmentComponent* Equipment = Avatar->FindComponentByClass<UFE_EquipmentComponent>())
+		{
+			Equipment->RefundWeaponAmmo(GetCachedWeaponData(), AmmoShotInstanceId);
+		}
+		bAmmoConsumedThisActivation = false;
+	}
 }
 
 ECollisionChannel UFE_PlayerAttackAbility::GetAttackTraceChannel() const
@@ -74,10 +122,21 @@ void UFE_PlayerAttackAbility::EndAbility(
 			Combat->ClearAttackStaggerProtection(this);
 		}
 	}
+	const UFE_WeaponItemData* AmmoWeapon = CachedWeaponData;
+	const bool bCharged = CachedAttackData && CachedAttackData->IsA<UFE_ChargedProjectileAttackData>();
+	const bool bConsumed = bAmmoConsumedThisActivation;
 	CachedAttackData = nullptr;
 	CachedWeaponData = nullptr;
 	CachedDamageEffectClass = nullptr;
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
+	if (AActor* Avatar = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr; !bWasCancelled && Avatar && Avatar->HasAuthority())
+	{
+		if (UFE_EquipmentComponent* Equipment = Avatar->FindComponentByClass<UFE_EquipmentComponent>())
+		{
+			Equipment->CompleteAmmoAttack(AmmoWeapon, bCharged, bConsumed);
+		}
+	}
+	bAmmoConsumedThisActivation = false;
 }
 
 const UFE_WeaponAttackData* UFE_PlayerAttackAbility::ResolveAttackData(const ACharacter* CombatCharacter) const
@@ -131,6 +190,7 @@ void UFE_PlayerAttackAbility::CacheAttackContext(
 	const UFE_WeaponAttackData* AttackData)
 {
 	CachedWeaponData = const_cast<UFE_WeaponItemData*>(WeaponData);
+	bAmmoConsumedThisActivation = false;
 	CachedAttackData = const_cast<UFE_WeaponAttackData*>(AttackData);
 	CachedDamageEffectClass = nullptr;
 	if (AActor* Avatar = GetAvatarActorFromActorInfo())
@@ -349,5 +409,12 @@ void UFE_PlayerAttackAbility::ApplyLocalRecoil(
 	if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
 	{
 		Combat->ApplyLocalWeaponRecoil(RecoilSettings, RecoilControl);
+	}
+	if (const UFE_WeaponItemData* Weapon = GetCachedWeaponData())
+	{
+		if (UFE_WeaponAimingComponent* Aiming = CombatCharacter->FindComponentByClass<UFE_WeaponAimingComponent>())
+		{
+			Aiming->ApplyShotRecoil(Weapon->Template.VisualRecoilSettings, RecoilControl);
+		}
 	}
 }

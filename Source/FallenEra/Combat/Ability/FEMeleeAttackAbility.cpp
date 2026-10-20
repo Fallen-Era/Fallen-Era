@@ -9,13 +9,32 @@
 #include "GameFramework/Character.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Component/FEStaminaComponent.h"
+#include "Combat/FECombatGameplayTags.h"
 #include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/Collision/FECameraMeleeTrace.h"
-#include "GameFramework/Controller.h"
+#include "Combat/Interface/FECombatPresentation.h"
 
 ECollisionChannel UFE_MeleeAttackAbility::GetAttackTraceChannel() const
 {
 	return FECollisionChannels::PlayerMeleeTrace;
+}
+
+bool UFE_MeleeAttackAbility::CheckCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
+	FGameplayTagContainer* OptionalRelevantTags) const
+{
+	if (!Super::CheckCost(Handle, ActorInfo, OptionalRelevantTags)) { return false; }
+	const AActor* Avatar = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr;
+	const UFE_StaminaComponent* Stamina = Avatar ? Avatar->FindComponentByClass<UFE_StaminaComponent>() : nullptr;
+	const UFE_EquipmentComponent* Equipment = Avatar ? Avatar->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+	if (Stamina && Equipment && !Stamina->CanSpendStamina(Equipment->GetWeaponStaminaCost()))
+	{
+		// Report the reason to GAS; pure cost queries must not start UI animations themselves.
+		if (OptionalRelevantTags) { OptionalRelevantTags->AddTag(FallenEraCombatGameplayTags::Ability_ActivateFail_Stamina); }
+		return false;
+	}
+	return !Stamina || Equipment != nullptr;
 }
 
 void UFE_MeleeAttackAbility::ActivateAbility(
@@ -42,7 +61,7 @@ void UFE_MeleeAttackAbility::ActivateAbility(
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponItemData* WeaponData = CombatCharacter ? GetWeaponData(CombatCharacter) : nullptr;
 	const UFE_MeleeAttackData* FirstAttack = Cast<UFE_MeleeAttackData>(ResolveAttackData(CombatCharacter));
-	if (!CombatCharacter || !WeaponData || !FirstAttack || !CommitAbility(Handle, ActorInfo, ActivationInfo))
+	if (!CombatCharacter || !WeaponData || !FirstAttack || !CommitAbilityCooldown(Handle, ActorInfo, ActivationInfo, false))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
@@ -73,7 +92,7 @@ void UFE_MeleeAttackAbility::ActivateAbility(
 	bAttackAutomatic = FirstAttack->bAutomatic;
 	PerformCurrentAttack();
 
-	if (bAttackAutomatic)
+	if (bAttackAutomatic && IsActive())
 	{
 		InputReleaseTask = UAbilityTask_WaitInputRelease::WaitInputRelease(this, false);
 		InputReleaseTask->OnRelease.AddDynamic(this, &UFE_MeleeAttackAbility::OnInputReleased);
@@ -131,12 +150,10 @@ void UFE_MeleeAttackAbility::ExecuteAttack(
 	{
 		return;
 	}
-	FVector ViewStart = CombatCharacter->GetPawnViewLocation();
-	FRotator ViewRotation = CombatCharacter->GetBaseAimRotation();
-	if (const AController* Controller = CombatCharacter->GetController())
-	{
-		Controller->GetPlayerViewPoint(ViewStart, ViewRotation);
-	}
+	const FFE_CombatAim Aim = IFE_CombatPresentation::ResolveCombatAim(
+		CombatCharacter, MeleeAttackData->TraceRange, FECollisionChannels::PlayerHitscanTrace);
+	const FVector ViewStart = Aim.Origin;
+	const FRotator ViewRotation = Aim.Direction.Rotation();
 	FFE_CameraMeleeTraceVolume Volume = FECameraMeleeTrace::MakeVolume(
 		ViewStart, ViewRotation, MeleeAttackData->TraceRange, MeleeAttackData->TraceHalfExtent);
 	TArray<FHitResult> Hits;
@@ -229,6 +246,16 @@ void UFE_MeleeAttackAbility::PerformCurrentAttack()
 		: nullptr;
 	if (!CombatCharacter || !WeaponData || !AttackData || bAttackInProgress)
 	{
+		return;
+	}
+	// Automatic/combo swings pay individually, not just once at ability activation.
+	UFE_StaminaComponent* Stamina = CombatCharacter->FindComponentByClass<UFE_StaminaComponent>();
+	const UFE_EquipmentComponent* Equipment = CombatCharacter->FindComponentByClass<UFE_EquipmentComponent>();
+	if (!CommitAbilityCost(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo) ||
+		(Stamina && (!Equipment || !Stamina->TrySpendStamina(Equipment->GetWeaponStaminaCost()))))
+	{
+		if (Stamina && Equipment && !Stamina->CanSpendStamina(Equipment->GetWeaponStaminaCost())) { Stamina->NotifyActionRejected(); }
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 		return;
 	}
 

@@ -5,6 +5,7 @@
 #include "GameplayTagContainer.h"
 #include "FEPlayerStatusWidget.generated.h"
 
+class UHorizontalBox;
 class UFE_PlayerStatusViewModel;
 class UProgressBar;
 class UTextBlock;
@@ -15,7 +16,7 @@ class UFE_CharacterStatusComponent;
 class UFE_ConditionSlotWidget;
 struct FOnAttributeChangeData;
 
-/** UMG base for W_PlayerStatusWidget. Bind the four named widgets in its Blueprint child. */
+/** Event-driven status display; named widgets are bound by the Blueprint child. */
 UCLASS(Blueprintable)
 class FALLENERA_API UFE_PlayerStatusWidget : public UUserWidget
 {
@@ -47,6 +48,15 @@ protected:
 	UPROPERTY(meta=(BindWidget))
 	TObjectPtr<UTextBlock> Text_StaminaText;
 
+	UPROPERTY(meta=(BindWidget))
+	TObjectPtr<UHorizontalBox> HorizontalBox_AmmoStatusBox;
+
+	UPROPERTY(meta=(BindWidget))
+	TObjectPtr<UTextBlock> Text_LoadedAmmo;
+
+	UPROPERTY(meta=(BindWidget))
+	TObjectPtr<UTextBlock> Text_ReserveAmmo;
+
 	/** Keep this exact name in W_PlayerStatusWidget. Optional allows old widget assets to load during migration. */
 	UPROPERTY(meta=(BindWidgetOptional))
 	TObjectPtr<UVerticalBox> VerticalBox_ConditionBox;
@@ -54,14 +64,32 @@ protected:
 	/** Set this to W_ConditionSlotWidget; the native slot class is used as a functional fallback. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Player Status|Conditions")
 	TSubclassOf<UFE_ConditionSlotWidget> ConditionSlotWidgetClass;
+	UPROPERTY(EditDefaultsOnly, Category="Player Status|Stamina Warning", meta=(ClampMin="0.02", Units="s"))
+	float StaminaBlinkInterval = 0.12f;
+	UPROPERTY(EditDefaultsOnly, Category="Player Status|Stamina Warning", meta=(ClampMin="1", ClampMax="10"))
+	int32 StaminaBlinkCount = 3;
+	UPROPERTY(EditDefaultsOnly, Category="Player Status|Stamina Warning", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float StaminaBlinkDimOpacity = 0.2f;
 
 private:
+	void BlinkStaminaBar();
+	void UpdateStaminaBlink();
+	void StopStaminaBlink();
+	FTimerHandle StaminaBlinkTimer;
+	float OriginalStaminaBarOpacity = 1.0f;
+	int32 StaminaBlinkStep = 0;
+	bool bStaminaBlinking = false;
+	FLinearColor OriginalStaminaBarColor = FLinearColor::White;
+	bool bStaminaBarColorCached = false;
 	void RefreshValues();
+	void RefreshAmmo();
 	void RefreshHealth(float Health, float MaxHealth) const;
 	void RefreshStamina(float Stamina, float MaxStamina) const;
 	void RebuildConditionSlots();
 	FDelegateHandle ValuesChangedHandle;
 	FDelegateHandle ConditionsChangedHandle;
+	FDelegateHandle AmmoChangedHandle;
+	FDelegateHandle StaminaRejectedHandle;
 	TMap<FGameplayTag, double> ConditionEndTimes;
 	UPROPERTY(Transient)
 	TMap<FGameplayTag, TObjectPtr<UFE_ConditionSlotWidget>> ConditionSlots;

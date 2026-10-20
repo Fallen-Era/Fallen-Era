@@ -40,6 +40,11 @@ public:
 	FGameplayAttributeData MaxStamina;
 	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, MaxStamina)
 
+	/** Stamina restored per second after the recovery delay; modified by traits/effects normally. */
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_StaminaRecoveryRate, Category="Attributes|Stamina")
+	FGameplayAttributeData StaminaRecoveryRate;
+	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, StaminaRecoveryRate)
+
 	/** Persistent attack power, including the currently equipped weapon's Offense bonus. */
 	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_AttackPower, Category="Attributes|Combat")
 	FGameplayAttributeData AttackPower;
@@ -80,6 +85,8 @@ protected:
 
 	UFUNCTION()
 	void OnRep_MaxStamina(const FGameplayAttributeData& OldValue);
+	UFUNCTION()
+	void OnRep_StaminaRecoveryRate(const FGameplayAttributeData& OldValue);
 
 	UFUNCTION()
 	void OnRep_AttackPower(const FGameplayAttributeData& OldValue);

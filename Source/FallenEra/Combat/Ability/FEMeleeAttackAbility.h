@@ -17,6 +17,8 @@ class FALLENERA_API UFE_MeleeAttackAbility : public UFE_PlayerAttackAbility
 	GENERATED_BODY()
 
 public:
+	virtual bool CheckCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
+		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
 	virtual void ActivateAbility(
 		const FGameplayAbilitySpecHandle Handle,
 		const FGameplayAbilityActorInfo* ActorInfo,

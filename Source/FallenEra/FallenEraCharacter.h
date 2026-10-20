@@ -25,6 +25,7 @@ class UFE_CombatComponent;
 class UFE_EquipmentComponent;
 class UFE_CharacterStatusComponent;
 class UFE_PlayerMovementStatsComponent;
+class UFE_StaminaComponent;
 class UFE_WeaponAimingComponent;
 class UNavigationInvokerComponent;
 class UAIPerceptionStimuliSourceComponent;
@@ -100,7 +101,10 @@ public:
 	UFallenEraAbilitySystemComponent* GetFallenEraAbilitySystemComponent() const;
 	virtual USkeletalMeshComponent* GetCombatFirstPersonMesh() const override { return GetFirstPersonMesh(); }
 	virtual UCameraComponent* GetCombatCamera() const override;
-	virtual bool IsCombatFirstPersonView() const override { return !bThirdPersonView; }
+	virtual UCameraComponent* GetCombatTraceCamera() const override { return FirstPersonCameraComponent; }
+	virtual bool IsCombatFirstPersonView() const override { return !bThirdPersonView || bAimFirstPersonView; }
+	virtual bool AreCombatFirstPersonMeshesVisible() const override { return bFirstPersonMeshesVisible; }
+	virtual void SetCombatAimView(bool bAiming, float BlendTime) override;
 	virtual void CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult) override;
 	virtual void PawnClientRestart() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -110,7 +114,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Camera")
 	void SetThirdPersonView(bool bEnabled);
 	UFUNCTION(BlueprintPure, Category="FallenEra|Camera")
-	bool IsThirdPersonView() const { return bThirdPersonView; }
+	bool IsThirdPersonView() const { return !IsCombatFirstPersonView(); }
 	UFUNCTION(BlueprintPure, Category="FallenEra|Camera")
 	UCameraComponent* GetThirdPersonCameraComponent() const { return ThirdPersonCameraComponent; }
 	UFUNCTION(BlueprintPure, Category="FallenEra|Camera")
@@ -126,6 +130,7 @@ public:
 	virtual void PostInitializeComponents() override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void OnRep_PlayerState() override;
+	virtual void CheckJumpInput(float DeltaTime) override;
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Equipment")
 	UFE_EquipmentComponent* GetEquipmentComponent() const { return EquipmentComponent; }
@@ -181,6 +186,8 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Movement", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UFE_PlayerMovementStatsComponent> PlayerMovementStatsComponent;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Stamina")
+	TObjectPtr<UFE_StaminaComponent> StaminaComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UAIPerceptionStimuliSourceComponent> PerceptionStimuliSourceComponent;
@@ -252,9 +259,22 @@ private:
 	/** Owner predicts the change; the server needs the same camera for authoritative attack traces. */
 	UPROPERTY(ReplicatedUsing=OnRep_ThirdPersonView)
 	bool bThirdPersonView = false;
+	/** Short third-person dolly before cutting to ADS; never travels all the way through the body. */
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|Camera|Aim", meta=(ClampMin="0.0", Units="cm"))
+	float AimCameraApproachDistance = 60.0f;
+	/** Fraction of the ADS transition at which the rendered camera and meshes switch together. */
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|Camera|Aim", meta=(ClampMin="0.1", ClampMax="1.0"))
+	float AimCameraSwitchAlpha = 0.85f;
+	// ADS is already predicted/replicated by WeaponAimingComponent; never overwrite the manual preference.
+	bool bAimFirstPersonView = false;
+	bool bFirstPersonMeshesVisible = true;
+	float PerspectiveBlendAlpha = 1.0f;
+	float PerspectiveBlendTime = 0.0f;
 	UFUNCTION() void OnRep_ThirdPersonView();
 	UFUNCTION(Server, Reliable, WithValidation) void ServerSetThirdPersonView(bool bEnabled);
 	void ApplyPerspectivePresentation();
+	bool ShouldShowFirstPersonPresentation() const;
+	void UpdatePerspectiveSpringArm();
 	void ResetPerspectiveAim();
 
 };

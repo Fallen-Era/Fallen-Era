@@ -1,7 +1,11 @@
 #include "Combat/Component/FEWeaponAimingComponent.h"
 
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Component/FECombatComponent.h"
+#include "Combat/FECombatGameplayTags.h"
+#include "AbilitySystemComponent.h"
 #include "Combat/Component/FEPlayerMovementStatsComponent.h"
+#include "Combat/Component/FEStaminaComponent.h"
 #include "Combat/Interface/FECombatPresentation.h"
 #include "Combat/Weapon/Attachment/FEWeaponSightData.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
@@ -32,12 +36,11 @@ bool UFE_WeaponAimingComponent::CanAim() const
 {
 	const UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
 	if (!Equipment || !Equipment->AreWeaponAttachmentsReady() || !Equipment->GetActiveSightData()) { return false; }
+	const UAbilitySystemComponent* ASC = UFE_CombatComponent::FindAbilitySystemComponent(GetOwner());
+	// Tag and owner-only ammo state can arrive independently. Both must permit ADS,
+	// including direct component calls and BP abilities with overridden tag defaults.
+	if (Equipment->GetAmmoState().bReloading || (ASC && ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_Reloading))) { return false; }
 	if (!IsLocallyControlled()) { return true; }
-	if (!IFE_CombatPresentation::UsesFirstPersonView(GetOwner()))
-	{
-		return Cast<UFE_RangedWeaponItemData>(Equipment->GetCurrentWeaponData()) &&
-			IFE_CombatPresentation::FindCombatCamera(GetOwner()) && Equipment->GetEquippedWorldWeaponMesh();
-	}
 	const UFE_WeaponSightData* Data = Equipment->GetActiveSightData();
 	const UMeshComponent* Mesh = Equipment->GetFirstPersonSightMesh();
 	const USkeletalMeshComponent* Arms = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner());
@@ -55,6 +58,7 @@ bool UFE_WeaponAimingComponent::BeginAim()
 	// ADS must capture the uneffected baseline, not the previous frame's charge sway.
 	StopChargeSwayPresentation();
 	bIsAiming = true;
+	RefreshAimView();
 	if (UFE_PlayerMovementStatsComponent* Movement = GetOwner()->FindComponentByClass<UFE_PlayerMovementStatsComponent>();
 		Movement && Movement->IsSprinting())
 	{
@@ -82,6 +86,7 @@ bool UFE_WeaponAimingComponent::BeginAim()
 			CachedSwaySettings = Weapon->Template.AimSwaySettings;
 		}
 		ResetSway();
+		ResetVisualRecoil();
 		// Final socket transforms are measured after skeletal evaluation, including weapon/optic poses.
 		AddTickPrerequisiteComponent(ArmsMesh.Get());
 		if (USkeletalMeshComponent* Mesh = Cast<USkeletalMeshComponent>(WeaponMesh.Get())) { AddTickPrerequisiteComponent(Mesh); }
@@ -111,9 +116,27 @@ void UFE_WeaponAimingComponent::EndAim(bool bImmediate)
 {
 	const bool bWasAiming = bIsAiming;
 	bIsAiming = false;
+	RefreshAimView();
 	if (bWasAiming && GetOwner()->HasAuthority()) { GetOwner()->ForceNetUpdate(); }
 	if (bImmediate || !Sight || Sight->BlendOutTime <= 0.0f) { RestorePresentation(); }
 	else if (bCapturedPresentation) { SetComponentTickEnabled(true); }
+}
+
+void UFE_WeaponAimingComponent::OnRep_IsAiming()
+{
+	RefreshAimView();
+}
+
+void UFE_WeaponAimingComponent::RefreshAimView()
+{
+	if (UFE_StaminaComponent* Stamina = GetOwner()->FindComponentByClass<UFE_StaminaComponent>()) { Stamina->RefreshActivity(); }
+	if (IFE_CombatPresentation* Presentation = Cast<IFE_CombatPresentation>(GetOwner()))
+	{
+		const UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
+		const UFE_WeaponSightData* Settings = Sight ? Sight.Get() : (Equipment ? Equipment->GetActiveSightData() : nullptr);
+		const float BlendTime = Settings ? (bIsAiming ? Settings->BlendInTime : Settings->BlendOutTime) : 0.15f;
+		Presentation->SetCombatAimView(bIsAiming, BlendTime);
+	}
 }
 
 void UFE_WeaponAimingComponent::TickComponent(float DeltaTime, ELevelTick TickType,
@@ -148,6 +171,7 @@ void UFE_WeaponAimingComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	AimAlpha = FMath::FInterpConstantTo(AimAlpha, bIsAiming ? 1.0f : 0.0f, DeltaTime,
 		Duration > 0.0f ? 1.0f / Duration : BIG_NUMBER);
 	UpdateSway(DeltaTime);
+	UpdateVisualRecoil(DeltaTime);
 	UpdatePresentation();
 	if (!bIsAiming && AimAlpha <= 0.0f) { RestorePresentation(); }
 	else if (bIsAiming && AimAlpha >= 1.0f && Sight->Mode == EFE_WeaponSightMode::Scope2D)
@@ -248,6 +272,71 @@ FTransform UFE_WeaponAimingComponent::GetAimSwayTransform() const
 	return FTransform(FRotator(SwayRotation.X, SwayRotation.Y, SwayRotation.Z), SwayLocation);
 }
 
+void UFE_WeaponAimingComponent::ApplyShotRecoil(const FFE_WeaponVisualRecoilSettings& Settings, float RecoilControl)
+{
+	if (!IsLocallyControlled() || !bCapturedPresentation || !bIsAiming || !bFirstPersonPresentation ||
+		!Sight || Sight->Mode == EFE_WeaponSightMode::Scope2D || !Settings.bEnabled ||
+		Settings.KickTranslation.ContainsNaN() || Settings.KickRotation.ContainsNaN() || Settings.PivotOffset.ContainsNaN() ||
+		!FMath::IsFinite(Settings.RecoveryTime) || !FMath::IsFinite(Settings.MaxStack) || !FMath::IsFinite(RecoilControl))
+	{
+		return;
+	}
+	const float Strength = 1.0f - FMath::Clamp(RecoilControl, 0.0f, 1.0f);
+	if (Strength <= KINDA_SMALL_NUMBER) { return; }
+	CachedVisualRecoilSettings = Settings;
+	CachedVisualRecoilSettings.RecoveryTime = FMath::Clamp(Settings.RecoveryTime, 0.03f, 2.0f);
+	CachedVisualRecoilSettings.MaxStack = FMath::Clamp(Settings.MaxStack, 1.0f, 10.0f);
+	// A critically damped impulse peaks at v / (omega * e). Add velocity, not pose,
+	// so another shot cannot snap or restart an already moving weapon.
+	const float PeakToVelocity = 6.0f * FMath::Exp(1.0f) / CachedVisualRecoilSettings.RecoveryTime;
+	const FVector RotationKick(Settings.KickRotation.Pitch,
+		FMath::FRandRange(-FMath::Abs(Settings.KickRotation.Yaw), FMath::Abs(Settings.KickRotation.Yaw)),
+		FMath::FRandRange(-FMath::Abs(Settings.KickRotation.Roll), FMath::Abs(Settings.KickRotation.Roll)));
+	const FVector LocationLimit = Settings.KickTranslation.GetAbs() * (PeakToVelocity * CachedVisualRecoilSettings.MaxStack);
+	const FVector RotationLimit = FVector(Settings.KickRotation.Pitch, Settings.KickRotation.Yaw, Settings.KickRotation.Roll)
+		.GetAbs() * (PeakToVelocity * CachedVisualRecoilSettings.MaxStack);
+	VisualRecoilLocationVelocity = (VisualRecoilLocationVelocity + Settings.KickTranslation * (PeakToVelocity * Strength))
+		.BoundToBox(-LocationLimit, LocationLimit);
+	VisualRecoilRotationVelocity = (VisualRecoilRotationVelocity + RotationKick * (PeakToVelocity * Strength))
+		.BoundToBox(-RotationLimit, RotationLimit);
+}
+
+void UFE_WeaponAimingComponent::UpdateVisualRecoil(float DeltaTime)
+{
+	if (DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime)) { return; }
+	if (VisualRecoilLocation.IsZero() && VisualRecoilLocationVelocity.IsZero() &&
+		VisualRecoilRotation.IsZero() && VisualRecoilRotationVelocity.IsZero()) { return; }
+	const float SmoothingTime = CachedVisualRecoilSettings.RecoveryTime / 3.0f;
+	FMath::CriticallyDampedSmoothing(VisualRecoilLocation, VisualRecoilLocationVelocity,
+		FVector::ZeroVector, FVector::ZeroVector, DeltaTime, SmoothingTime);
+	FMath::CriticallyDampedSmoothing(VisualRecoilRotation, VisualRecoilRotationVelocity,
+		FVector::ZeroVector, FVector::ZeroVector, DeltaTime, SmoothingTime);
+	const FVector LocationLimit = CachedVisualRecoilSettings.KickTranslation.GetAbs() * CachedVisualRecoilSettings.MaxStack;
+	const FRotator& Kick = CachedVisualRecoilSettings.KickRotation;
+	const FVector RotationLimit = FVector(Kick.Pitch, Kick.Yaw, Kick.Roll).GetAbs() * CachedVisualRecoilSettings.MaxStack;
+	VisualRecoilLocation = VisualRecoilLocation.BoundToBox(-LocationLimit, LocationLimit);
+	VisualRecoilRotation = VisualRecoilRotation.BoundToBox(-RotationLimit, RotationLimit);
+	if (VisualRecoilLocation.IsNearlyZero(0.0001f) && VisualRecoilRotation.IsNearlyZero(0.0001f) &&
+		VisualRecoilLocationVelocity.IsNearlyZero(0.001f) && VisualRecoilRotationVelocity.IsNearlyZero(0.001f))
+	{
+		ResetVisualRecoil();
+	}
+}
+
+FTransform UFE_WeaponAimingComponent::GetVisualRecoilTransform() const
+{
+	const float Alpha = FMath::SmoothStep(0.0f, 1.0f, AimAlpha);
+	const FQuat Rotation = FRotator(VisualRecoilRotation.X * Alpha,
+		VisualRecoilRotation.Y * Alpha, VisualRecoilRotation.Z * Alpha).Quaternion();
+	const FVector& Pivot = CachedVisualRecoilSettings.PivotOffset;
+	return FTransform(Rotation, Pivot - Rotation.RotateVector(Pivot) + VisualRecoilLocation * Alpha);
+}
+
+void UFE_WeaponAimingComponent::ResetVisualRecoil()
+{
+	VisualRecoilLocation = VisualRecoilLocationVelocity = VisualRecoilRotation = VisualRecoilRotationVelocity = FVector::ZeroVector;
+}
+
 void UFE_WeaponAimingComponent::UpdatePresentation()
 {
 	const float Alpha = FMath::SmoothStep(0.0f, 1.0f, AimAlpha);
@@ -275,6 +364,14 @@ void UFE_WeaponAimingComponent::UpdatePresentation()
 			DesiredSightWorld.GetRelativeTransform(ParentWorld), OriginalArmsTransform.GetScale3D());
 		FTransform Result;
 		Result.Blend(OriginalArmsTransform, AimArmsTransform, Alpha);
+		// Apply intentional shot motion AFTER optic alignment, in camera space. The next
+		// socket measurement is arms-relative, so it cannot feed this offset back into ADS.
+		if (!VisualRecoilLocation.IsZero() || !VisualRecoilRotation.IsZero())
+		{
+			const FTransform CameraWorld = Camera->GetComponentTransform();
+			const FTransform ArmsInCamera = (Result * ParentWorld).GetRelativeTransform(CameraWorld);
+			Result = (ArmsInCamera * GetVisualRecoilTransform() * CameraWorld).GetRelativeTransform(ParentWorld);
+		}
 		ArmsMesh->SetRelativeTransform(Result);
 	}
 	AimAlphaChanged.Broadcast(Alpha);
@@ -315,8 +412,10 @@ void UFE_WeaponAimingComponent::RestorePresentation()
 	if (ScopeWidget) { ScopeWidget->RemoveFromParent(); ScopeWidget = nullptr; }
 	bCapturedPresentation = false;
 	bIsAiming = false;
+	RefreshAimView();
 	AimAlpha = 0.0f;
 	ResetSway();
+	ResetVisualRecoil();
 	Sight = nullptr;
 	Camera.Reset();
 	WeaponMesh.Reset();

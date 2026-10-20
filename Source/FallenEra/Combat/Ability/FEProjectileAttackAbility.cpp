@@ -1,5 +1,6 @@
 #include "Combat/Ability/FEProjectileAttackAbility.h"
 #include "Combat/Interface/FECombatPresentation.h"
+#include "Combat/Interface/FEDamageable.h"
 #include "Combat/Component/FECombatComponent.h"
 
 #include "Components/SkeletalMeshComponent.h"
@@ -28,14 +29,14 @@ void UFE_ProjectileAttackAbility::ActivateAbility(
 	const UFE_ProjectileAttackData* AttackData = Cast<UFE_ProjectileAttackData>(ResolveAttackData(CombatCharacter));
 	if (!CombatCharacter || !WeaponData || !AttackData ||
 		!CanFireProjectile(CombatCharacter, AttackData) ||
-		!CommitAbility(Handle, ActorInfo, ActivationInfo))
+		!CheckCost(Handle, ActorInfo))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
 	}
 
 	CacheAttackContext(WeaponData, AttackData);
-	if (!CacheProjectileClass(AttackData))
+	if (!CacheProjectileClass(AttackData) || !CommitAbilityCooldown(Handle, ActorInfo, ActivationInfo, false) || !CommitWeaponShotCost())
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
@@ -45,7 +46,7 @@ void UFE_ProjectileAttackAbility::ActivateAbility(
 	PlayAttackPresentation(CombatCharacter, WeaponData, AttackData);
 	if (CombatCharacter->HasAuthority())
 	{
-		ExecuteAttack(CombatCharacter, WeaponData, AttackData);
+		if (!SpawnProjectile(CombatCharacter, WeaponData, AttackData, AttackData->InitialSpeed)) { RefundFailedProjectileAmmo(); }
 	}
 	ApplyLocalRecoil(CombatCharacter, AttackData->RecoilSettings);
 
@@ -188,7 +189,7 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 		{
 			// Authoritative projectiles use the replicated world presentation. Local previews
 			// use the first-person weapon when one exists so the arc starts at the visible muzzle.
-			WeaponMesh = LaunchContext == EFE_ProjectileLaunchContext::LocalPreview && IFE_CombatPresentation::UsesFirstPersonView(CombatCharacter)
+			WeaponMesh = LaunchContext == EFE_ProjectileLaunchContext::LocalPreview && IFE_CombatPresentation::UsesFirstPersonMeshes(CombatCharacter)
 				? Equipment->GetEquippedFirstPersonWeaponMesh()
 				: Equipment->GetEquippedWorldWeaponMesh();
 			if (!WeaponMesh)
@@ -215,16 +216,14 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 	const bool bUseCameraAim = AttackData->bUseAimDirection || AttackData->IsA<UFE_BowAttackData>();
 	if (bUseCameraAim)
 	{
-		if (const AController* Controller = CombatCharacter->GetController())
+		if (CombatCharacter->GetController())
 		{
-			FVector ViewLocation;
-			FRotator ViewRotation;
-			Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
-
-			FVector AimPoint = ViewLocation
-				+ ViewRotation.Vector() * FMath::Max(0.0f, AttackData->AimTraceRange);
-			CameraTraceStart = ViewLocation;
-			CameraTraceEnd = AimPoint;
+			const FFE_CombatAim Aim = IFE_CombatPresentation::ResolveCombatAim(
+				CombatCharacter, AttackData->AimTraceRange, FECollisionChannels::PlayerHitscanTrace);
+			FVector AimPoint = Aim.AimPoint;
+			CameraTraceStart = Aim.CameraStart;
+			CameraTraceEnd = Aim.CameraEnd;
+			bCameraAimHit = Aim.bHasCameraTarget;
 			bHasCameraAimDebugData = true;
 			if (const UWorld* World = CombatCharacter->GetWorld())
 			{
@@ -232,24 +231,28 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 				TArray<FHitResult> AimHits;
 				World->LineTraceMultiByChannel(
 					AimHits,
-					ViewLocation,
+					Aim.Origin,
 					AimPoint,
 					FECollisionChannels::PlayerHitscanTrace,
 					QueryParams);
 
-				// Multi trace also returns overlap responses, which is required because
-				// Enemy collision can overlap the player hitscan channel.
-				if (!AimHits.IsEmpty())
+				// The shoulder camera may see around cover; the FP-to-target path must still be clear.
+				for (const FHitResult& Hit : AimHits)
 				{
-					AimPoint = AimHits[0].ImpactPoint;
-					bCameraAimHit = true;
+					if (Hit.bBlockingHit || (Hit.GetActor() && Hit.GetActor()->GetClass()->ImplementsInterface(UFE_Damageable::StaticClass())))
+					{
+						if (Hit.bStartPenetrating) { return false; }
+						AimPoint = Hit.ImpactPoint;
+						bCameraAimHit = true;
+						break;
+					}
 				}
 			}
 			ResolvedAimPoint = AimPoint;
 
 			const FVector SocketToAim = AimPoint - OutLocation;
 			LaunchRotation = SocketToAim.IsNearlyZero()
-				? ViewRotation
+				? Aim.Direction.Rotation()
 				: SocketToAim.Rotation();
 		}
 	}

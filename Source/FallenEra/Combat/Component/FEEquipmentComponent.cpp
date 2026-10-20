@@ -2,6 +2,7 @@
 
 #include "Combat/FECombatGameplayTags.h"
 #include "Combat/Ability/FEWeaponAimAbility.h"
+#include "Combat/Ability/FEWeaponReloadAbility.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Animation/AnimInstance.h"
@@ -29,6 +30,7 @@ UFE_EquipmentComponent::UFE_EquipmentComponent()
 void UFE_EquipmentComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	InitializeAmmoInventory();
 	if (bPreloadWeaponAssetsOnBeginPlay)
 	{
 		PreloadWeaponAssets();
@@ -43,6 +45,8 @@ void UFE_EquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 	DOREPLIFETIME(UFE_EquipmentComponent, WeaponAttachmentLoadout);
 	DOREPLIFETIME(UFE_EquipmentComponent, EquippedArmor);
 	DOREPLIFETIME(UFE_EquipmentComponent, bInitialArmorApplied);
+	DOREPLIFETIME_CONDITION(UFE_EquipmentComponent, AmmoState, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(UFE_EquipmentComponent, AmmoInventory, COND_OwnerOnly);
 }
 
 void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -199,7 +203,10 @@ void UFE_EquipmentComponent::OnRep_CurrentItemTagIndex()
 
 void UFE_EquipmentComponent::EquipCurrentWeapon()
 {
+	SaveLoadedWeaponAmmo();
 	InterruptWeaponActions();
+	CancelWeaponReload();
+	AmmoInstanceItemTag = FGameplayTag();
 	if (WeaponLoadHandle)
 	{
 		WeaponLoadHandle->CancelHandle();
@@ -208,6 +215,7 @@ void UFE_EquipmentComponent::EquipCurrentWeapon()
 	ClearEquippedWeaponOffense();
 	ClearWeaponAbilities();
 	CurrentWeaponData = nullptr;
+	PublishAmmoState();
 	ClearWeaponAttachments();
 	PendingWeaponData = nullptr;
 	ClearWeaponVisuals();
@@ -273,6 +281,7 @@ void UFE_EquipmentComponent::InterruptWeaponActions()
 		FGameplayTagContainer AttackAbilityTags;
 		AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Attack);
 		AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim);
+		AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Reload);
 		AbilitySystem->CancelAbilities(&AttackAbilityTags);
 		if (UFallenEraAbilitySystemComponent* FallenEraAbilitySystem =
 			Cast<UFallenEraAbilitySystemComponent>(AbilitySystem))
@@ -385,6 +394,14 @@ void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 	ApplyWeaponVisuals();
 	InitializeWeaponAttachments();
 	CacheWeaponAbilities();
+	InitializeWeaponAmmo();
+	if (GetOwner()->HasAuthority() && CurrentWeaponInstance.LoadedAmmo == 0 && CanReloadWeapon())
+	{
+		const bool bChargedOnly = !WeaponData->Template.AttackActions.IsEmpty() &&
+			WeaponData->Template.AttackActions.ContainsByPredicate([](const TObjectPtr<UFE_WeaponAttackData>& Attack) { return Attack && Attack->IsA<UFE_ChargedProjectileAttackData>(); });
+		if (bChargedOnly) { CompleteAmmoAttack(WeaponData, true, true); }
+		else { RequestReload(); }
+	}
 	WeaponChangedDelegate.Broadcast(CurrentWeaponData);
 	if (bPreloadWeaponAssetsOnBeginPlay) { FinishPreloadingWeaponDataAssets(); }
 }
@@ -392,6 +409,7 @@ void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 bool UFE_EquipmentComponent::SetWeaponInstanceData(const FFE_WeaponInstanceData& NewInstance)
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority() || !CurrentWeaponData || !NewInstance.IsValid()) { return false; }
+	if (CurrentWeaponData->Template.AmmoSettings.bUsesAmmo && NewInstance.LoadedAmmo > CurrentWeaponData->Template.AmmoSettings.MagazineCapacity) { return false; }
 	InterruptWeaponActions();
 	CurrentWeaponInstance = NewInstance;
 	if (!CurrentWeaponInstance.InstanceId.IsValid()) { CurrentWeaponInstance.InstanceId = FGuid::NewGuid(); }
@@ -400,6 +418,8 @@ bool UFE_EquipmentComponent::SetWeaponInstanceData(const FFE_WeaponInstanceData&
 	ApplyEquippedWeaponOffense();
 	WeaponAttachmentLoadout.WeaponTag = FGameplayTag();
 	InitializeWeaponAttachments();
+	SaveLoadedWeaponAmmo();
+	PublishAmmoState();
 	return true;
 }
 
@@ -446,6 +466,8 @@ void UFE_EquipmentComponent::GatherWeaponDependencyPaths(
 	AddPath(WeaponData->Template.CrosshairWidgetClass.ToSoftObjectPath(), WeaponData->Template.CrosshairWidgetClass.IsValid());
 	AddPath(WeaponData->Template.AttackSound.ToSoftObjectPath(), WeaponData->Template.AttackSound.IsValid());
 	AddPath(WeaponData->Template.DefaultDamageEffect.ToSoftObjectPath(), WeaponData->Template.DefaultDamageEffect.IsValid());
+	AddPath(WeaponData->Template.AmmoSettings.ReloadMontage.ToSoftObjectPath(), WeaponData->Template.AmmoSettings.ReloadMontage.IsValid());
+	AddPath(WeaponData->Template.AmmoSettings.WeaponReloadMontage.ToSoftObjectPath(), WeaponData->Template.AmmoSettings.WeaponReloadMontage.IsValid());
 	if (const UFE_RangedWeaponItemData* RangedWeaponData = Cast<UFE_RangedWeaponItemData>(WeaponData))
 	{
 		AddPath(
@@ -640,7 +662,7 @@ void UFE_EquipmentComponent::EnsureWeaponMeshComponents(bool bUseSkeletalMesh)
 
 void UFE_EquipmentComponent::RefreshPerspectivePresentation()
 {
-	const bool bFirstPerson = IFE_CombatPresentation::UsesFirstPersonView(GetOwner());
+	const bool bFirstPerson = IFE_CombatPresentation::UsesFirstPersonMeshes(GetOwner());
 	const bool bHasFirstPersonMesh = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner()) != nullptr;
 	const auto UpdateBranch = [bFirstPerson, bHasFirstPersonMesh](UMeshComponent* Root, bool bFirstPersonBranch)
 	{
@@ -652,6 +674,8 @@ void UFE_EquipmentComponent::RefreshPerspectivePresentation()
 		{
 			if (UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(Component))
 			{
+				Primitive->SetFirstPersonPrimitiveType(bFirstPersonBranch ? EFirstPersonPrimitiveType::FirstPerson :
+					(bHasFirstPersonMesh && bFirstPerson ? EFirstPersonPrimitiveType::WorldSpaceRepresentation : EFirstPersonPrimitiveType::None));
 				Primitive->SetOnlyOwnerSee(bFirstPersonBranch);
 				Primitive->SetOwnerNoSee(bFirstPersonBranch ? !bFirstPerson : (bHasFirstPersonMesh && bFirstPerson));
 			}
@@ -769,6 +793,13 @@ void UFE_EquipmentComponent::CacheWeaponAbilities()
 	WeaponAbilitySystem = AbilitySystem;
 
 	TSet<FGameplayTag> GrantedInputTags;
+	if (CurrentWeaponData->Template.AmmoSettings.bUsesAmmo)
+	{
+		FGameplayAbilitySpec ReloadSpec(UFE_WeaponReloadAbility::StaticClass(), 1, INDEX_NONE, CurrentWeaponData);
+		ReloadSpec.GetDynamicSpecSourceTags().AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_Reload);
+		GrantedWeaponAbilityHandles.Add(AbilitySystem->GiveAbility(ReloadSpec));
+		GrantedInputTags.Add(FallenEraCombatGameplayTags::Ability_Input_Combat_Reload);
+	}
 	if (const UFE_RangedWeaponItemData* Ranged = Cast<UFE_RangedWeaponItemData>(CurrentWeaponData);
 		Ranged && Ranged->Template.bSupportsAiming)
 	{

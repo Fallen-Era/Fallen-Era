@@ -2,6 +2,7 @@
 
 bool FFE_WeaponInstanceData::IsValid() const
 {
+	if (LoadedAmmo < 0 || !FMath::IsFinite(StaminaCost) || StaminaCost < 0.0f) { return false; }
 	const FFE_WeaponStat& Stats = ResolveStats();
 	if (!FMath::IsFinite(Stats.Offense) || Stats.Offense < 0.0f ||
 		!FMath::IsFinite(Stats.Accuracy) || Stats.Accuracy < 0.0f || Stats.Accuracy > 1.0f ||

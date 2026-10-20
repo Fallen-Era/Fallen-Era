@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Combat/Ability/FEMeleeAttackAbility.h"
+#include "Combat/Ability/FEProjectileAttackAbility.h"
 #include "Combat/Interface/FEDamageable.h"
 #include "GameFramework/Actor.h"
 #include "FEMeleeDamageTestActor.generated.h"
@@ -24,4 +25,13 @@ class UFE_MeleeDamageTestAbility : public UFE_MeleeAttackAbility
 	GENERATED_BODY()
 public:
 	void RunTrace(const ACharacter* Character, const UFE_WeaponItemData* Weapon, const UFE_WeaponAttackData* Attack) const;
+};
+
+UCLASS(NotBlueprintable, Transient)
+class UFE_ProjectileAimTestAbility : public UFE_ProjectileAttackAbility
+{
+	GENERATED_BODY()
+public:
+	bool GetPreviewLaunch(const ACharacter* Character, const UFE_ProjectileAttackDataBase* Attack,
+		FVector& Location, FVector& Direction) const;
 };

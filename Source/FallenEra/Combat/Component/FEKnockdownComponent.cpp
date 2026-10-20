@@ -78,6 +78,7 @@ bool UFE_KnockdownComponent::TryStartFromHit(FName HitBone, const FVector& Direc
 	{
 		FGameplayTagContainer ActionTags(FallenEraCombatGameplayTags::Ability_Combat_Attack);
 		ActionTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim);
+		ActionTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Reload);
 		MutableASC->CancelAbilities(&ActionTags);
 	}
 	if (UFE_CombatComponent* MutableCombat = OwnerCharacter->FindComponentByClass<UFE_CombatComponent>())

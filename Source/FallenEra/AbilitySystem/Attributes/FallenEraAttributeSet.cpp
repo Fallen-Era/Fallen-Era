@@ -9,6 +9,7 @@ UFallenEraAttributeSet::UFallenEraAttributeSet()
 	, MaxHealth(100.0f)
 	, Stamina(100.0f)
 	, MaxStamina(100.0f)
+	, StaminaRecoveryRate(10.0f)
 	, AttackPower(0.0f)
 	, DefensePower(0.0f)
 	, KnockbackResistance(0.0f)
@@ -26,7 +27,8 @@ void UFallenEraAttributeSet::PreAttributeChange(const FGameplayAttribute& Attrib
 	{
 		NewValue = FMath::Max(NewValue, 1.0f);
 	}
-	else if (Attribute == GetAttackPowerAttribute() || Attribute == GetDefensePowerAttribute() || Attribute == GetKnockbackResistanceAttribute())
+	else if (Attribute == GetAttackPowerAttribute() || Attribute == GetDefensePowerAttribute() ||
+		Attribute == GetKnockbackResistanceAttribute() || Attribute == GetStaminaRecoveryRateAttribute())
 	{
 		NewValue = FMath::Max(NewValue, 0.0f);
 	}
@@ -100,6 +102,10 @@ void UFallenEraAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModC
 	{
 		SetStamina(FMath::Clamp(GetStamina(), 0.0f, GetMaxStamina()));
 	}
+	else if (Data.EvaluatedData.Attribute == GetStaminaRecoveryRateAttribute())
+	{
+		SetStaminaRecoveryRate(FMath::Max(GetStaminaRecoveryRate(), 0.0f));
+	}
 
 	UpdateDeadStateTag();
 }
@@ -129,6 +135,7 @@ void UFallenEraAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, MaxHealth, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, Stamina, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, MaxStamina, COND_None, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, StaminaRecoveryRate, COND_OwnerOnly, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, AttackPower, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, DefensePower, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, KnockbackResistance, COND_None, REPNOTIFY_Always);
@@ -154,6 +161,11 @@ void UFallenEraAttributeSet::OnRep_Stamina(const FGameplayAttributeData& OldValu
 void UFallenEraAttributeSet::OnRep_MaxStamina(const FGameplayAttributeData& OldValue)
 {
 	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, MaxStamina, OldValue);
+}
+
+void UFallenEraAttributeSet::OnRep_StaminaRecoveryRate(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, StaminaRecoveryRate, OldValue);
 }
 
 void UFallenEraAttributeSet::OnRep_AttackPower(const FGameplayAttributeData& OldValue)

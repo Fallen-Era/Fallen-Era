@@ -536,7 +536,7 @@ void UFE_CombatComponent::PlayWeaponAttackEffectsLocal(
 	UMeshComponent* WeaponMesh = nullptr;
 	if (const UFE_EquipmentComponent* Equipment = Character->FindComponentByClass<UFE_EquipmentComponent>())
 	{
-		WeaponMesh = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonView(Character)
+		WeaponMesh = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonMeshes(Character)
 			? Equipment->GetEquippedFirstPersonWeaponMesh()
 			: Equipment->GetEquippedWorldWeaponMesh();
 		if (!WeaponMesh)
@@ -740,14 +740,14 @@ void UFE_CombatComponent::StartChargeProjectilePresentationLocal(
 	{
 		if (const UFE_EquipmentComponent* Equipment = Character->FindComponentByClass<UFE_EquipmentComponent>())
 		{
-			AttachParent = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonView(Character) && Equipment->GetEquippedFirstPersonWeaponMesh()
+			AttachParent = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonMeshes(Character) && Equipment->GetEquippedFirstPersonWeaponMesh()
 				? static_cast<USceneComponent*>(Equipment->GetEquippedFirstPersonWeaponMesh())
 				: static_cast<USceneComponent*>(Equipment->GetEquippedWorldWeaponMesh());
 		}
 	}
 	else
 	{
-		AttachParent = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonView(Character)
+			AttachParent = Character->IsLocallyControlled() && IFE_CombatPresentation::UsesFirstPersonMeshes(Character)
 			? IFE_CombatPresentation::FindFirstPersonMesh(Character)
 			: nullptr;
 		if (!AttachParent)

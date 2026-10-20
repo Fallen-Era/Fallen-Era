@@ -33,6 +33,12 @@ struct FALLENERA_API FFE_WeaponInstanceData
 	GENERATED_BODY()
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Instance")
 	FGuid InstanceId;
+	/** Editable DA test seed. Runtime writes affect the equipped copy, never the shared DA. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Instance|Ammo", meta=(ClampMin="0"))
+	int32 LoadedAmmo = 0;
+	/** Per-swing cost; copied into runtime equipment so inventory instances can override it independently. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Instance|Combat", meta=(ClampMin="0.0"))
+	float StaminaCost = 10.0f;
 	/** Intrinsic item stats only; do not include attachment bonuses or character buffs. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Instance")
 	FFE_WeaponStat ItemData;

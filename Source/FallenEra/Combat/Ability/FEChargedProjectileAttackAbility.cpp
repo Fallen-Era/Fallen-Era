@@ -33,7 +33,7 @@ void UFE_ChargedProjectileAttackAbility::ActivateAbility(
 	const UFE_ChargedProjectileAttackData* AttackData = Cast<UFE_ChargedProjectileAttackData>(ResolveAttackData(CombatCharacter));
 	if (!CombatCharacter || !WeaponData || !AttackData || !SupportsChargedAttackData(AttackData) ||
 		!CanFireProjectile(CombatCharacter, AttackData) ||
-		!CommitAbility(Handle, ActorInfo, ActivationInfo))
+		!CheckCost(Handle, ActorInfo) || !CommitAbilityCooldown(Handle, ActorInfo, ActivationInfo, false))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
@@ -86,6 +86,11 @@ void UFE_ChargedProjectileAttackAbility::BeginRelease()
 	{
 		return;
 	}
+	if (!CheckCost(CurrentSpecHandle, CurrentActorInfo))
+	{
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+		return;
+	}
 
 	bReleaseRequested = true;
 	ReleasedChargeAlpha = CalculateChargeAlpha();
@@ -133,11 +138,16 @@ void UFE_ChargedProjectileAttackAbility::FireChargedProjectile()
 		return;
 	}
 
-	SpawnProjectile(
+	if (!CommitWeaponShotCost())
+	{
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+		return;
+	}
+	if (!SpawnProjectile(
 		CombatCharacter,
 		WeaponData,
 		CachedChargedAttackData,
-		CalculateLaunchSpeed());
+		CalculateLaunchSpeed())) { RefundFailedProjectileAmmo(); }
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 }
 

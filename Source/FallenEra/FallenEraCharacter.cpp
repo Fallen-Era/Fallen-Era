@@ -27,6 +27,7 @@
 #include "Combat/Component/FEEquipmentComponent.h"
 #include "Combat/Component/FEWeaponAimingComponent.h"
 #include "Combat/Component/FEPlayerMovementStatsComponent.h"
+#include "Combat/Component/FEStaminaComponent.h"
 #include "NavigationInvokerComponent.h"
 #include "Perception/AIPerceptionStimuliSourceComponent.h"
 #include "Perception/AISense_Sight.h"
@@ -98,6 +99,7 @@ AFallenEraCharacter::AFallenEraCharacter()
 	CharacterStatusComponent = CreateDefaultSubobject<UFE_CharacterStatusComponent>(TEXT("CharacterStatusComponent"));
 	PlayerMovementStatsComponent =
 		CreateDefaultSubobject<UFE_PlayerMovementStatsComponent>(TEXT("PlayerMovementStatsComponent"));
+	StaminaComponent = CreateDefaultSubobject<UFE_StaminaComponent>(TEXT("StaminaComponent"));
 	PerceptionStimuliSourceComponent =
 		CreateDefaultSubobject<UAIPerceptionStimuliSourceComponent>(TEXT("PerceptionStimuliSourceComponent"));
 	NavigationInvokerComponent = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvokerComponent"));
@@ -168,6 +170,7 @@ void AFallenEraCharacter::BeginPlay()
 	}
 	SetCombatInputEnabled(true);
 	ApplyPerspectivePresentation();
+	StaminaComponent->InitializeAbilitySystem();
 	if (PlayerMovementStatsComponent)
 	{
 		PlayerMovementStatsComponent->RefreshMovementState();
@@ -183,6 +186,7 @@ void AFallenEraCharacter::PossessedBy(AController* NewController)
 	{
 		FallenEraPlayerState->InitializeAbilitySystem(this);
 	}
+	StaminaComponent->InitializeAbilitySystem();
 	if (HasAuthority() && EquipmentComponent)
 	{
 		EquipmentComponent->RefreshEquipment();
@@ -201,6 +205,7 @@ void AFallenEraCharacter::OnRep_PlayerState()
 	{
 		FallenEraPlayerState->InitializeAbilitySystem(this);
 	}
+	StaminaComponent->InitializeAbilitySystem();
 	if (EquipmentComponent)
 	{
 		EquipmentComponent->RefreshEquipment();
@@ -298,6 +303,7 @@ void AFallenEraCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 void AFallenEraCharacter::AbilityInputPressed(const FInputActionValue& Value, FGameplayTag InputTag)
 {
 	(void)Value;
+	if (StaminaComponent) { StaminaComponent->BeginActionAttempt(); }
 	if (UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent())
 	{
 		AbilitySystem->AbilityInputTagPressed(InputTag);
@@ -363,6 +369,8 @@ void AFallenEraCharacter::DoMove(float Right, float Forward)
 
 bool AFallenEraCharacter::CanJumpInternal_Implementation() const
 {
+	// Holding an already-started jump must not shorten its height after paying the take-off cost.
+	if (!bWasJumping && StaminaComponent && !StaminaComponent->CanJumpWithStamina()) { return false; }
 	const UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent();
 	if (AbilitySystem && (
 		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_InputBlocked) ||
@@ -376,8 +384,30 @@ bool AFallenEraCharacter::CanJumpInternal_Implementation() const
 	return Super::CanJumpInternal_Implementation();
 }
 
+void AFallenEraCharacter::CheckJumpInput(float DeltaTime)
+{
+	const int32 PreviousJumpCount = JumpCurrentCount;
+	Super::CheckJumpInput(DeltaTime);
+	// Keep resource transactions outside the overridable BP OnJumped event.
+	// Falling off a ledge may increment the count without a successful jump, so also test bWasJumping.
+	if (HasAuthority() && bWasJumping && JumpCurrentCount > PreviousJumpCount && StaminaComponent)
+	{
+		StaminaComponent->ConsumeJumpStamina();
+	}
+}
+
 void AFallenEraCharacter::DoJumpStart()
 {
+	if (StaminaComponent)
+	{
+		StaminaComponent->BeginActionAttempt();
+		const UFallenEraAbilitySystemComponent* ASC = GetFallenEraAbilitySystemComponent();
+		const bool bMovementBlocked = ASC && ASC->HasMatchingGameplayTag(FallenEraGameplayTags::State_MovementBlocked);
+		if (!bMovementBlocked && !StaminaComponent->CanJumpWithStamina() && Super::CanJumpInternal_Implementation())
+		{
+			StaminaComponent->NotifyActionRejected();
+		}
+	}
 	// pass Jump to the character
 	Jump();
 }
@@ -448,6 +478,7 @@ void AFallenEraCharacter::HandleSprintReleased(const FInputActionValue& Value)
 
 void AFallenEraCharacter::PressCombatAbility(const FGameplayTag& InputTag)
 {
+	if (StaminaComponent) { StaminaComponent->BeginActionAttempt(); }
 	if (UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent())
 	{
 		AbilitySystem->AbilityInputTagPressed(InputTag);

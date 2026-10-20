@@ -22,7 +22,7 @@ bool FFE_AttributeLifetimeReplicationTest::RunTest(const FString& Parameters)
 	TArray<FLifetimeProperty> LifetimeProps;
 	Attributes->GetLifetimeReplicatedProps(LifetimeProps);
 	TestTrue(TEXT("Direct query initializes property indices"), AttributeClass->HasAnyClassFlags(CLASS_ReplicationDataIsSetUp));
-	TestEqual(TEXT("All nine attributes have separate registrations"), LifetimeProps.Num(), 9);
+	TestEqual(TEXT("All ten attributes have separate registrations"), LifetimeProps.Num(), 10);
 	TSet<uint16> RepIndices;
 	for (const FLifetimeProperty& Entry : LifetimeProps)
 	{
@@ -32,14 +32,14 @@ bool FFE_AttributeLifetimeReplicationTest::RunTest(const FString& Parameters)
 
 	for (const FName Name : {FName(TEXT("Health")), FName(TEXT("MaxHealth")), FName(TEXT("Stamina")),
 		FName(TEXT("MaxStamina")), FName(TEXT("AttackPower")), FName(TEXT("DefensePower")),
-		FName(TEXT("KnockbackResistance")), FName(TEXT("Accuracy")), FName(TEXT("RecoilControl"))})
+		FName(TEXT("KnockbackResistance")), FName(TEXT("Accuracy")), FName(TEXT("RecoilControl")), FName(TEXT("StaminaRecoveryRate"))})
 	{
 		const FProperty* Property = FindFieldChecked<FProperty>(AttributeClass, Name);
 		const FLifetimeProperty* Entry = LifetimeProps.FindByPredicate(
 			[Property](const FLifetimeProperty& Item) { return Item.RepIndex == Property->RepIndex; });
 		if (TestNotNull(*FString::Printf(TEXT("%s has a lifetime entry"), *Name.ToString()), Entry))
 		{
-			const ELifetimeCondition Expected = Name == TEXT("Accuracy") || Name == TEXT("RecoilControl")
+			const ELifetimeCondition Expected = Name == TEXT("Accuracy") || Name == TEXT("RecoilControl") || Name == TEXT("StaminaRecoveryRate")
 				? COND_OwnerOnly : COND_None;
 			TestTrue(*FString::Printf(TEXT("%s preserves its network audience"), *Name.ToString()), Entry->Condition == Expected);
 			TestTrue(*FString::Printf(TEXT("%s always invokes GAS RepNotify"), *Name.ToString()), Entry->RepNotifyCondition == REPNOTIFY_Always);

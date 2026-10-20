@@ -31,3 +31,9 @@ void UFE_MeleeDamageTestAbility::RunTrace(const ACharacter* Character, const UFE
 {
 	ExecuteAttack(Character, Weapon, Attack);
 }
+
+bool UFE_ProjectileAimTestAbility::GetPreviewLaunch(const ACharacter* Character, const UFE_ProjectileAttackDataBase* Attack,
+	FVector& Location, FVector& Direction) const
+{
+	return GetProjectileLaunchTransform(Character, Attack, EFE_ProjectileLaunchContext::LocalPreview, Location, Direction);
+}

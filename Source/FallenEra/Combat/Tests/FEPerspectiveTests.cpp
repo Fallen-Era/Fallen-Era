@@ -12,6 +12,8 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshSocket.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -71,6 +73,10 @@ bool FFE_PerspectiveTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Presentation interface selects third camera"), IFE_CombatPresentation::FindCombatCamera(Player) == Third);
 	TestFalse(TEXT("Presentation interface leaves FP mode"), IFE_CombatPresentation::UsesFirstPersonView(Player));
 	TestFalse(TEXT("Full body visible to owner in TP"), Player->GetMesh()->bOwnerNoSee);
+	TestTrue(TEXT("TP body disables the renderer's forced owner-hiding mode"),
+		Player->GetMesh()->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::None);
+	TestTrue(TEXT("TP weapon and attachment use ordinary world rendering"),
+		WorldWeapon->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::None && WorldSight->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::None);
 	TestTrue(TEXT("FP arms and legs hidden from owner in TP"), Player->GetFirstPersonMesh()->bOwnerNoSee && Player->GetFirstPersonLegsMesh()->bOwnerNoSee);
 	TestTrue(TEXT("World weapon and attachment visible in TP"), !WorldWeapon->bOwnerNoSee && !WorldSight->bOwnerNoSee);
 	TestTrue(TEXT("FP weapon hidden in TP"), FirstWeapon->bOwnerNoSee && FirstWeapon->bOnlyOwnerSee);
@@ -84,7 +90,13 @@ bool FFE_PerspectiveTest::RunTest(const FString& Parameters)
 	UFE_RangedWeaponItemData* Weapon = NewObject<UFE_RangedWeaponItemData>(Player);
 	UFE_WeaponSightData* Sight = NewObject<UFE_WeaponSightData>(Player);
 	Sight->BlendInTime = 0.2f;
+	Sight->BlendOutTime = 0.2f;
 	Sight->AimFieldOfView = 50.0f;
+	UStaticMesh* WeaponMesh = NewObject<UStaticMesh>(Player);
+	UStaticMeshSocket* AimSocket = NewObject<UStaticMeshSocket>(WeaponMesh);
+	AimSocket->SocketName = Sight->AimSocketName;
+	WeaponMesh->Sockets.Add(AimSocket);
+	FirstWeapon->SetStaticMesh(WeaponMesh);
 	Weapon->Template.bSupportsAiming = true;
 	Weapon->Template.DefaultSight = Sight;
 	FindFProperty<FObjectPropertyBase>(Equipment->GetClass(), TEXT("CurrentWeaponData"))->SetObjectPropertyValue_InContainer(Equipment, Weapon);
@@ -92,19 +104,133 @@ bool FFE_PerspectiveTest::RunTest(const FString& Parameters)
 	UFE_WeaponAimingComponent* Aiming = Player->GetWeaponAimingComponent();
 	const float OriginalThirdFOV = Third->FieldOfView;
 	const float OriginalFirstFOV = First->FieldOfView;
-	TestTrue(TEXT("Third-person shoulder aim can begin"), Aiming->BeginAim());
+	AimSocket->SocketName = TEXT("MissingAimSocket");
+	TestFalse(TEXT("TP ADS also validates the first-person optic socket"), Aiming->BeginAim());
+	TestTrue(TEXT("Failed ADS leaves third-person view untouched"), Player->IsThirdPersonView());
+	AimSocket->SocketName = Sight->AimSocketName;
+	TestTrue(TEXT("Third-person ADS enters first-person aim"), Aiming->BeginAim());
+	TestTrue(TEXT("ADS prepares FP aiming but keeps the outgoing camera active until the cut"),
+		!First->IsActive() && Third->IsActive() && IFE_CombatPresentation::UsesFirstPersonView(Player));
+	TestFalse(TEXT("FP aiming selection does not reveal FP meshes before camera arrival"), IFE_CombatPresentation::UsesFirstPersonMeshes(Player));
+	TestTrue(TEXT("Outgoing TP body, weapon and attachments remain visible when ADS starts"),
+		!Player->GetMesh()->bOwnerNoSee && !WorldWeapon->bOwnerNoSee && !WorldSight->bOwnerNoSee &&
+		Player->GetMesh()->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::None);
+	TestTrue(TEXT("Incoming arms, legs and FP weapon stay owner-hidden"),
+		Player->GetFirstPersonMesh()->bOwnerNoSee && Player->GetFirstPersonLegsMesh()->bOwnerNoSee && FirstWeapon->bOwnerNoSee);
+	FMinimalViewInfo AimView;
+	Player->CalcCamera(0.0f, AimView);
+	TestTrue(TEXT("ADS begins at outgoing third-person location, not a camera cut"), AimView.Location.Equals(ThirdView.Location, 0.001f));
 	Aiming->TickComponent(0.1f, LEVELTICK_All, nullptr);
-	TestTrue(TEXT("Third-person aim changes only the active camera FOV"), Third->FieldOfView < OriginalThirdFOV && First->FieldOfView == OriginalFirstFOV);
-	TestTrue(TEXT("Third-person aim never aligns hidden arms to the shoulder camera"), Player->GetFirstPersonMesh()->GetRelativeTransform().Equals(ArmsTransform));
+	Player->CalcCamera(0.1f, AimView);
+	const float ApproachDistance = FindFProperty<FFloatProperty>(PlayerClass, TEXT("AimCameraApproachDistance"))->GetPropertyValue_InContainer(Player);
+	const float SwitchAlpha = FindFProperty<FFloatProperty>(PlayerClass, TEXT("AimCameraSwitchAlpha"))->GetPropertyValue_InContainer(Player);
+	const FVector ApproachDirection = (First->GetComponentLocation() - Third->GetComponentLocation()).GetSafeNormal();
+	TestTrue(TEXT("ADS only dollies a short distance from the third-person camera"),
+		AimView.Location.Equals(Third->GetComponentLocation() + ApproachDirection * ApproachDistance *
+			FMath::SmoothStep(0.0f, SwitchAlpha, 0.5f), 0.001f));
+	TestTrue(TEXT("ADS changes FP FOV and preserves the shoulder camera baseline"), Third->FieldOfView == OriginalThirdFOV && First->FieldOfView < OriginalFirstFOV);
+	TestFalse(TEXT("TP ADS uses first-person socket alignment"), Player->GetFirstPersonMesh()->GetRelativeTransform().Equals(ArmsTransform));
+	Equipment->RefreshPerspectivePresentation();
+	TestTrue(TEXT("Mid-transition equipment refresh keeps world meshes visible and FP meshes hidden"),
+		!WorldWeapon->bOwnerNoSee && !WorldSight->bOwnerNoSee && FirstWeapon->bOwnerNoSee &&
+		!IFE_CombatPresentation::UsesFirstPersonMeshes(Player));
+	Controller->SetControlRotation(FRotator(10.0f, 20.0f, 0.0f));
+	Arm->TickComponent(0.0f, LEVELTICK_All, nullptr);
+	Player->CalcCamera(0.0f, AimView);
+	TestTrue(TEXT("Hidden ADS camera tracks look input before the late cut"),
+		First->GetComponentRotation().Equals(Controller->GetControlRotation(), 0.001f));
+	// Release and repress mid-transition must reverse continuously, not restart at either endpoint.
+	Aiming->EndAim();
+	FMinimalViewInfo ReleasedView;
+	Player->CalcCamera(0.0f, ReleasedView);
+	TestTrue(TEXT("Release keeps the current camera position"), ReleasedView.Location.Equals(AimView.Location, 0.001f));
+	Aiming->TickComponent(0.05f, LEVELTICK_All, nullptr);
+	Player->CalcCamera(0.05f, ReleasedView);
+	TestTrue(TEXT("Release starts returning to third person immediately"),
+		FVector::Dist(ReleasedView.Location, Third->GetComponentLocation()) < FVector::Dist(AimView.Location, Third->GetComponentLocation()));
+	TestTrue(TEXT("Quick repress resumes ADS"), Aiming->BeginAim());
+	Player->CalcCamera(0.0f, AimView);
+	TestTrue(TEXT("Repress does not snap the camera"), AimView.Location.Equals(ReleasedView.Location, 0.001f));
+	TestTrue(TEXT("Early release/repress cannot flash FP meshes"), Player->GetFirstPersonMesh()->bOwnerNoSee && !WorldWeapon->bOwnerNoSee);
+	Aiming->TickComponent(0.116f, LEVELTICK_All, nullptr);
+	Player->CalcCamera(0.116f, AimView);
+	TestTrue(TEXT("Near the cut the camera still stays outside the body with TP meshes"),
+		Third->IsActive() && !First->IsActive() && !IFE_CombatPresentation::UsesFirstPersonMeshes(Player) &&
+		FVector::Dist(AimView.Location, First->GetComponentLocation()) >= Player->GetCapsuleComponent()->GetScaledCapsuleRadius() + 20.0f);
+	Aiming->TickComponent(0.006f, LEVELTICK_All, nullptr);
+	Player->CalcCamera(0.006f, AimView);
+	TestTrue(TEXT("Late transition cuts camera and meshes to FP together before full duration"),
+		First->IsActive() && !Third->IsActive() && IFE_CombatPresentation::UsesFirstPersonMeshes(Player) &&
+		AimView.Location.Equals(First->GetComponentLocation(), 0.001f));
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	Player->CalcCamera(0.2f, AimView);
+	TestTrue(TEXT("Holding aim reaches the FP endpoint"), AimView.Location.Equals(First->GetComponentLocation(), 0.001f));
+	TestTrue(TEXT("Camera arrival reveals arms, legs and FP weapon together"),
+		IFE_CombatPresentation::UsesFirstPersonMeshes(Player) && !Player->GetFirstPersonMesh()->bOwnerNoSee &&
+		!Player->GetFirstPersonLegsMesh()->bOwnerNoSee && !FirstWeapon->bOwnerNoSee);
+	TestTrue(TEXT("Camera arrival hides the world body, weapon and attachments"),
+		Player->GetMesh()->bOwnerNoSee && WorldWeapon->bOwnerNoSee && WorldSight->bOwnerNoSee &&
+		WorldWeapon->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::WorldSpaceRepresentation);
+	TestFalse(TEXT("Fully aimed FP does not tick the unused spring arm"), Arm->IsComponentTickEnabled());
+	Aiming->EndAim();
+	TestTrue(TEXT("Leaving ADS immediately restores world meshes to avoid floating FP arms"),
+		!IFE_CombatPresentation::UsesFirstPersonMeshes(Player) && Player->GetFirstPersonMesh()->bOwnerNoSee &&
+		FirstWeapon->bOwnerNoSee && !Player->GetMesh()->bOwnerNoSee && !WorldWeapon->bOwnerNoSee);
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	Player->CalcCamera(0.2f, ReleasedView);
+	TestTrue(TEXT("Release restores the original TP choice"), Player->IsThirdPersonView() && ReleasedView.Location.Equals(Third->GetComponentLocation(), 0.001f));
+	TestEqual(TEXT("Release restores first-person FOV"), First->FieldOfView, OriginalFirstFOV);
+	TestTrue(TEXT("Return enables third-person spring arm again"), Arm->IsComponentTickEnabled());
+	// A wall-shortened boom must not cause the approach animation to enter the capsule.
+	const float OriginalArmLength = Arm->TargetArmLength;
+	Arm->TargetArmLength = Player->GetCapsuleComponent()->GetScaledCapsuleRadius() + 30.0f;
+	Arm->TickComponent(0.0f, LEVELTICK_All, nullptr);
+	Aiming->BeginAim();
+	Aiming->TickComponent(0.16f, LEVELTICK_All, nullptr);
+	Player->CalcCamera(0.16f, AimView);
+	TestTrue(TEXT("Short boom approach is limited by body clearance instead of crossing it"),
+		Third->IsActive() && FVector::Dist(AimView.Location, First->GetComponentLocation()) >=
+		Player->GetCapsuleComponent()->GetScaledCapsuleRadius() + 20.0f - 0.001f);
+	Aiming->EndAim(true);
+	Player->CalcCamera(0.2f, ReleasedView);
+	Arm->TargetArmLength = OriginalArmLength;
+	Arm->TickComponent(0.0f, LEVELTICK_All, nullptr);
+	Aiming->BeginAim();
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
 	Player->TogglePerspective();
 	TestFalse(TEXT("Switching camera ends captured ADS"), Aiming->IsAiming());
 	TestEqual(TEXT("Switching camera restores previous FOV"), Third->FieldOfView, OriginalThirdFOV);
 	TestTrue(TEXT("Return activates only first-person camera"), First->IsActive() && !Third->IsActive());
 	TestTrue(TEXT("Return restores owner-only arms and world hiding"), !Player->GetFirstPersonMesh()->bOwnerNoSee && Player->GetMesh()->bOwnerNoSee);
+	TestTrue(TEXT("Return restores first-person world-shadow representations"),
+		Player->GetMesh()->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::WorldSpaceRepresentation &&
+		WorldWeapon->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::WorldSpaceRepresentation &&
+		WorldSight->FirstPersonPrimitiveType == EFirstPersonPrimitiveType::WorldSpaceRepresentation);
 	TestTrue(TEXT("Return restores weapon/attachment flags"), WorldWeapon->bOwnerNoSee && WorldSight->bOwnerNoSee && !FirstWeapon->bOwnerNoSee);
 	TestTrue(TEXT("View switching does not drift arm or leg transforms"), Player->GetFirstPersonMesh()->GetRelativeTransform().Equals(ArmsTransform) &&
 		Player->GetFirstPersonLegsMesh()->GetRelativeTransform().Equals(LegsTransform));
 	TestFalse(TEXT("Returning to FP stops spring-arm tick"), Arm->IsComponentTickEnabled());
+	TestTrue(TEXT("Normal first-person ADS can still begin"), Aiming->BeginAim());
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	Aiming->EndAim(true);
+	Player->CalcCamera(0.2f, AimView);
+	TestTrue(TEXT("First-person ADS release never forces third person"), !Player->IsThirdPersonView() && AimView.Location.Equals(First->GetComponentLocation(), 0.001f));
+	Player->SetThirdPersonView(true);
+	Aiming->BeginAim();
+	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
+	Player->CalcCamera(0.2f, AimView);
+	Aiming->EndAim(true);
+	Player->CalcCamera(0.1f, ReleasedView);
+	TestTrue(TEXT("Forced cancellation restores TP with a camera blend, not a cut"), Player->IsThirdPersonView() &&
+		!ReleasedView.Location.Equals(Third->GetComponentLocation(), 0.001f) && !ReleasedView.Location.Equals(First->GetComponentLocation(), 0.001f));
+	Player->CalcCamera(0.1f, ReleasedView);
+	// Server-side execution does not run local presentation ticks, but must use FP attack aiming during ADS.
+	Controller->UnPossess();
+	TestTrue(TEXT("Non-local authority can enter ADS"), Aiming->BeginAim());
+	TestTrue(TEXT("Authority selects FP aiming too"), IFE_CombatPresentation::UsesFirstPersonView(Player));
+	TestFalse(TEXT("Non-local ADS never starts local presentation tick"), Aiming->IsComponentTickEnabled());
+	Aiming->EndAim(true);
+	TestTrue(TEXT("Authority returns to TP preference"), Player->IsThirdPersonView());
 
 	const AFallenEraCharacter* Defaults = PlayerClass->GetDefaultObject<AFallenEraCharacter>();
 	const UInputAction* Action = Cast<UInputAction>(FindFProperty<FObjectPropertyBase>(PlayerClass, TEXT("CombatTogglePerspectiveAction"))->GetObjectPropertyValue_InContainer(Defaults));

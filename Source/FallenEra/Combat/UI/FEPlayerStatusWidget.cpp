@@ -1,9 +1,12 @@
 #include "Combat/UI/FEPlayerStatusWidget.h"
 #include "Combat/UI/FEPlayerStatusViewModel.h"
 #include "Combat/UI/FEConditionSlotWidget.h"
+#include "Components/HorizontalBox.h"
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 namespace { constexpr float BottomUpPanelRotation = 180.0f; }
 
@@ -16,6 +19,11 @@ UFE_PlayerStatusWidget::UFE_PlayerStatusWidget(const FObjectInitializer& ObjectI
 void UFE_PlayerStatusWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	if (ProgressBar_StaminaBar && !bStaminaBarColorCached)
+	{
+		OriginalStaminaBarColor = ProgressBar_StaminaBar->GetFillColorAndOpacity();
+		bStaminaBarColorCached = true;
+	}
 	if (VerticalBox_ConditionBox)
 	{
 		VerticalBox_ConditionBox->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
@@ -26,14 +34,19 @@ void UFE_PlayerStatusWidget::NativeConstruct()
 
 void UFE_PlayerStatusWidget::NativeDestruct()
 {
+	StopStaminaBlink();
 	if (StatusViewModel)
 	{
 		StatusViewModel->ValuesChanged.Remove(ValuesChangedHandle);
 		StatusViewModel->ConditionsChanged.Remove(ConditionsChangedHandle);
+		StatusViewModel->AmmoChanged.Remove(AmmoChangedHandle);
+		StatusViewModel->StaminaActionRejected.Remove(StaminaRejectedHandle);
 		StatusViewModel->Shutdown();
 	}
 	ValuesChangedHandle.Reset();
 	ConditionsChangedHandle.Reset();
+	AmmoChangedHandle.Reset();
+	StaminaRejectedHandle.Reset();
 	Super::NativeDestruct();
 }
 
@@ -44,14 +57,66 @@ void UFE_PlayerStatusWidget::RefreshFromPlayerState()
 	{
 		ValuesChangedHandle = StatusViewModel->ValuesChanged.AddUObject(this, &ThisClass::RefreshValues);
 		ConditionsChangedHandle = StatusViewModel->ConditionsChanged.AddUObject(this, &ThisClass::RebuildConditionSlots);
+		AmmoChangedHandle = StatusViewModel->AmmoChanged.AddUObject(this, &ThisClass::RefreshAmmo);
+		StaminaRejectedHandle = StatusViewModel->StaminaActionRejected.AddUObject(this, &ThisClass::BlinkStaminaBar);
 	}
 	StatusViewModel->Initialize(GetOwningPlayer());
+}
+
+void UFE_PlayerStatusWidget::BlinkStaminaBar()
+{
+	UWorld* World = GetWorld();
+	if (!ProgressBar_StaminaBar || !World || bStaminaBlinking) { return; }
+	bStaminaBlinking = true;
+	OriginalStaminaBarOpacity = ProgressBar_StaminaBar->GetRenderOpacity();
+	StaminaBlinkStep = 0;
+	UpdateStaminaBlink();
+	World->GetTimerManager().SetTimer(StaminaBlinkTimer, this, &ThisClass::UpdateStaminaBlink,
+		FMath::Max(0.02f, StaminaBlinkInterval), true);
+}
+
+void UFE_PlayerStatusWidget::UpdateStaminaBlink()
+{
+	if (!ProgressBar_StaminaBar || StaminaBlinkStep >= FMath::Clamp(StaminaBlinkCount, 1, 10) * 2)
+	{
+		StopStaminaBlink();
+		return;
+	}
+	const bool bDim = StaminaBlinkStep++ % 2 == 0;
+	// Opacity-only feedback preserves the exhausted gray fill and the cached authored color.
+	ProgressBar_StaminaBar->SetRenderOpacity(OriginalStaminaBarOpacity *
+		(bDim ? FMath::Clamp(StaminaBlinkDimOpacity, 0.0f, 1.0f) : 1.0f));
+}
+
+void UFE_PlayerStatusWidget::StopStaminaBlink()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(StaminaBlinkTimer);
+	}
+	if (bStaminaBlinking && ProgressBar_StaminaBar) { ProgressBar_StaminaBar->SetRenderOpacity(OriginalStaminaBarOpacity); }
+	bStaminaBlinking = false;
 }
 
 void UFE_PlayerStatusWidget::RefreshValues()
 {
 	RefreshHealth(StatusViewModel->Health, StatusViewModel->MaxHealth);
 	RefreshStamina(StatusViewModel->Stamina, StatusViewModel->MaxStamina);
+}
+
+void UFE_PlayerStatusWidget::RefreshAmmo()
+{
+	if (!StatusViewModel) { return; }
+	const ESlateVisibility AmmoVisibility = StatusViewModel->bUsesAmmo ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed;
+	HorizontalBox_AmmoStatusBox->SetVisibility(AmmoVisibility);
+	if (Text_LoadedAmmo)
+	{
+		Text_LoadedAmmo->SetText(FText::AsNumber(StatusViewModel->LoadedAmmo));
+	}
+	if (Text_ReserveAmmo)
+	{
+		Text_ReserveAmmo->SetText(FText::AsNumber(StatusViewModel->ReserveAmmo));
+	}
 }
 
 void UFE_PlayerStatusWidget::RebuildConditionSlots()
@@ -113,6 +178,8 @@ void UFE_PlayerStatusWidget::RefreshStamina(float Stamina, float MaxStamina) con
 	if (ProgressBar_StaminaBar)
 	{
 		ProgressBar_StaminaBar->SetPercent(NormalizedStamina);
+		ProgressBar_StaminaBar->SetFillColorAndOpacity(StatusViewModel && StatusViewModel->bStaminaExhausted
+			? FLinearColor(0.4f, 0.4f, 0.4f, OriginalStaminaBarColor.A) : OriginalStaminaBarColor);
 	}
 	if (Text_StaminaText)
 	{

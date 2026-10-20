@@ -36,6 +36,10 @@ public:
 	/** Intentional camera-local offset. Do not also add this offset to the same weapon in AnimBP. */
 	UFUNCTION(BlueprintPure, Category="Combat|Aim")
 	FTransform GetAimSwayTransform() const;
+	/** [Owning Client Only] Called per committed firearm shot; never changes ballistic aim. */
+	void ApplyShotRecoil(const FFE_WeaponVisualRecoilSettings& Settings, float RecoilControl);
+	UFUNCTION(BlueprintPure, Category="Combat|Aim")
+	FTransform GetVisualRecoilTransform() const;
 	UFUNCTION(BlueprintPure, Category="Combat|Aim")
 	float GetAimAlpha() const;
 	UFUNCTION(BlueprintPure, Category="Combat|Aim")
@@ -45,8 +49,10 @@ public:
 	FTransform GetWeaponSocketWorldTransform(FName SocketName) const;
 	FOnFEAimAlphaChanged& OnAimAlphaChanged() { return AimAlphaChanged; }
 private:
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing=OnRep_IsAiming)
 	bool bIsAiming = false;
+	UFUNCTION() void OnRep_IsAiming();
+	void RefreshAimView();
 	UPROPERTY(Transient)
 	TObjectPtr<const UFE_WeaponSightData> Sight;
 	UPROPERTY(Transient)
@@ -75,10 +81,17 @@ private:
 	bool bOriginalArmsVisible = true;
 	bool bOriginalWeaponVisible = true;
 	FOnFEAimAlphaChanged AimAlphaChanged;
+	FFE_WeaponVisualRecoilSettings CachedVisualRecoilSettings;
+	FVector VisualRecoilLocation = FVector::ZeroVector;
+	FVector VisualRecoilLocationVelocity = FVector::ZeroVector;
+	FVector VisualRecoilRotation = FVector::ZeroVector;
+	FVector VisualRecoilRotationVelocity = FVector::ZeroVector;
 	bool IsLocallyControlled() const;
 	void UpdatePresentation();
 	void UpdateSway(float DeltaTime);
 	void ResetSway();
+	void UpdateVisualRecoil(float DeltaTime);
+	void ResetVisualRecoil();
 	void RestorePresentation();
 	void StartChargeSwayPresentation();
 	void StopChargeSwayPresentation();

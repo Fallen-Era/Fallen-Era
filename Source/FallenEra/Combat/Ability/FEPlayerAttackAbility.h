@@ -19,6 +19,8 @@ class FALLENERA_API UFE_PlayerAttackAbility : public UFallenEraGameplayAbility
 
 public:
 	UFE_PlayerAttackAbility();
+	virtual bool CheckCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
+		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
 
 	virtual void ActivateAbility(
 		const FGameplayAbilitySpecHandle Handle,
@@ -34,6 +36,10 @@ public:
 		bool bWasCancelled) override;
 
 protected:
+	/** GAS cost plus one round, once per shot (never per pellet or charge start). */
+	bool CommitWeaponShotCost();
+	void RefundFailedProjectileAmmo();
+	bool HasLoadedWeaponAmmo() const;
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Animation")
 	bool bPlayAttackMontage = true;
 
@@ -96,4 +102,6 @@ protected:
 	mutable TWeakObjectPtr<UFE_WeaponAttackData> SpreadAttackData;
 	mutable float CurrentSpreadBloom = 0.0f;
 	mutable float LastSpreadUpdateTime = 0.0f;
+	bool bAmmoConsumedThisActivation = false;
+	FGuid AmmoShotInstanceId;
 };

@@ -156,6 +156,7 @@ void UFE_CombatComponent::CancelAttackActions()
 	{
 		FGameplayTagContainer AttackTags(FallenEraCombatGameplayTags::Ability_Combat_Attack);
 		AttackTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim);
+		AttackTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Reload);
 		ASC->CancelAbilities(&AttackTags);
 		if (UFallenEraAbilitySystemComponent* FEASC = Cast<UFallenEraAbilitySystemComponent>(ASC))
 		{

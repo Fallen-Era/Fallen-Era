@@ -21,6 +21,8 @@
 - 파츠 스탯 및 캐릭터 이동/특성/버프/디버프 GE는 별도로 합산합니다.
   Instance.ItemData에 파츠 또는 캐릭터 보정을 미리 넣으면 중복 적용되므로 넣지 마세요.
 - RefreshEquipment는 같은 무기의 Instance 값을 보존합니다. 테스트 무기를 해제/다른 종류로 교체하면 DA seed를 새로 복사합니다.
+- 단, Instance.LoadedAmmo는 테스트 ItemTag별로 별도 보존하여 다시 장착해도 탄약이 초기화되지 않습니다.
+  탄약 종류/탄창/재장전과 예비 탄약 설정은 WeaponAmmoSetup.txt를 참고하세요.
 - 현재 테스트 스왑은 ItemTag 목록 방식입니다. 동일 종류 여러 개의 인벤토리 선택/저장 시스템은 구현하지 않았습니다.
 - Instance 복사본/교체 API는 서버 기준입니다. 스탯은 기존 GAS Attribute로, 파츠 외형은 기존 Loadout으로 복제합니다.
   인벤토리 UI에 원본 Instance 전체를 복제하는 것은 이후 인벤토리 시스템에서 담당해야 합니다.

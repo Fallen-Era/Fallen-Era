@@ -5,6 +5,12 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_LeftClick, "Ability.Input.Combat.LeftClick");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_RightClick, "Ability.Input.Combat.RightClick");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_Swap, "Ability.Input.Combat.Swap");
+	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_Reload, "Ability.Input.Combat.Reload");
+	UE_DEFINE_GAMEPLAY_TAG(Ability_Combat_Reload, "Ability.Combat.Reload");
+	UE_DEFINE_GAMEPLAY_TAG(State_Combat_Reloading, "State.Combat.Reloading");
+	UE_DEFINE_GAMEPLAY_TAG(Item_Ammo_Rifle, "Item.Ammo.Rifle");
+	UE_DEFINE_GAMEPLAY_TAG(Item_Ammo_Arrow, "Item.Ammo.Arrow");
+	UE_DEFINE_GAMEPLAY_TAG(Item_Ammo_Grenade, "Item.Ammo.Grenade");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Combat_Attack, "Ability.Combat.Attack");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Combat_Aim, "Ability.Combat.Aim");
 	UE_DEFINE_GAMEPLAY_TAG(State_Combat_Aiming, "State.Combat.Aiming");
@@ -19,6 +25,9 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(State_Immune_PhysicalReaction, "State.Immune.PhysicalReaction");
 	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Walking, "State.Movement.Walking");
 	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Sprinting, "State.Movement.Sprinting");
+	UE_DEFINE_GAMEPLAY_TAG(State_Stamina_Exhausted, "State.Stamina.Exhausted");
+	UE_DEFINE_GAMEPLAY_TAG(Ability_ActivateFail_Stamina, "Ability.ActivateFail.Stamina");
+	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Stamina_Change, "SetByCaller.Stamina.Change");
 
 	UE_DEFINE_GAMEPLAY_TAG(GameplayCue_Impact, "GameplayCue.Impact");
 

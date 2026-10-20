@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Combat/Item/FEWeaponAmmoData.h"
 #include "Engine/DataAsset.h"
 #include "GameplayTagContainer.h"
 #include "Combat/Reaction/FECombatReactionTypes.h"
@@ -80,6 +81,36 @@ struct FALLENERA_API FFE_RecoilSettings
 	/** Smooths the upward kick, not a return to the original aim. Zero applies it instantly. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Recoil", meta=(ClampMin="0.0", Units="s"))
 	float SmoothingTime = 0.04f;
+};
+
+/** ADS-only arms/weapon kick. Values describe one shot at RecoilControl=0, not camera recoil. */
+USTRUCT(BlueprintType)
+struct FALLENERA_API FFE_WeaponVisualRecoilSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Visual Recoil")
+	bool bEnabled = true;
+
+	/** Camera-local peak offset in cm: -X pulls toward the camera, +Z lifts. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Visual Recoil", meta=(Units="cm"))
+	FVector KickTranslation = FVector(-1.5f, 0.0f, 0.1f);
+
+	/** Peak pitch; yaw/roll are independently sampled within +/- their magnitudes. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Visual Recoil", meta=(Units="deg"))
+	FRotator KickRotation = FRotator(0.8f, 0.1f, 0.1f);
+
+	/** Rotation pivot relative to the camera, in cm. Does not move the camera itself. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Visual Recoil", meta=(Units="cm"))
+	FVector PivotOffset = FVector(-15.0f, 0.0f, -5.0f);
+
+	/** Approximate recovery duration. The impulse peaks near RecoveryTime / 6. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Visual Recoil", meta=(ClampMin="0.03", ClampMax="2.0", Units="s"))
+	float RecoveryTime = 0.18f;
+
+	/** Bounds accumulated displacement and impulse velocity during automatic fire. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Visual Recoil", meta=(ClampMin="1.0", ClampMax="10.0"))
+	float MaxStack = 3.0f;
 };
 
 /** Camera-local cosmetic motion kept separate from exact optic alignment and ballistic spread. */
@@ -426,6 +457,8 @@ USTRUCT(BlueprintType)
 struct FALLENERA_API FFE_WeaponTemplateData
 {
 	GENERATED_BODY()
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Ammo")
+	FFE_WeaponAmmoSettings AmmoSettings;
 	/** Persistent attack-power contribution applied while this weapon is equipped. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Stats")
 	FFE_WeaponStat WeaponStat;
@@ -497,6 +530,9 @@ struct FALLENERA_API FFE_WeaponTemplateData
 	EFE_MeleeAttackSequenceMode AttackSequenceMode = EFE_MeleeAttackSequenceMode::Combo;
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Aim")
 	FFE_WeaponAimSwaySettings AimSwaySettings;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation|Visual Recoil")
+	FFE_WeaponVisualRecoilSettings VisualRecoilSettings;
 
 	/** Opt in for firearms; bows/throwables keep their existing right-click behavior. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Attachments")
