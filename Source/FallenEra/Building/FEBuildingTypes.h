@@ -102,4 +102,8 @@ struct FALLENERA_API FFEBuildPieceRecord
 	/** 저장고 내용물 등 피스가 담고 있는 아이템. 그 외 피스는 빈 배열 */
 	UPROPERTY()
 	TArray<FFEBuildItemCost> Items;
+	
+	/** 완성 피스의 현재 체력. 0 = 가득 (체력 저장 전에 만든 스냅샷도 그대로 읽히게) */
+	UPROPERTY()
+	float Health = 0.f;
 };

@@ -18,10 +18,22 @@ class FALLENERA_API AFEBuildStorage : public AFEBuildPiece
 
 public:
 	/** [Server Only] 같은 종류의 덜 찬 칸부터 채우고, 남으면 빈 칸을 쓴다. 실제로 들어간 수를 돌려준다 */
-	int32 StoreItems(FGameplayTag ItemTag, int32 Count);
+	virtual int32 StoreItems(FGameplayTag ItemTag, int32 Count);
 
-	/** [Server Only] SlotIndex 칸을 통째로 꺼낸다. 그 칸의 종류가 ExpectedTag 가 아니면 0 (클라가 본 칸이 그사이 바뀜) */
-	int32 TakeSlot(int32 SlotIndex, FGameplayTag ExpectedTag);
+	/** SlotIndex 칸의 개수. 칸의 종류가 ExpectedTag 가 아니면 0 (클라가 본 칸이 그사이 바뀜) */
+	int32 GetSlotCount(int32 SlotIndex, FGameplayTag ExpectedTag) const;
+
+	/** [Server Only] SlotIndex 칸에서 최대 MaxCount 개를 뺀다. 실제로 뺀 수를 돌려준다. 칸이 비면 ClearSlot */
+	int32 TakeFromSlot(int32 SlotIndex, FGameplayTag ExpectedTag, int32 MaxCount);
+
+	/** 이 아이템을 넣을 수 있는가. 불가면 OutReason. 서버·클라 공용. 보관함은 항상 true */
+	virtual bool AcceptsItem(FGameplayTag ItemTag, FText& OutReason) const;
+
+	/** 빈 칸에 표시할 이름. 보관함은 없음, 화로는 "연료/재료/결과" */
+	virtual FText GetSlotLabel(int32 SlotIndex) const;
+
+	/** 개수가 1 이상인 칸이 없다 */
+	bool IsEmpty() const;
 
 	UFUNCTION(BlueprintPure, Category = "FallenEra|Building|Storage")
 	int32 GetCapacity() const;
@@ -51,6 +63,9 @@ protected:
 	/** 칸 목록. 한 항목 = 한 칸, 같은 종류가 여러 칸에 있을 수 있다. 빈 칸은 항목이 없는 것 */
 	UPROPERTY(ReplicatedUsing = OnRep_Contents)
 	TArray<FFEBuildItemCost> Contents;
+	
+	/** [Server Only] 빈 칸 처리. 보관함은 칸을 지워 뒤 칸을 당기고, 화로는 자리를 비워 둔다 */
+	virtual void ClearSlot(int32 SlotIndex);
 
 	UFUNCTION()
 	void OnRep_Contents();

@@ -38,9 +38,13 @@ public:
 
     /** Transform 에 놓인 Piece 의 "붙는 쪽" 소켓과 5cm 이내에서 마주 보는 소켓을 가진 피스들 */
     static void FindConnectedPieces(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* IgnoreActor, TArray<AFEBuildPiece*>& OutConnected);
+    
+    /** 이웃들로부터 예측한 지지 거리. bIsAnchor 면 0. bBuiltOnly: 완성 이웃의 SupportDistance 만 / 모든 이웃의 DesignSupportDistance */
+    static uint8 PredictSupportDistance(const UFEBuildPieceDefinition* Piece, bool bIsAnchor, const TArray<AFEBuildPiece*>& Connected, bool bBuiltOnly);
 
-    /** 이웃들로부터 예측한 지지 거리. anchor 피스는 0. bBuiltOnly: 완성 이웃의 SupportDistance 만 / 모든 이웃의 DesignSupportDistance */
-    static uint8 PredictSupportDistance(const UFEBuildPieceDefinition* Piece, const TArray<AFEBuildPiece*>& Connected, bool bBuiltOnly);
+    /** Transform 에 놓인 Piece 가 지지의 출발점(anchor)인가. 땅 피스 중 토대(지지 비용 0)·소켓 없는 가구는 항상,
+     *  소켓으로도 붙는 땅 피스(계단)는 바닥면이 실제 지면(WorldStatic/WorldDynamic)에 닿아 있을 때만. 배치 예측과 지지 재계산이 같이 쓴다 */
+    static bool IsAnchorAt(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* IgnoreActor);
 
     /** Distance 가 이 피스 재료의 최대 지지 거리 이내인가 */
     static bool IsSupported(const UFEBuildPieceDefinition* Piece, uint8 Distance);
@@ -75,6 +79,9 @@ public:
     void RestoreRecords(const TArray<FFEBuildPieceRecord>& Records);
 
     virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
+    
+    /** 서버·클라 모두: BuildPiece 정의 DA 전부와 고스트·청사진 머티리얼을 비동기로 미리 받는다 (게임 중 동기 로드 제거) */
+    virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 
 private:
     void Recalculate();
@@ -90,6 +97,9 @@ private:
     TArray<FFEBuildPieceRecord> PendingRestore;
 
     TSharedPtr<FStreamableHandle> RestoreHandle;
+    
+    /** OnWorldBeginPlay의 미리 로드. 쥐고 있는 동안 정의 DA·머티리얼이 언로드되지 않는다 */
+    TSharedPtr<FStreamableHandle> PreloadHandle;
 
     UPROPERTY(Transient)
     TArray<TObjectPtr<AFEBuildPiece>> Pieces;
