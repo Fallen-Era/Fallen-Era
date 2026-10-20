@@ -8,6 +8,7 @@
 
 class UInputMappingContext;
 class UUserWidget;
+class UFE_PlayerMainWidget;
 
 /**
  *  Simple first person Player Controller
@@ -41,6 +42,13 @@ protected:
 	/** Pointer to the mobile controls widget */
 	UPROPERTY()
 	TObjectPtr<UUserWidget> MobileControlsWidget;
+
+	/** Root player HUD containing W_PlayerStatus and W_PlayerCrossHair. */
+	UPROPERTY(EditAnywhere, Category="UI|Player")
+	TSubclassOf<UFE_PlayerMainWidget> PlayerMainWidgetClass;
+
+	UPROPERTY()
+	TObjectPtr<UFE_PlayerMainWidget> PlayerMainWidget;
 
 	/** If true, the player will use UMG touch controls even if not playing on mobile platforms */
 	UPROPERTY(EditAnywhere, Config, Category = "Input|Touch Controls")

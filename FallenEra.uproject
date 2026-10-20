@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "5.8",
+	"EngineAssociation": "{5E13B21C-41AB-3499-DCEC-E4A8DD8D0811}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -33,6 +33,19 @@
 		},
 		{
 			"Name": "GameplayAbilities",
+			"Enabled": true
+		},
+		{
+			"Name": "VoxelPluginInstaller",
+			"Enabled": true,
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/dcb8f76613ce49cda4e70fb602513ce4"
+		},
+		{
+			"Name": "AsyncMessageSystem",
+			"Enabled": true
+		},
+		{
+			"Name": "ModelViewViewModel",
 			"Enabled": true
 		}
 	]

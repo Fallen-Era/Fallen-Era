@@ -1,0 +1,251 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "GameplayTagContainer.h"
+#include "UObject/PrimaryAssetId.h"
+#include "FEBuildingTypes.h"
+#include "Interaction/FEInteractable.h"
+#include "GenericTeamAgentInterface.h"
+#include "Combat/Interface/FEDamageable.h"
+#include "FEBuildPiece.generated.h"
+
+class IFEBuildInventoryProvider;
+class UFEBuildPieceDefinition;
+class UMaterialInterface;
+class UStaticMeshComponent;
+struct FStreamableHandle;
+
+/**
+ * 배치된 구조물 1개. 같은 액터가 Preview -> Blueprint -> Built 로 상태만 바뀐다.
+ * 리플리케이트되며 상태는 서버가 소유한다. 클라이언트는 PieceId + State + SuppliedCount + 지지 거리만 받고,
+ * 정의 에셋에서 시각 요소를 스스로 복원한다.
+ * 상호작용: 청사진이면 재료 투입, 완성품이면 서브클래스의 InteractBuilt (문·침구·작업대).
+ */
+UCLASS()
+class FALLENERA_API AFEBuildPiece : public AActor, public IFEInteractable, public IFE_Damageable, public IGenericTeamAgentInterface
+{
+    GENERATED_BODY()
+
+public:
+    AFEBuildPiece();
+
+    /** [Server Only] (또는 로컬 프리뷰) SpawnActorDeferred 와 FinishSpawning 사이에 호출. 정의의 Runtime 번들이 로드되어 있어야 함. */
+    void InitializePiece(const UFEBuildPieceDefinition* InDefinition, EFEBuildPieceState InState);
+
+    /** [Server Only] 클라이언트는 OnRep_State 로 따라온다. */
+    void SetState(EFEBuildPieceState NewState);
+    
+    /** [Server Only] ItemTag 를 인벤토리에서 있는 만큼 투입. 다 차고 지지되면 Built. 무언가 바뀌었으면 true.
+     *  재질 미정(투입량 0)이고 현재 정의에 없는 재료면, 재질 사슬에서 그 재료를 쓰는 정의로 교체한 뒤 투입한다(= 재질 결정).
+     *  이미 다른 재질로 잠겼으면 실패 + OutReason */
+    bool TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag, FText& OutReason);
+
+    /** 재질이 정해졌다 (청사진에 무언가 투입됨, 또는 완성됨). 리플리케이트된 투입량만 봐서 서버·클라 공용 */
+    bool IsMaterialLocked() const;
+    
+    /** [Server Only] 재료가 다 찬 청사진을 완성 시도. 지지 구조가 아직 청사진이면 false (대기). */
+    bool TryComplete();
+    
+    /** 철거 가능한가. 불가면 OutReason 에 플레이어에게 보여 줄 이유. 서버·클라 공용 (리플리케이트된 값만 본다) */
+    virtual bool CanDemolish(FText& OutReason) const;
+
+    /** [Server Only] 환불 후 제거. 청사진은 투입분 100%, Built 는 RefundRate. Inventory 가 없으면 환불 없이 제거. */
+    void Demolish(IFEBuildInventoryProvider* Inventory);
+    
+    /** [Server Only] 지지를 잃어 무너진다. 환불 없음. */
+    void Collapse();
+    
+    /** [Server Only] 체력 감소. 0 이 되면 파괴되고 위 구조물은 지지 재계산으로 연쇄 붕괴한다. 완성 피스만. Source 는 로그용(없어도 됨) */
+    void ApplyStructureDamage(float Amount, const AActor* Source);
+
+    /** [Server Only] 깎인 만큼 재료로 수리. 재료가 모자라면 가진 만큼 비례 수리. 성공하면 true, 실패면 OutReason */
+    bool TryRepair(IFEBuildInventoryProvider& Inventory, FText& OutReason);
+    
+    /** MissingRatio(0~1, 깎인 비율)만큼 수리할 때의 비용. 서버 수리와 클라 미리보기가 같은 식을 쓴다. 비용 0 인 항목은 빠진다 */
+    void GetRepairCost(float MissingRatio, TArray<FFEBuildItemCost>& OutCosts) const;
+    
+    /** [Server Only] UpgradeTo 대상 재질로 교체. 대상 RequiredItems 전부를 한 번에 낸다(모자라면 실패). 체력 비율은 유지. 성공하면 true */
+    bool TryUpgrade(IFEBuildInventoryProvider& Inventory, FText& OutReason);
+
+    /** 업그레이드 대상 정의. 완성 피스가 아니거나, 마지막 단계거나, 아직 로드 전이면 nullptr. 서버 판정과 클라 HUD 공용 */
+    const UFEBuildPieceDefinition* GetUpgradeTarget() const;
+    
+    /** [Server Only] 서브시스템이 재계산 결과를 기록 */
+    void SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance);
+
+    /** [Client Only] 프리뷰 고스트 색상(유효/무효) 교체. 서브클래스는 추가 메시에도 적용 */
+    virtual void SetPreviewValid(bool bIsValid);
+    
+    /** [Server Only] 저장용 스냅샷 기록. 서브클래스는 Super 호출 후 자기 상태를 Flags/OwnerId 에 채운다. */
+    virtual void WriteRecord(FFEBuildPieceRecord& OutRecord) const;
+
+    /** [Server Only] 복원. SpawnActorDeferred → InitializePiece → ReadRecord → FinishSpawning 순서로 호출한다. */
+    virtual void ReadRecord(const FFEBuildPieceRecord& Record);
+
+    // IFEInteractable
+    virtual bool CanInteract_Implementation(AActor* InstigatorActor) const override;
+    virtual FText GetInteractText_Implementation(AActor* InstigatorActor) const override;
+    virtual void Interact_Implementation(AActor* InstigatorActor) override;
+    virtual void InteractLocal_Implementation(AActor* InstigatorActor) override;
+    
+    // IFE_Damageable — HT 전투 컴포넌트가 서버에서 호출
+    virtual FFE_CombatDamageResult ReceiveCombatDamage_Implementation(const FFE_CombatDamageRequest& DamageRequest) override;
+
+    // IGenericTeamAgentInterface — 플레이어 팀으로 두어 플레이어 공격·수류탄이 HT 의 같은 팀 검사에서 걸러지게 한다
+    virtual FGenericTeamId GetGenericTeamId() const override;
+
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    const UFEBuildPieceDefinition* GetDefinition() const;
+
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    EFEBuildPieceState GetState() const;
+
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    UStaticMeshComponent* GetMesh() const;
+    
+    /** 지지의 출발점. 토대·가구는 항상, 계단처럼 소켓으로도 붙는 땅 피스는 바닥이 실제 지면에 닿아 있을 때만 (UFEBuildingSubsystem::IsAnchorAt) */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    bool IsAnchor() const;
+
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    int32 GetSupportCost() const;
+
+    /** 청사진+완성 전체 그래프 기준 지지 거리 (배치 예측용). 255 = 미도달 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    uint8 GetDesignSupportDistance() const;
+
+    /** 완성 피스만의 그래프 기준 지지 거리 (완성 게이팅·붕괴용). 255 = 미도달 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    uint8 GetSupportDistance() const;
+
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    int32 GetTotalRequired() const;
+
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    bool IsFullySupplied() const;
+
+    /** 0~1. 완성품은 1. UI 용 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    float GetSupplyProgress() const;
+    
+    /** 0~1. 리플리케이트된 값이라 클라에서도 쓸 수 있다 (표시·수리 사전 검사용) */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    float GetHealthPercent() const;
+
+    /** 완성 피스이고 체력이 가득이 아니다 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    bool IsDamaged() const;
+
+    /** RequiredItems[Index] 에 투입된 개수. 범위 밖이면 0 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    int32 GetSuppliedCount(int32 Index) const;
+
+    /** 모든 항목의 투입 합 */
+    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
+    int32 GetTotalSupplied() const;
+
+    /** [Native] 투입량 변화. 서버·클라 모두. 투입 패널이 행을 갱신할 때 쓴다 */
+    FSimpleMulticastDelegate OnSupplyChangedNative;
+
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+protected:
+    virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    
+    /** 완성 상태 상호작용 훅. 기본은 상호작용 없음. 문·침구·작업대가 오버라이드. */
+    virtual bool CanInteractBuilt(AActor* InstigatorActor) const;
+    virtual FText GetInteractTextBuilt(AActor* InstigatorActor) const;
+    /** [Server Only] */
+    virtual void InteractBuilt(AActor* InstigatorActor);
+    /** [Client Only] */
+    virtual void InteractBuiltLocal(AActor* InstigatorActor);
+
+    /** ApplyState 끝에 호출. 서브클래스가 추가 메시(문짝 등)에 상태를 반영하는 자리 */
+    virtual void OnApplyState(EFEBuildPieceState NewState);
+
+    /** 메시의 모든 슬롯에 머티리얼 적용. Soft 가 비어 있으면 아무 것도 안 함 */
+    static void ApplyMaterialToAll(UStaticMeshComponent* MeshComponent, const TSoftObjectPtr<UMaterialInterface>& SoftMaterial);
+
+    /** 상태에 맞는 콜리전 프로파일 이름 (BuildPreview / BuildBlueprint / BuildPiece) */
+    static FName GetCollisionProfileForState(EFEBuildPieceState PieceState);
+
+    UPROPERTY(ReplicatedUsing = OnRep_PieceId)
+    FPrimaryAssetId PieceId;
+
+    UPROPERTY(ReplicatedUsing = OnRep_State)
+    EFEBuildPieceState State = EFEBuildPieceState::Blueprint;
+    
+    /** RequiredItems 와 같은 길이. [i] = i 번째 재료에 투입된 개수 */
+    UPROPERTY(ReplicatedUsing = OnRep_SuppliedCounts)
+    TArray<int32> SuppliedCounts;
+    
+    UPROPERTY(Replicated)
+    uint8 DesignSupportDistance = 255;
+    
+    /** 표시용 체력 %. 가득 = 100, 손상 = 1~99 (조금만 깎여도 99). 정확한 값은 서버의 Health */
+    UPROPERTY(ReplicatedUsing = OnRep_HealthPercent)
+    uint8 HealthPercent = 100;
+
+    UPROPERTY(Replicated)
+    uint8 SupportDistance = 255;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building")
+    TObjectPtr<UStaticMeshComponent> Mesh;
+
+    UFUNCTION()
+    void OnRep_PieceId();
+
+    UFUNCTION()
+    void OnRep_State();
+
+    UFUNCTION()
+    void OnRep_SuppliedCounts();
+    
+    UFUNCTION()
+    void OnRep_HealthPercent();
+    
+    /** [Multicast RPC] 사라지기 직전의 파편 효과·소리. Destroy 전에 보내는 Reliable 이라 채널이 닫히기 전에 도착한다.
+     *  클라 EndPlay 로 하지 않는 이유: 거리 밖으로 멀어져 액터가 지워질 때도 EndPlay(Destroyed) 가 와서 구분할 수 없다 */
+    UFUNCTION(NetMulticast, Reliable)
+    void MulticastPlayBreakEffect();
+
+    /** BP 훅 (VFX/SFX 용). ApplyState 가 실행될 때마다 호출되며 최초 1회도 포함. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
+    void OnStateChanged(EFEBuildPieceState NewState);
+
+    /** BP 훅 (진행도 표시 용). 서버와 클라이언트 모두에서 호출. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
+    void OnSupplyChanged(int32 NewSuppliedCount, int32 TotalRequired);
+    
+    /** BP 훅 (금 간 머티리얼·타격음·수리 효과). 서버와 클라이언트 모두에서 호출. Percent 0~1 */
+    UFUNCTION(BlueprintImplementableEvent, Category = "FallenEra|Building")
+    void OnHealthChanged(float Percent);
+
+private:
+    /** [Client Only] PieceId 를 로드된 정의로 해석한 뒤 ApplyState. */
+    void RequestDefinition();
+    void HandleDefinitionLoaded();
+
+    /** 현재 상태에 맞는 메시/콜리전 프로파일/머티리얼 적용. 여러 번 호출해도 안전(멱등). */
+    void ApplyState();
+
+    /** PieceId 에서 해석됨(클라이언트) 또는 직접 전달됨(서버/프리뷰). 리플리케이트하지 않음. */
+    UPROPERTY(Transient)
+    TObjectPtr<const UFEBuildPieceDefinition> Definition;
+
+    TSharedPtr<FStreamableHandle> DefinitionLoadHandle;
+    
+    /** [Server Only] 정확한 체력. 리플리케이트하지 않는다 (클라는 HealthPercent 만) */
+    float Health = 0.f;
+
+    /** [Server Only] Health 를 바꾸고 HealthPercent 갱신 + 서버 로컬 OnRep */
+    void SetHealth(float NewHealth);
+    
+    /** [Server Only] 같은 액터에서 정의만 Target 으로 교체 (재질 결정·업그레이드 공용). 체력 비율 유지, 지지 재계산, 새 번들 로드.
+     *  bFillSupply: true = 투입량을 Target 재료로 가득 (업그레이드), false = 0 으로 (청사진 재질 결정) */
+    void SwapDefinition(const UFEBuildPieceDefinition* Target, bool bFillSupply);
+};

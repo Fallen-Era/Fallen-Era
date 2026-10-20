@@ -25,4 +25,6 @@ private:
 	TArray<FGameplayAbilitySpecHandle> InputPressedSpecHandles;
 	TArray<FGameplayAbilitySpecHandle> InputReleasedSpecHandles;
 	TArray<FGameplayAbilitySpecHandle> InputHeldSpecHandles;
+	/** Presses received while the mapped ability was still active. */
+	TArray<FGameplayAbilitySpecHandle> PendingReactivationSpecHandles;
 };
