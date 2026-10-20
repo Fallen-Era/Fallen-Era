@@ -24,11 +24,16 @@ public class FallenEra : ModuleRules
 			"NavigationSystem",
 			"PhysicsCore",
 			"UMG",
+			"Voxel",
+			"VoxelGraph",
+			"VoxelCore",
 			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",
+			"PhysicsCore"
 			"DeveloperSettings",
 			"AssetRegistry"
+
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] 
