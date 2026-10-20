@@ -2,6 +2,7 @@
 
 #include "FEBuildDoor.h"
 #include "FEBuildingSettings.h"
+#include "FEBuildPieceDefinition.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Net/UnrealNetwork.h"
@@ -67,6 +68,7 @@ void AFEBuildDoor::OnApplyState(EFEBuildPieceState NewState)
     }
     Panel->SetRelativeLocation(HingeOffset);
     Panel->EmptyOverrideMaterials();
+    Panel->SetCollisionProfileName(GetCollisionProfileForState(NewState)); // 고스트=충돌 없음, 청사진=겹침, 완성=막음
     // 완성된 문만 NavMesh 에 반영. 청사진·고스트는 좀비가 그냥 지나간다.
     Panel->SetCanEverAffectNavigation(NewState == EFEBuildPieceState::Built);
 
@@ -77,6 +79,13 @@ void AFEBuildDoor::OnApplyState(EFEBuildPieceState NewState)
         break;
     case EFEBuildPieceState::Blueprint:
         ApplyMaterialToAll(Panel, UFEBuildingSettings::Get()->BlueprintMaterial);
+        break;
+    case EFEBuildPieceState::Built:
+        // 문틀(본체)과 같은 재질 머티리얼. 비어 있으면 문짝 메시 기본 머티리얼
+        if (const UFEBuildPieceDefinition* PieceDefinition = GetDefinition())
+        {
+            ApplyMaterialToAll(Panel, PieceDefinition->BuiltMaterial);
+        }
         break;
     default:
         break;

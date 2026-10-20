@@ -11,8 +11,28 @@
 #include "Engine/StreamableManager.h"
 #include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
+#include "Combat/FECombatTeams.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
+
+namespace
+{
+    /** 액터 클래스는 실행 중에 바꿀 수 없다 → 정의만 교체하려면 PieceClass 가 같아야 한다. 다르면 DA 설정 오류라 경고를 남긴다 */
+    bool HasSamePieceClass(const UFEBuildPieceDefinition& From, const UFEBuildPieceDefinition& To)
+    {
+        if (From.PieceClass.ToSoftObjectPath() == To.PieceClass.ToSoftObjectPath())
+        {
+            return true;
+        }
+        UE_LOG(LogFEBuilding, Warning, TEXT("%s -> %s: different PieceClass. Fix UpgradeTo in the data asset."),
+            *From.GetPrimaryAssetId().ToString(), *To.GetPrimaryAssetId().ToString());
+        return false;
+    }
+}
 
 AFEBuildPiece::AFEBuildPiece()
 {
@@ -32,6 +52,7 @@ void AFEBuildPiece::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
     DOREPLIFETIME(AFEBuildPiece, SuppliedCounts);
     DOREPLIFETIME(AFEBuildPiece, DesignSupportDistance);
     DOREPLIFETIME(AFEBuildPiece, SupportDistance);
+    DOREPLIFETIME(AFEBuildPiece, HealthPercent);
 }
 
 void AFEBuildPiece::BeginPlay()
@@ -44,6 +65,12 @@ void AFEBuildPiece::BeginPlay()
         if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(GetWorld()))
         {
             Subsystem->RegisterPiece(this);
+        }
+        
+        // 복원된 손상 피스: 서버는 FinishSpawning 전에 체력이 들어와 OnRep 을 부르지 않았다 → 손상 표현을 여기서 맞춘다
+        if (HealthPercent < 100)
+        {
+            OnRep_HealthPercent();
         }
     }
 }
@@ -68,6 +95,9 @@ void AFEBuildPiece::InitializePiece(const UFEBuildPieceDefinition* InDefinition,
 
     const int32 ItemCount = InDefinition ? InDefinition->RequiredItems.Num() : 0;
     SuppliedCounts.Init(0, ItemCount);
+    
+    // 청사진은 피해를 받지 않으므로 처음부터 최대 체력으로 두고, 완성되는 순간에도 그대로 쓴다
+    Health = InDefinition ? InDefinition->MaxHealth : 0.f;
 
     // 재료가 필요 없는 피스(또는 InstantBuild)는 바로 완성. 진행도도 1 이 되도록 맞춘다.
     const bool bNothingToSupply = GetTotalRequired() == 0;
@@ -91,10 +121,8 @@ void AFEBuildPiece::InitializePiece(const UFEBuildPieceDefinition* InDefinition,
 void AFEBuildPiece::SetState(EFEBuildPieceState NewState)
 {
     const bool bCanChange = HasAuthority() && State != NewState;
-    if (!bCanChange)
-    {
-        return;
-    }
+    if (!bCanChange) return;
+
     State = NewState;
     ApplyState();
 
@@ -104,35 +132,71 @@ void AFEBuildPiece::SetState(EFEBuildPieceState NewState)
     }
 }
 
-bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag)
+bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag ItemTag, FText& OutReason)
 {
     const bool bCanSupply = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Blueprint;
-    if (!bCanSupply)
+    if (!bCanSupply) return false;
+
+    const auto FindItemIndex = [&ItemTag](const UFEBuildPieceDefinition& Candidate)
     {
+        return Candidate.RequiredItems.IndexOfByPredicate([&ItemTag](const FFEBuildItemCost& Cost)
+        {
+            return Cost.ItemTag == ItemTag;
+        });
+    };
+
+    // 이 재료를 쓰는 재질을 정한다: 현재 재질이 쓰면 그대로, 아니면 (아직 안 정해졌을 때만) 재질 사슬에서 찾는다
+    const UFEBuildPieceDefinition* Target = Definition;
+    if (FindItemIndex(*Definition) == INDEX_NONE)
+    {
+        if (IsMaterialLocked())
+        {
+            // 다른 플레이어가 먼저 다른 재료를 넣어 재질이 정해졌다
+            OutReason = FText::Format(LOCTEXT("SupplyLocked", "이미 {0}(으)로 짓는 중입니다"), Definition->DisplayName);
+            return false;
+        }
+
+        TArray<const UFEBuildPieceDefinition*> Chain;
+        Definition->GetMaterialChain(Chain);
+        const UFEBuildPieceDefinition* const* Found = Chain.FindByPredicate([&FindItemIndex](const UFEBuildPieceDefinition* Candidate)
+        {
+            return FindItemIndex(*Candidate) != INDEX_NONE;
+        });
+        if (Found == nullptr)
+        {
+            return false; // 사슬 어디에도 없는 재료 (UI 는 이런 요청을 보내지 않는다)
+        }
+        Target = *Found;
+    }
+
+    // 재질을 바꾸기 전에 재료가 있는지 먼저 본다. 바꿔 놓고 못 넣으면 "재질 미정인데 시작 재질이 아닌" 상태가 된다
+    if (Inventory.CountItems(ItemTag) <= 0)
+    {
+        OutReason = FText::Format(LOCTEXT("SupplyNoItems", "{0}이(가) 없습니다"), UFEBuildingSettings::Get()->GetItemDisplayName(ItemTag));
         return false;
     }
 
-    const int32 Index = Definition->RequiredItems.IndexOfByPredicate([&ItemTag](const FFEBuildItemCost& Cost)
+    if (Target != Definition)
     {
-        return Cost.ItemTag == ItemTag;
-    });
-    if (!SuppliedCounts.IsValidIndex(Index))
-    {
-        return false; // 이 피스가 요구하지 않는 재료
+        if (!HasSamePieceClass(*Definition, *Target))
+        {
+            OutReason = LOCTEXT("SupplyInvalid", "이 재료로는 지을 수 없습니다");
+            return false;
+        }
+        UE_LOG(LogFEBuilding, Log, TEXT("%s material chosen: %s -> %s"), *GetName(), *PieceId.ToString(), *Target->GetPrimaryAssetId().ToString());
+        SwapDefinition(Target, false); // 투입량 0 으로 교체 → 아래 투입으로 잠긴다
     }
+
+    const int32 Index = FindItemIndex(*Definition);
+    if (!SuppliedCounts.IsValidIndex(Index)) return false;
 
     const int32 Remaining = Definition->RequiredItems[Index].Count - SuppliedCounts[Index];
     const int32 Available = FMath::Min(Remaining, Inventory.CountItems(ItemTag));
-    if (Available <= 0)
-    {
-        return false;
-    }
+    if (Available <= 0) return false;
 
     const int32 Removed = Inventory.RemoveItems(ItemTag, Available);
-    if (Removed <= 0)
-    {
-        return false;
-    }
+    if (Removed <= 0) return false;
+    
     SuppliedCounts[Index] += Removed;
     OnRep_SuppliedCounts(); // 서버 로컬 반영
 
@@ -140,13 +204,17 @@ bool AFEBuildPiece::TrySupply(IFEBuildInventoryProvider& Inventory, FGameplayTag
     return true;
 }
 
+bool AFEBuildPiece::IsMaterialLocked() const
+{
+    // 별도 상태값 없이 리플리케이트·저장되는 투입량으로 판단 → 서버·클라·복원이 자동으로 같다
+    return State == EFEBuildPieceState::Built || GetTotalSupplied() > 0;
+}
+
 bool AFEBuildPiece::TryComplete()
 {
     const bool bCanTry = HasAuthority() && State == EFEBuildPieceState::Blueprint && IsFullySupplied();
-    if (!bCanTry)
-    {
-        return false;
-    }
+    if (!bCanTry) return false;
+
     if (!UFEBuildingSubsystem::CanComplete(this))
     {
         UE_LOG(LogFEBuilding, Log, TEXT("%s: fully supplied, waiting for support"), *GetName());
@@ -163,10 +231,7 @@ bool AFEBuildPiece::CanDemolish(FText& OutReason) const
 
 void AFEBuildPiece::Demolish(IFEBuildInventoryProvider* Inventory)
 {
-    if (!HasAuthority())
-    {
-        return;
-    }
+    if (!HasAuthority()) return;
 
     if (Inventory && Definition)
     {
@@ -183,27 +248,216 @@ void AFEBuildPiece::Demolish(IFEBuildInventoryProvider* Inventory)
         }
     }
 
+    MulticastPlayBreakEffect(); // 청사진이면 구현에서 무시
     Destroy();
 }
 
 void AFEBuildPiece::Collapse()
 {
-    if (!HasAuthority())
-    {
-        return;
-    }
+    if (!HasAuthority()) return;
+
     // 지금은 그냥 사라진다. 
     // 아이템 월드 스폰 API 가 오면 (1) 붕괴 연출(토대 제거 → 위 구조물 순차 낙하) 뒤 (2) 체력과 무관하게 루팅 아이템으로 변환한다
     UE_LOG(LogFEBuilding, Log, TEXT("%s collapsed (support %d)"), *GetName(), SupportDistance);
+    
+    MulticastPlayBreakEffect(); // 청사진이면 구현에서 무시
     Destroy();
+}
+
+void AFEBuildPiece::ApplyStructureDamage(float Amount, const AActor* Source)
+{
+    const bool bCanDamage = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Built
+        && Amount > 0.f && !IsActorBeingDestroyed() && UFEBuildingSettings::Get()->bStructureDamageEnabled;
+    if (!bCanDamage) return;
+
+    SetHealth(Health - Amount);
+    UE_LOG(LogFEBuilding, Verbose, TEXT("%s took %.0f from %s (%.0f / %.0f)"),
+        *GetName(), Amount, *GetNameSafe(Source), Health, Definition->MaxHealth);
+
+    if (Health <= 0.f)
+    {
+        // 위 구조물은 EndPlay → UnregisterPiece → 지지 재계산에서 연쇄 붕괴한다 (철거·붕괴와 같은 경로)
+        // ponytail: 보관함·화로 내용물은 사라진다. 아이템 월드 스폰 API 가 오면 바닥에 떨군다
+        UE_LOG(LogFEBuilding, Log, TEXT("%s destroyed by %s"), *GetName(), *GetNameSafe(Source));
+        
+        MulticastPlayBreakEffect();
+        Destroy();
+    }
+}
+
+bool AFEBuildPiece::TryRepair(IFEBuildInventoryProvider& Inventory, FText& OutReason)
+{
+    const bool bCanRepair = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Built && !IsActorBeingDestroyed();
+    if (!bCanRepair) return false;
+
+    const float MaxHealth = Definition->MaxHealth;
+    const float Missing = MaxHealth - Health;
+    if (Missing <= 0.f)
+    {
+        OutReason = LOCTEXT("RepairNotDamaged", "손상되지 않았습니다");
+        return false;
+    }
+
+    // 1) 가득 수리 비용. 클라 HUD 미리보기와 같은 함수라 표시와 실제 차감이 같은 식을 쓴다
+    TArray<FFEBuildItemCost> FullCosts;
+    GetRepairCost(Missing / MaxHealth, FullCosts);
+
+    // 2) 가장 부족한 재료 기준으로 수리 비율(0~1). 이 비율로 깎으면 어떤 항목도 가진 수를 넘지 않는다
+    float Fraction = 1.f;
+    for (const FFEBuildItemCost& Cost : FullCosts)
+    {
+        Fraction = FMath::Min(Fraction, static_cast<float>(Inventory.CountItems(Cost.ItemTag)) / Cost.Count);
+    }
+    if (Fraction <= 0.f)
+    {
+        OutReason = LOCTEXT("RepairNoItems", "수리할 재료가 부족합니다");
+        return false;
+    }
+
+    // 3) 인벤토리에서 먼저 빼고 회복한다. ceil(비용 × 비율) ≤ 보유량이라 같은 서버 프레임 안에서는 부족해지지 않는다
+    FString CostText;
+    for (const FFEBuildItemCost& Cost : FullCosts)
+    {
+        const int32 Removed = Inventory.RemoveItems(Cost.ItemTag, FMath::CeilToInt(Cost.Count * Fraction));
+        CostText += FString::Printf(TEXT("%s %d "), *Cost.ItemTag.GetTagName().ToString(), Removed);
+    }
+
+    const float OldHealth = Health;
+    // 가득 수리는 부동소수 오차로 99% 에 머물지 않게 최대값을 직접 넣는다
+    SetHealth(Fraction >= 1.f ? MaxHealth : Health + Missing * Fraction);
+    UE_LOG(LogFEBuilding, Log, TEXT("%s repaired %.0f -> %.0f / %.0f (cost: %s)"), *GetName(), OldHealth, Health, MaxHealth, *CostText);
+    return true;
+}
+
+void AFEBuildPiece::GetRepairCost(float MissingRatio, TArray<FFEBuildItemCost>& OutCosts) const
+{
+    OutCosts.Reset();
+    if (Definition == nullptr || MissingRatio <= 0.f) return;
+
+    // 깎인 비율 × 재료 개수 × RepairCostRate, 항목마다 올림. 0 개인 항목은 빼서 "재료 없음"과 구분한다
+    const float Scale = FMath::Min(MissingRatio, 1.f) * UFEBuildingSettings::Get()->RepairCostRate;
+    for (const FFEBuildItemCost& Required : Definition->RequiredItems)
+    {
+        const int32 Count = FMath::CeilToInt(Required.Count * Scale);
+        if (Count > 0)
+        {
+            FFEBuildItemCost& Cost = OutCosts.AddDefaulted_GetRef();
+            Cost.ItemTag = Required.ItemTag;
+            Cost.Count = Count;
+        }
+    }
+}
+
+const UFEBuildPieceDefinition* AFEBuildPiece::GetUpgradeTarget() const
+{
+    // 대상 DA 객체는 이 DA 의 Runtime 번들로 같이 로드돼 있다. 아직 로드 전이면 nullptr (HUD 는 다음 갱신에서 다시 본다)
+    return State == EFEBuildPieceState::Built && Definition ? Definition->UpgradeTo.Get() : nullptr;
+}
+
+bool AFEBuildPiece::TryUpgrade(IFEBuildInventoryProvider& Inventory, FText& OutReason)
+{
+    const bool bCanUpgrade = HasAuthority() && Definition != nullptr && State == EFEBuildPieceState::Built && !IsActorBeingDestroyed();
+    if (!bCanUpgrade) return false;
+
+    const UFEBuildPieceDefinition* Target = GetUpgradeTarget();
+    if (Target == nullptr)
+    {
+        OutReason = LOCTEXT("UpgradeMax", "더 이상 업그레이드할 수 없습니다");
+        return false;
+    }
+    if (!HasSamePieceClass(*Definition, *Target))
+    {
+        OutReason = LOCTEXT("UpgradeInvalid", "업그레이드할 수 없는 구조물입니다");
+        return false;
+    }
+
+    // 대상 재료 전부를 한 번에 낸다. 하나라도 모자라면 아무것도 빼지 않는다 (반쯤 돌인 벽은 표현할 수 없다)
+    const UFEBuildingSettings* Settings = UFEBuildingSettings::Get();
+    for (const FFEBuildItemCost& Cost : Target->RequiredItems)
+    {
+        if (Inventory.CountItems(Cost.ItemTag) < Cost.Count)
+        {
+            OutReason = FText::Format(LOCTEXT("UpgradeNoItems", "업그레이드 재료가 부족합니다 ({0} {1})"),
+                Settings->GetItemDisplayName(Cost.ItemTag), FText::AsNumber(Cost.Count));
+            return false;
+        }
+    }
+
+    FString CostText;
+    for (const FFEBuildItemCost& Cost : Target->RequiredItems)
+    {
+        const int32 Removed = Inventory.RemoveItems(Cost.ItemTag, Cost.Count);
+        CostText += FString::Printf(TEXT("%s %d "), *Cost.ItemTag.GetTagName().ToString(), Removed);
+    }
+
+    const FPrimaryAssetId OldId = PieceId;
+    SwapDefinition(Target, true); // 투입량 가득 → 철거 환불은 새 재질 기준
+
+    UE_LOG(LogFEBuilding, Log, TEXT("%s upgraded %s -> %s (cost: %s)"), *GetName(), *OldId.ToString(), *PieceId.ToString(), *CostText);
+    return true;
+}
+
+void AFEBuildPiece::SwapDefinition(const UFEBuildPieceDefinition* Target, bool bFillSupply)
+{
+    if (!HasAuthority() || Target == nullptr || Target == Definition) return;
+
+    // 체력 비율 유지 — 업그레이드로 가득 채우면 "싸게 수리"하는 편법이 생긴다. 청사진은 항상 가득이라 비율 1
+    const float HealthRatio = Definition && Definition->MaxHealth > 0.f ? Health / Definition->MaxHealth : 1.f;
+
+    // 같은 액터에서 정의만 교체. 위치·소켓·문 열림 상태는 그대로다
+    Definition = Target;
+    PieceId = Target->GetPrimaryAssetId();
+
+    SuppliedCounts.SetNum(Target->RequiredItems.Num());
+    for (int32 Index = 0; Index < Target->RequiredItems.Num(); ++Index)
+    {
+        SuppliedCounts[Index] = bFillSupply ? Target->RequiredItems[Index].Count : 0;
+    }
+    OnRep_SuppliedCounts(); // 서버 로컬 반영
+
+    // 비율 1 이면 부동소수 오차 없이 최대값 (수리와 같은 이유)
+    SetHealth(HealthRatio >= 1.f ? Target->MaxHealth : Target->MaxHealth * HealthRatio);
+
+    // 새 메시·머티리얼(Runtime 번들)을 로드한 뒤 외형 갱신. 클라는 PieceId 리플리케이트 → OnRep_PieceId 로 같은 함수를 탄다
+    RequestDefinition();
+
+    // 재질별 최대 지지 거리가 바뀌므로 지지 재계산
+    if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(GetWorld()))
+    {
+        Subsystem->MarkDirty();
+    }
+}
+
+FFE_CombatDamageResult AFEBuildPiece::ReceiveCombatDamage_Implementation(const FFE_CombatDamageRequest& DamageRequest)
+{
+    FFE_CombatDamageResult Result;
+
+    // 청사진은 근접 판정(Enemy 채널 Overlap)에 잡히지만 피해 대상이 아니다 → 처리 안 함으로 돌려 적의 타격 수를 소모하지 않게 한다.
+    // 같은 팀 검사는 HT 의 ApplyDamageInternal 도 하지만, 다른 호출 경로(함정·폭발물 등)를 대비해 여기서도 한다.
+    const bool bCanReceive = HasAuthority() && State == EFEBuildPieceState::Built
+        && !FECombatTeams::AreSameTeam(DamageRequest.SourceActor.Get(), this);
+    if (!bCanReceive) return Result;
+
+    ApplyStructureDamage(DamageRequest.SourceAttackPower, DamageRequest.SourceActor.Get());
+
+    // 맞은 것으로 처리 → 적 근접 공격의 최대 타격 수를 벽이 소모해 벽 뒤 플레이어는 맞지 않는다.
+    // bImpactCueHandled 는 false 로 두어 HT 쪽이 타격 이펙트를 재생한다.
+    Result.bHandled = true;
+    Result.bDamageApplied = true;
+    return Result;
+}
+
+FGenericTeamId AFEBuildPiece::GetGenericTeamId() const
+{
+    // 플레이어 팀 → 플레이어의 공격·수류탄은 HT 의 같은 팀 검사에서 걸러진다.
+    // 플레이어도 건물을 부술 수 있게 바꾸려면 여기서 FGenericTeamId::NoTeam 을 반환한다
+    return FECombatTeams::Player;
 }
 
 void AFEBuildPiece::SetSupportDistances(uint8 InDesignDistance, uint8 InBuiltDistance)
 {
-    if (!HasAuthority())
-    {
-        return;
-    }
+    if (!HasAuthority()) return;
+
     DesignSupportDistance = InDesignDistance;
     SupportDistance = InBuiltDistance;
 }
@@ -215,6 +469,7 @@ void AFEBuildPiece::WriteRecord(FFEBuildPieceRecord& OutRecord) const
     OutRecord.Yaw = GetActorRotation().Yaw;
     OutRecord.State = State;
     OutRecord.SuppliedCounts = SuppliedCounts;
+    OutRecord.Health = IsDamaged() ? Health : 0.f; // 0 = 가득
 }
 
 void AFEBuildPiece::ReadRecord(const FFEBuildPieceRecord& Record)
@@ -223,6 +478,10 @@ void AFEBuildPiece::ReadRecord(const FFEBuildPieceRecord& Record)
     // 정의가 바뀌어 재료 항목 수가 달라졌을 수 있으므로 현재 정의 길이에 맞춘다 (인덱스 기반 접근이 깨지지 않게).
     SuppliedCounts = Record.SuppliedCounts;
     SuppliedCounts.SetNum(Definition ? Definition->RequiredItems.Num() : 0);
+    if (Record.Health > 0.f)
+    {
+        SetHealth(Record.Health);
+    }
 }
 
 void AFEBuildPiece::SetPreviewValid(bool bIsValid)
@@ -257,15 +516,31 @@ FText AFEBuildPiece::GetInteractText_Implementation(AActor* InstigatorActor) con
     {
         return LOCTEXT("WaitingSupport", "지지 구조 완성 대기");
     }
+
+    // 재질 미정이면 고를 수 있는 재료를 알려 준다: "재료 선택 (나무 · 돌 · 철)"
+    if (Definition && !IsMaterialLocked())
+    {
+        TArray<const UFEBuildPieceDefinition*> Chain;
+        Definition->GetMaterialChain(Chain);
+        if (Chain.Num() > 1)
+        {
+            TArray<FText> ItemNames;
+            for (const UFEBuildPieceDefinition* Variant : Chain)
+            {
+                if (!Variant->RequiredItems.IsEmpty())
+                {
+                    ItemNames.Add(UFEBuildingSettings::Get()->GetItemDisplayName(Variant->RequiredItems[0].ItemTag));
+                }
+            }
+            return FText::Format(LOCTEXT("SupplyChoosePrompt", "재료 선택 ({0})"), FText::Join(FText::FromString(TEXT(" · ")), ItemNames));
+        }
+    }
     return FText::Format(LOCTEXT("SupplyPrompt", "재료 투입 ({0} / {1})"), FText::AsNumber(GetTotalSupplied()), FText::AsNumber(GetTotalRequired()));
 }
 
 void AFEBuildPiece::Interact_Implementation(AActor* InstigatorActor)
 {
-    if (!HasAuthority())
-    {
-        return; // [Server Only]
-    }
+    if (!HasAuthority()) return; // [Server Only]
 
     if (State == EFEBuildPieceState::Blueprint)
     {
@@ -338,7 +613,7 @@ UStaticMeshComponent* AFEBuildPiece::GetMesh() const
 
 bool AFEBuildPiece::IsAnchor() const
 {
-    return Definition != nullptr && Definition->bCanPlaceOnGround;
+    return UFEBuildingSubsystem::IsAnchorAt(GetWorld(), Definition, GetActorTransform(), this);
 }
 
 int32 AFEBuildPiece::GetSupportCost() const
@@ -384,6 +659,16 @@ float AFEBuildPiece::GetSupplyProgress() const
     return FMath::Clamp(static_cast<float>(GetTotalSupplied()) / Total, 0.f, 1.f);
 }
 
+float AFEBuildPiece::GetHealthPercent() const
+{
+    return HealthPercent / 100.f;
+}
+
+bool AFEBuildPiece::IsDamaged() const
+{
+    return State == EFEBuildPieceState::Built && HealthPercent < 100;
+}
+
 int32 AFEBuildPiece::GetSuppliedCount(int32 Index) const
 {
     return SuppliedCounts.IsValidIndex(Index) ? SuppliedCounts[Index] : 0;
@@ -417,12 +702,57 @@ void AFEBuildPiece::OnRep_SuppliedCounts()
     OnSupplyChangedNative.Broadcast();
 }
 
+void AFEBuildPiece::OnRep_HealthPercent()
+{
+    // 손상도(0 = 멀쩡 ~ 1 = 거의 파괴)를 Custom Primitive Data[0] 에 넣는다. 본체뿐 아니라 문짝 같은 추가 메시에도 같이.
+    // 머티리얼이 이 값을 읽으면 금·그을음을 섞고, 읽지 않는 머티리얼은 영향이 없다 (피스마다 MID 를 만들지 않아 수가 많아도 싸다)
+    const float Damage = 1.f - GetHealthPercent();
+    ForEachComponent<UStaticMeshComponent>(false, [Damage](UStaticMeshComponent* MeshComponent)
+    {
+        MeshComponent->SetCustomPrimitiveDataFloat(0, Damage);
+    });
+    OnHealthChanged(GetHealthPercent());
+}
+
+void AFEBuildPiece::MulticastPlayBreakEffect_Implementation()
+{
+    // 데디케이티드 서버는 화면이 없다. 청사진은 파편 없이 사라진다 (철거 환불 등)
+    const bool bShowEffect = GetNetMode() != NM_DedicatedServer && State == EFEBuildPieceState::Built && Definition != nullptr;
+    if (!bShowEffect) return;
+
+    // 효과 에셋은 Runtime 번들이라 정의를 받을 때 이미 로드되어 있다 → Get() 으로 충분 (동기 로드 없음)
+    const FVector Location = Mesh ? Mesh->Bounds.Origin : GetActorLocation();
+    if (UNiagaraSystem* Effect = Definition->BreakEffect.Get())
+    {
+        UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, Effect, Location, GetActorRotation());
+    }
+    if (USoundBase* Sound = Definition->BreakSound.Get())
+    {
+        UGameplayStatics::PlaySoundAtLocation(this, Sound, Location);
+    }
+}
+
+void AFEBuildPiece::SetHealth(float NewHealth)
+{
+    const float MaxHealth = Definition ? Definition->MaxHealth : 1.f;
+    Health = FMath::Clamp(NewHealth, 0.f, MaxHealth);
+
+    // 가득 = 100, 손상 = 1~99. 내림 + 최소 1 이라 조금만 깎여도 클라에서 "손상"으로 보인다
+    const uint8 NewPercent = Health >= MaxHealth
+        ? 100
+        : static_cast<uint8>(FMath::Clamp(FMath::FloorToInt(Health / MaxHealth * 100.f), 1, 99));
+    if (NewPercent == HealthPercent) return;
+
+    HealthPercent = NewPercent;
+    if (HasActorBegunPlay())
+    {
+        OnRep_HealthPercent(); // 서버 로컬 반영. 복원 중(FinishSpawning 전)에는 BP 이벤트를 부르지 않는다
+    }
+}
+
 void AFEBuildPiece::RequestDefinition()
 {
-    if (!PieceId.IsValid())
-    {
-        return;
-    }
+    if (!PieceId.IsValid()) return;
 
     UAssetManager& AssetManager = UAssetManager::Get();
     if (!AssetManager.GetPrimaryAssetPath(PieceId).IsValid())
@@ -447,12 +777,11 @@ void AFEBuildPiece::HandleDefinitionLoaded()
 
 void AFEBuildPiece::ApplyMaterialToAll(UStaticMeshComponent* MeshComponent, const TSoftObjectPtr<UMaterialInterface>& SoftMaterial)
 {
-    // 고스트/청사진 머티리얼은 작은 Unlit 머티리얼이라 첫 사용 시 동기 로드해도 부담이 없다.
+    // 고스트/청사진 머티리얼은 UFEBuildingSubsystem 이 월드 시작 때 미리 받아 두므로 보통 바로 반환된다(동기 로드 없음).
+    // 접속 직후 미리 로드가 끝나기 전에만 실제로 동기 로드한다 — Get() 으로 바꾸면 그 사이 청사진이 완성품 색으로 보인다
     UMaterialInterface* Material = SoftMaterial.LoadSynchronous();
-    if (MeshComponent == nullptr || Material == nullptr)
-    {
-        return;
-    }
+    if (MeshComponent == nullptr || Material == nullptr) return;
+
     for (int32 SlotIndex = 0; SlotIndex < MeshComponent->GetNumMaterials(); ++SlotIndex)
     {
         MeshComponent->SetMaterial(SlotIndex, Material);
@@ -472,10 +801,7 @@ FName AFEBuildPiece::GetCollisionProfileForState(EFEBuildPieceState PieceState)
 void AFEBuildPiece::ApplyState()
 {
     UStaticMesh* StaticMesh = Definition ? Definition->Mesh.Get() : nullptr;
-    if (StaticMesh == nullptr)
-    {
-        return; // 정의가 아직 해석되지 않았거나 Runtime 번들이 로드되지 않음. 이후 콜백에서 다시 시도된다.
-    }
+    if (StaticMesh == nullptr)return; // 정의가 아직 해석되지 않았거나 Runtime 번들이 로드되지 않음. 이후 콜백에서 다시 시도된다.
 
     Mesh->SetStaticMesh(StaticMesh);
     Mesh->EmptyOverrideMaterials();
@@ -489,6 +815,10 @@ void AFEBuildPiece::ApplyState()
         break;
     case EFEBuildPieceState::Blueprint:
         ApplyMaterialToAll(Mesh, UFEBuildingSettings::Get()->BlueprintMaterial);
+        break;
+    case EFEBuildPieceState::Built:
+        // 같은 메시를 재질별 DA 가 공유하므로 색은 DA 가 정한다. 비어 있으면 메시 기본 머티리얼(지금 MI_Piece_Wood)
+        ApplyMaterialToAll(Mesh, Definition->BuiltMaterial);
         break;
     default:
         break;

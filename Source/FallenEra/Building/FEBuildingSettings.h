@@ -66,6 +66,14 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Sandbox")
 	bool bStructureDamageEnabled = true;
 	
+	/** 수리 비용 비율. 깎인 비율 × RequiredItems 개수 × 이 값 (항목마다 올림). 0.5 = 처음부터 짓는 비용의 절반으로 가득 수리 */
+	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Sandbox", meta = (ClampMin = 0))
+	float RepairCostRate = 0.5f;
+	
+	/** 수리 최소 간격(초). 클라는 휘두르기 연타를, 서버는 RPC 폭주를 막는다 */
+	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Sandbox", meta = (ClampMin = 0))
+	float RepairInterval = 0.6f;
+	
 	UPROPERTY(config, EditAnywhere, Category = "FallenEra|Building|Items", meta = (Categories = "Item"))
 	TMap<FGameplayTag, FText> ItemDisplayNames;
 	

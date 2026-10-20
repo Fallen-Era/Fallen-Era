@@ -9,6 +9,12 @@
 #include "FEBuildingTypes.h"
 #include "FEBuildingComponent.generated.h"
 
+class UAbilitySystemComponent;
+class UAnimMontage;
+enum class EFEBuildMenuTab : uint8;
+class UEnhancedInputLocalPlayerSubsystem;
+class UInputMappingContext;
+class AFEBuildFurnace;
 class AFEBuildStorage;
 class UFEBuildingViewModel;
 class AFEBuildPiece;
@@ -51,6 +57,17 @@ public:
     /** [Client Only] 조준한 피스 철거 요청 (X). 청사진 100% / 완성품 RefundRate 환불. */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void DemolishPiece();
+    
+    /** [Client Only] 조준한 완성 피스 수리 요청. 망치 무기의 GA_Build_Repair(좌클릭)가 호출한다 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void RepairPiece();
+    
+    /** [Client Only] 조준한 완성 피스를 다음 재질로 업그레이드 요청. 망치 무기의 GA_Build_Upgrade(우클릭)가 호출한다 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void UpgradePiece();
+
+    /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 지형·월드 물체가 먼저 맞으면(벽 너머) nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. 디버그 명령도 사용 */
+    AFEBuildPiece* FindPieceUnderCrosshair() const;
 
     /** [Client Only] 빌드 메뉴 열기/닫기 (Tab). 빌드 모드 밖이면 진입하며 연다. */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
@@ -59,6 +76,9 @@ public:
     /** [Client Only] 메뉴 닫기 (뷰모델 "닫기" 버튼, 피스 선택 후) */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void CloseBuildMenu();
+    
+    /** [Client Only] 빌드 메뉴 탭 변경 → 그 탭의 피스만 목록에 다시 채운다 */
+    void SelectMenuTab(EFEBuildMenuTab Tab);
 
     /** [Client Only] 청사진 재료 투입 패널 열기. 같은 피스면 닫는다. AFEBuildPiece::InteractLocal 이 호출 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
@@ -85,6 +105,10 @@ public:
     /** [Client Only] 보관함 칸 클릭 → 그 칸을 통째로 내 인벤토리로 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void TakeSlot(int32 SlotIndex, FGameplayTag ItemTag);
+    
+    /** [Client Only] 화로 패널의 불 켜기/끄기 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void ToggleFurnaceLit();
 
     /** HUD 위젯이 바인딩할 뷰모델. 지연 생성 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
@@ -100,12 +124,21 @@ public:
     static FTransform MakePlacementTransform(const FVector& Location, uint8 YawStep);
 
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+    virtual void BeginPlay() override;
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 protected:
     /** 빌드 모드 진입 시 선택되는 피스. 빌드 메뉴가 이를 대체한다. */
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building", meta = (AllowedTypes = "BuildPiece"))
     FPrimaryAssetId DefaultPieceId;
+    
+    /** 빌드 모드 중에만 추가되는 입력 (배치·취소·회전·철거). 전투 IMC(우선순위 20)보다 높아야 좌·우클릭을 가져온다.
+     *  소프트 참조: BeginPlay 에서 비동기 로드. 로드 전에 빌드 모드에 들어가면 로드가 끝날 때 추가된다 */
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Input")
+    TSoftObjectPtr<UInputMappingContext> BuildModeMappingContext;
+
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Input")
+    int32 BuildModeMappingPriority = 30;
 
     /** [Server RPC] Location 은 정수 cm 로 양자화, YawStep 은 0..GetYawStepCount()-1 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -114,6 +147,18 @@ protected:
     /** [Server RPC] Piece 철거, 환불은 요청자의 인벤토리로 */
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerDemolishPiece(AFEBuildPiece* Piece);
+    
+    /** [Server RPC] 망치 장착 + 거리 확인 후 Piece 수리. 실패 사유는 ClientShowNotice 로 돌려준다 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerRepairPiece(AFEBuildPiece* Piece);
+    
+    /** [Server RPC] 망치 장착 + 거리 확인 후 Piece 업그레이드. nullptr = 대상 없이 휘두르기만 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerUpgradePiece(AFEBuildPiece* Piece);
+
+    /** [Client RPC] 서버만 아는 실패 사유(재료 부족·도구 없음)를 요청자 HUD 에 띄운다 */
+    UFUNCTION(Client, Reliable)
+    void ClientShowNotice(const FText& Text);
     
     /** [Server RPC] 요청자의 인벤토리에서 Piece 의 ItemTag 항목에 있는 만큼 투입 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -126,6 +171,10 @@ protected:
     /** [Server RPC] 보관함 SlotIndex 칸 → 요청자의 인벤토리 */
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerTakeItem(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag);
+    
+    /** [Server RPC] 화로 점화/소화 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerSetFurnaceLit(AFEBuildFurnace* Furnace, bool bLit);
 
     /** [Server RPC] 패널을 열 때 소지품 목록 요청 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -152,9 +201,6 @@ private:
     /** 커서 근처 구조물의 소켓에 맞춘 배치. 후보가 없으면 false. */
     bool FindSnapPlacement(const FVector& CursorPoint, FVector& OutLocation, uint8& OutYawStep) const;
 
-    /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 없으면 nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. */
-    AFEBuildPiece* FindPieceUnderCrosshair() const;
-
     /** [Server Only] 이 피스에 대한 요청을 처리해도 되는지 (유효성 + 거리) */
     bool IsPieceInReach(const AFEBuildPiece* Piece) const;
     
@@ -164,14 +210,23 @@ private:
     /** Asset Manager 의 BuildPiece 목록 → 엔트리 뷰모델. 정의 에셋 로드 완료 후 호출 */
     void BuildPieceEntries();
 
-    /** SupplyTarget 의 현재 투입량으로 행 뷰모델 갱신. 다 찼으면 패널을 닫는다 */
+    /** SupplyTarget 의 현재 투입량·소지품으로 줄 갱신. 정의나 잠금 상태가 바뀌었으면 줄을 다시 만든다. 다 찼으면 패널을 닫는다 */
     void RefreshSupplyRows();
+
+    /** 투입 패널 줄을 새로 만든다. 재질 미정 = 사슬 전체(선택지), 잠김 = 현재 정의의 재료만 */
+    void RebuildSupplyRows();
+
+    /** 클라 소지품 스냅샷(CarriedItems)에서 ItemTag 개수 */
+    int32 GetCarriedCount(FGameplayTag ItemTag) const;
 
     UFUNCTION()
     void HandleSupplyTargetDestroyed(AActor* DestroyedActor);
     
     /** 보관함 칸(내용만 갱신)과 소지품 칸(다시 생성)을 그린다 */
     void RefreshStorageSlots();
+    
+    /** 열린 패널이 화로면 진행 바·버튼 문구 갱신 */
+    void RefreshFurnaceState();
 
     /** [Server Only] 현재 소지품을 요청자에게 보낸다 */
     void SendInventorySnapshot();
@@ -185,6 +240,9 @@ private:
     void HandleStorageTargetDestroyed(AActor* DestroyedActor);
 
     bool bIsMenuOpen = false;
+    
+    /** 마지막으로 연 메뉴 탭. 다음에 메뉴를 열어도 유지 */
+    EFEBuildMenuTab MenuTab{};
 
     UPROPERTY(Transient)
     TObjectPtr<UFEBuildingViewModel> ViewModel;
@@ -199,6 +257,10 @@ private:
 
     /** [Client Only] 서버가 보내 준 소지품 스냅샷. 패널 표시에만 쓴다 (판정은 전부 서버) */
     TArray<FFEBuildItemCost> CarriedItems;
+    
+    /** 지금 투입 패널 줄을 만든 기준. 정의(재질)나 잠금 상태가 바뀌면 줄을 다시 만든다 */
+    TWeakObjectPtr<const UFEBuildPieceDefinition> SupplyRowsDefinition;
+    bool bSupplyRowsLocked = false;
 
     TSharedPtr<FStreamableHandle> MenuLoadHandle;
 
@@ -226,4 +288,51 @@ private:
     mutable FString LastSnapDescription;
     
     FString LastInvalidReason;
+    
+    /** [Client Only] 마지막으로 검증한 배치 위치·회전. 같으면 검증(오버랩 여러 번)을 건너뛴다 */
+    FVector LastValidatedLocation = FVector::ZeroVector;
+    uint8 LastValidatedYawStep = 0;
+
+    /** [Client Only] 마지막 검증 시각(월드 초). 음수면 다음 프레임에 무조건 검증 */
+    double LastValidationTime = -1.0;
+
+    /** [Server Only] 마지막 배치 요청 시각. 배치 속도 제한용 */
+    double LastPlaceRequestTime = -1.0;
+    
+    /** [Client Only] 망치 조준 HUD 갱신 타이머 (0.1초, 로컬 플레이어만 실제로 일함) */
+    FTimerHandle AimTimer;
+
+    /** [Client Only] 망치를 들고 있으면 조준한 완성 피스의 체력·수리 비용을 뷰모델에 넣고, 아니면 숨긴다 */
+    void UpdateAimedPiece();
+
+    /** 지금 수리 도구(Item.Tool.Hammer)를 들고 있다. 서버 판정과 클라 HUD 가 같이 쓴다 */
+    bool IsHoldingRepairTool() const;
+
+    /** 들고 있는 도구에서 InputTag(좌/우클릭)에 해당하는 공격 몽타주 (망치 DA 의 AttackActions). 없으면 nullptr */
+    UAnimMontage* GetToolMontage(FGameplayTag InputTag) const;
+
+    /** [Client Only] 휘두르기 공통 처리: 간격 확인 + 원격 클라 로컬 재생. 휘둘렀으면 true */
+    bool TrySwingTool(FGameplayTag InputTag);
+
+    /** [Server Only] 휘두르기 공통 처리: 간격 확인(가장 먼저 — 도구 없는 요청도 속도 제한) → 망치 확인 → 다른 플레이어에게 몽타주 멀티캐스트. 계속 진행하면 true */
+    bool ServerSwingTool(FGameplayTag InputTag);
+
+    /** [Client Only] 마지막 수리 휘두르기 시각. RepairInterval 연타 방지 */
+    double LastRepairClickTime = -1.0;
+    
+    /** [Server Only] 다음 수리·업그레이드 요청을 받을 수 있는 시각. 받을 때마다 RepairInterval 씩 누적한다
+     *  → 지터로 조금 일찍 온 요청은 받되 평균 간격은 RepairInterval 을 넘지 못한다 */
+    double NextRepairAllowedTime = 0.0;
+    
+    /** State.Building 태그와 빌드 모드 전용 입력(IMC)을 빌드 모드 여부에 맞춘다 */
+    void UpdateBuildModeState();
+    
+    /** 태그를 건 ASC. 폰이 죽어 빙의가 풀려도 같은 ASC 에서 떼기 위해 기억한다 (ASC 는 PlayerState 소유) */
+    TWeakObjectPtr<UAbilitySystemComponent> BuildModeTagOwner;
+
+    /** IMC 를 넣은 로컬 플레이어 입력 서브시스템. 폰이 사라져 컨트롤러를 못 찾아도 같은 곳에서 빼기 위해 기억한다 */
+    TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> BuildModeInputOwner;
+    
+    /** BuildModeMappingContext 비동기 로드 핸들 */
+    TSharedPtr<FStreamableHandle> BuildModeMappingLoadHandle;
 };
