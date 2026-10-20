@@ -33,9 +33,9 @@ public:
 
     virtual FPrimaryAssetId GetPrimaryAssetId() const override;
     
-    /** 재질 사슬: 자신부터 UpgradeTo 를 따라간 정의들 (예: 나무 → 돌 → 철). 투입 시 재질 선택·메뉴·프롬프트가 쓴다.
-     *  다음 단계 DA 를 동기 로드한다 (소프트 참조만 가진 작은 데이터라 메시는 따라오지 않음).
-     *  사슬이 길어지거나 DA 가 무거워지면 시작 DA 에 변형 목록을 Runtime 번들로 두는 방식으로 바꾼다 */
+	/** 재질 사슬: 자신부터 UpgradeTo 를 따라간 정의들 (예: 나무 → 돌 → 철). 투입 시 재질 선택·메뉴·프롬프트가 쓴다.
+	 *  로드하지 않고 메모리에 있는 DA 만 따라간다 — UFEBuildingSubsystem 이 월드 시작 때 BuildPiece DA 전부를 미리 받아 둔다.
+	 *  그 전(접속 직후 잠깐)에는 사슬이 짧게 나올 수 있다 */
     void GetMaterialChain(TArray<const UFEBuildPieceDefinition*>& OutChain) const;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building")
@@ -116,9 +116,9 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (EditCondition = "bCanPlaceOnGround", ClampMin = 0))
     float MaxGroundHeightDelta = 50.f;
 	
-	/** 소켓 배치 때 "같은 자리 중복" 검사 상자 = 바운드 × 이 값. 0 이면 검사하지 않는다 —
-	 *  직각 삼각 벽은 바운드 중심이 빗변 위라 어떤 크기로 줄여도 위에 얹힌 지붕에 닿는다.
-	 *  ponytail: 같은 자리에 삼각 벽 2장을 겹쳐 놓을 수 있음. 문제가 되면 같은 위치·방향 피스 비교로 */
+	/** 소켓 배치 때 "같은 자리 중복" 검사 상자 = 바운드 × 이 값.
+	 *  0 이면 상자 대신 피벗 비교 — 새 피벗 5cm 안에 다른 피스의 피벗이 있으면 중복 (같은 소켓 두 번, 반대 방향 포함).
+	 *  직각 삼각 벽처럼 바운드 중심이 모양 밖이라 어떤 크기로 줄여도 위에 얹힌 피스에 닿는 경우에 쓴다 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (ClampMin = 0, ClampMax = 1))
 	float DuplicateCoreScale = 0.4f;
     

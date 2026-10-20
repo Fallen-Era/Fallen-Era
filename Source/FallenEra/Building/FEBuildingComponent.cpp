@@ -27,6 +27,8 @@
 #include "Combat/Weapon/FEWeaponItemData.h"
 #include "Combat/FECombatGameplayTags.h"
 #include "FallenEraCharacter.h"
+#include "Combat/Collision/FECollisionChannels.h"
+#include "InputMappingContext.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -100,6 +102,26 @@ namespace
 
     /** [Server] 한 플레이어의 배치 요청 최소 간격. 사람 손으로는 넘을 수 없는 속도 */
     constexpr double MinPlaceInterval = 0.1;
+    
+    /** 배치 오버랩 상자를 바운드보다 줄이는 양. 옆면 = 코너 직각 벽·이웃 토대 소켓 어긋남 허용(같은 자리 중복은 중심이 겹쳐 여전히 잡힌다),
+     *  위아래 = 지면 접촉·천장 아래 끼우기 */
+    constexpr float SideClearance = 22.f;
+    constexpr float FaceClearance = 2.f;
+
+    /** bRequiresFoundationBelow: 피스 중심 아래 이 깊이까지 anchor(토대)를 찾는다. 2층 천장은 1층 천장을 지나 토대를 찾는다 */
+    constexpr float FoundationSearchDepth = 2000.f;
+
+    /** [Client] 고스트가 움직이는 동안의 최소 검증 간격. 클릭 순간에는 ConfirmPlacement 가 따로 검증한다 */
+    constexpr double PreviewMovingValidateInterval = 0.05;
+
+    /** [Server] 요청 간격 제한. 받을 때마다 NextAllowedTime 을 Interval 씩 누적한다 —
+     *  지터로 일찍 온 요청(Interval 의 절반까지)은 받되, 아무리 빨리 보내도 평균 간격은 Interval */
+    bool ConsumeRequestSlot(double& NextAllowedTime, double Now, double Interval)
+    {
+        if (Now < NextAllowedTime - Interval * 0.5) return false;
+        NextAllowedTime = FMath::Max(NextAllowedTime, Now) + Interval;
+        return true;
+    }
     
     UClass* ResolvePieceClass(const UFEBuildPieceDefinition* Piece)
     {
@@ -230,8 +252,10 @@ void UFEBuildingComponent::RotatePreview(int32 Direction)
 
 void UFEBuildingComponent::ConfirmPlacement()
 {
-    const bool bCanPlace = bIsInBuildMode && bIsPreviewValid && SelectedPiece != nullptr;
-    if (!bCanPlace) return;
+    // 고스트가 보이는(배치 위치를 구한) 상태여야 한다. 고스트 색은 이동 중 최대 PreviewMovingValidateInterval 늦으므로 클릭한 위치로 다시 검증한다
+    const bool bHasPlacement = bIsInBuildMode && SelectedPiece != nullptr && PreviewActor != nullptr && !PreviewActor->IsHidden();
+    if (!bHasPlacement) return;
+    if (!ValidatePlacement(GetWorld(), SelectedPiece, MakePlacementTransform(PreviewLocation, PreviewYawStep), GetOwner())) return;
 
     ServerPlacePiece(SelectedPieceId, PreviewLocation, PreviewYawStep);
 }
@@ -589,22 +613,24 @@ void UFEBuildingComponent::UpdateBuildModeState()
             : nullptr;
     }
 
-    if (BuildModeMappingContext == nullptr)
+    // 소프트 참조라 로드 전이면 null. BeginPlay 의 비동기 로드가 끝나면 이 함수가 다시 불려 그때 넣는다
+    UInputMappingContext* MappingContext = BuildModeMappingContext.Get();
+    if (BuildModeMappingContext.IsNull())
     {
         if (bIsInBuildMode)
         {
             UE_LOG(LogFEBuilding, Warning, TEXT("BuildModeMappingContext is not set on %s. Place/Cancel/Rotate keys will not work."), *GetNameSafe(GetOwner()));
         }
     }
-    else if (InputSubsystem != nullptr)
+    else if (InputSubsystem != nullptr && MappingContext != nullptr)
     {
         if (bIsInBuildMode)
         {
-            InputSubsystem->AddMappingContext(BuildModeMappingContext, BuildModeMappingPriority);
+            InputSubsystem->AddMappingContext(MappingContext, BuildModeMappingPriority);
         }
         else
         {
-            InputSubsystem->RemoveMappingContext(BuildModeMappingContext);
+            InputSubsystem->RemoveMappingContext(MappingContext);
         }
         UE_LOG(LogFEBuilding, Log, TEXT("Build mode input %s (priority %d)"), bIsInBuildMode ? TEXT("added") : TEXT("removed"), BuildModeMappingPriority);
     }
@@ -795,11 +821,18 @@ void UFEBuildingComponent::BeginPlay()
 {
     Super::BeginPlay();
 
-    // 망치 조준 HUD. 데디케이티드 서버는 화면이 없다. 서버의 원격 폰에서는 UpdateAimedPiece 가 바로 빠져나간다
-    // (상호작용 프롬프트와 같은 10Hz 폴링: "무엇을 조준하는지"는 카메라가 돌 때마다 바뀌는데 이벤트가 없다)
     if (GetNetMode() != NM_DedicatedServer)
     {
+        // 망치 조준 HUD. 데디케이티드 서버는 화면이 없다. 원격 폰은 UpdateAimedPiece 가 걸러낸다
+        // (상호작용 프롬프트와 같은 10Hz 폴링: "무엇을 조준하는지"는 카메라가 돌 때마다 바뀌는데 이벤트가 없다)
         GetWorld()->GetTimerManager().SetTimer(AimTimer, this, &UFEBuildingComponent::UpdateAimedPiece, 0.1f, true);
+
+        // 빌드 모드 IMC. 로드가 끝났을 때 이미 빌드 모드면 그때 추가된다 (UpdateBuildModeState 는 여러 번 불러도 안전)
+        if (!BuildModeMappingContext.IsNull())
+        {
+            BuildModeMappingLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+                BuildModeMappingContext.ToSoftObjectPath(), FStreamableDelegate::CreateUObject(this, &UFEBuildingComponent::UpdateBuildModeState));
+        }
     }
 }
 
@@ -851,12 +884,14 @@ void UFEBuildingComponent::UpdatePreview()
 
     DrawDebugOverlays();
 
-    // 고스트 위치는 매 프레임 따라가고(끊겨 보이면 바로 티가 남), 무거운 배치 검증은
-    // 위치·회전이 바뀌었거나 주기가 됐을 때만 한다. 소켓에 스냅된 동안엔 위치가 그대로라 대부분 건너뛴다.
+    // 고스트 위치는 매 프레임 따라가고(끊겨 보이면 바로 티가 남), 무거운 배치 검증은 위치·회전이 바뀌면 PreviewMovingValidateInterval 간격으로,
+    // 그대로면 PreviewRevalidateInterval 주기로만 한다(다른 플레이어가 옆에 지은 경우). 클릭 순간은 ConfirmPlacement 가 다시 검증한다
     const double Now = GetWorld()->GetTimeSeconds();
+    const double SinceValidation = Now - LastValidationTime;
     const bool bTransformChanged = !PreviewLocation.Equals(LastValidatedLocation, 0.1f) || PreviewYawStep != LastValidatedYawStep;
-    const bool bIsDue = LastValidationTime < 0.0 || Now - LastValidationTime >= PreviewRevalidateInterval;
-    if (!bTransformChanged && !bIsDue) return;
+    const bool bShouldValidate = LastValidationTime < 0.0 || (bTransformChanged && SinceValidation >= PreviewMovingValidateInterval)
+        || SinceValidation >= PreviewRevalidateInterval;
+    if (!bShouldValidate) return;
 
     LastValidatedLocation = PreviewLocation;
     LastValidatedYawStep = PreviewYawStep;
@@ -1077,11 +1112,17 @@ AFEBuildPiece* UFEBuildingComponent::FindPieceUnderCrosshair() const
     FRotator ViewRotation;
     if (!GetViewPoint(ViewLocation, ViewRotation)) return nullptr;
 
-    // 청사진은 Visibility 채널을 무시하므로 오브젝트 타입(BuildPiece)으로 찾는다.
+    // 청사진은 Visibility 채널을 무시하므로 오브젝트 타입으로 찾는다. 지형(WorldStatic)도 같이 맞혀서
+    // 그게 먼저 맞으면(벽·바위 너머) 피스가 아니라 nullptr → 벽 너머 수리·업그레이드·철거 금지.
+    // WorldDynamic 은 넣지 않는다: 오브젝트 타입 트레이스는 겹침 전용 트리거 볼륨(WorldDynamic)에서도 멈춘다
+    FCollisionObjectQueryParams AimTypes;
+    AimTypes.AddObjectTypesToQuery(ECC_FEBuildPiece);
+    AimTypes.AddObjectTypesToQuery(ECC_WorldStatic);
+
     const FVector TraceEnd = ViewLocation + ViewRotation.Vector() * UFEBuildingSettings::Get()->MaxBuildDistance;
     FCollisionQueryParams Params(SCENE_QUERY_STAT(FEBuildAim), false, GetOwner());
     FHitResult Hit;
-    const bool bHit = GetWorld()->LineTraceSingleByObjectType(Hit, ViewLocation, TraceEnd, FCollisionObjectQueryParams(ECC_FEBuildPiece), Params);
+    const bool bHit = GetWorld()->LineTraceSingleByObjectType(Hit, ViewLocation, TraceEnd, AimTypes, Params);
     return bHit ? Cast<AFEBuildPiece>(Hit.GetActor()) : nullptr;
 }
 
@@ -1139,8 +1180,9 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
         return Fail(LOCTEXT("NeedsSnap", "Must be placed on a structure"));
     }
 
-    // 지지 예측: 청사진 포함 설계 그래프 기준. anchor 는 항상 0.
-    const uint8 PredictedDistance = UFEBuildingSubsystem::PredictSupportDistance(Piece, Connected, false);
+    // 지지 예측: 청사진 포함 설계 그래프 기준. anchor(IsAnchorAt — 토대·가구, 지면에 닿은 계단)는 0
+    const bool bIsAnchor = UFEBuildingSubsystem::IsAnchorAt(World, Piece, Transform, Instigator);
+    const uint8 PredictedDistance = UFEBuildingSubsystem::PredictSupportDistance(Piece, bIsAnchor, Connected, false);
     if (!UFEBuildingSubsystem::IsSupported(Piece, PredictedDistance))
     {
         return Fail(LOCTEXT("NoSupport", "Not enough support"));
@@ -1150,12 +1192,12 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
     
     if (Piece->bRequiresFoundationBelow)
     {
-        // 피스 중심 아래 기둥 모양 영역(2000cm)에 anchor(토대)가 있어야 한다. 2층 천장은 1층 천장을 지나 토대를 찾는다.
+        // 피스 중심 아래 기둥 모양 영역(FoundationSearchDepth)에 anchor(토대)가 있어야 한다. 2층 천장은 1층 천장을 지나 토대를 찾는다.
         const FVector Center = Transform.TransformPosition(LocalBounds.GetCenter());
-        const FVector ColumnCenter = Center - FVector(0.f, 0.f, 1000.f);
+        const FVector ColumnCenter = Center - FVector(0.f, 0.f, FoundationSearchDepth * 0.5f);
         TArray<FOverlapResult> Below;
         FCollisionQueryParams ColumnParams(SCENE_QUERY_STAT(FEBuildFoundationBelow), false, Instigator);
-        World->OverlapMultiByObjectType(Below, ColumnCenter, FQuat::Identity, FCollisionObjectQueryParams(ECC_FEBuildPiece), FCollisionShape::MakeBox(FVector(10.f, 10.f, 1000.f)), ColumnParams);
+        World->OverlapMultiByObjectType(Below, ColumnCenter, FQuat::Identity, FCollisionObjectQueryParams(ECC_FEBuildPiece), FCollisionShape::MakeBox(FVector(10.f, 10.f, FoundationSearchDepth * 0.5f)), ColumnParams);
 
         const bool bHasFoundation = Below.ContainsByPredicate([](const FOverlapResult& Overlap)
         {
@@ -1203,10 +1245,6 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
         }
     }
 
-    // 옆면은 SideClearance 만큼 줄인다(코너 직각 벽·이웃 토대 소켓 어긋남 허용). 같은 자리 중복은 중심이 겹쳐 여전히 잡힌다.
-    // 위아래는 FaceClearance 만큼 띄운다(지면 접촉, 천장 아래 끼우기).
-    const float SideClearance = 22.f;
-    const float FaceClearance = 2.f;
     const FVector HalfExtent = LocalBounds.GetExtent();
     const FVector Extent(
         FMath::Max(1.f, HalfExtent.X - SideClearance),
@@ -1252,7 +1290,9 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
     }
 
     FCollisionObjectQueryParams ObjectTypes;
-    ObjectTypes.AddObjectTypesToQuery(ECC_Pawn);
+    ObjectTypes.AddObjectTypesToQuery(ECC_Pawn);                     // 다른 플레이어의 3인칭 메시(CharacterMesh 프로필)
+    ObjectTypes.AddObjectTypesToQuery(FECollisionChannels::Player);  // 플레이어 캡슐 — Pawn 타입이 아니다
+    ObjectTypes.AddObjectTypesToQuery(FECollisionChannels::Enemy);
     ObjectTypes.AddObjectTypesToQuery(ECC_WorldStatic);
     ObjectTypes.AddObjectTypesToQuery(ECC_WorldDynamic);
     if (!bIsSnapped)
@@ -1450,6 +1490,12 @@ bool UFEBuildingComponent::TrySwingTool(FGameplayTag InputTag)
 
 bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
 {
+    // 속도 제한이 가장 먼저 — 도구 없이 보내는 요청도 거절 로그·안내 RPC 를 간격당 한 번만 만든다
+    if (!ConsumeRequestSlot(NextRepairAllowedTime, GetWorld()->GetTimeSeconds(), UFEBuildingSettings::Get()->RepairInterval))
+    {
+        return false;
+    }
+
     // GA 는 LocalOnly 라 클라에서만 돈다. 지금 망치를 들고 있는지는 서버가 장비 상태로 다시 확인한다
     if (!IsHoldingRepairTool())
     {
@@ -1458,11 +1504,6 @@ bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
         ClientShowNotice(Reason);
         return false;
     }
-
-    // RPC 폭주 방지. 네트워크 지터로 클릭 간격이 줄어 도착할 수 있어 절반만 요구한다
-    const double Now = GetWorld()->GetTimeSeconds();
-    if (Now - LastRepairRequestTime < UFEBuildingSettings::Get()->RepairInterval * 0.5f) return false;
-    LastRepairRequestTime = Now;
 
     // 다른 플레이어에게 휘두르기 표시. 원격 소유 클라는 HT 멀티캐스트가 건너뛴다 (이미 로컬 재생)
     AFallenEraCharacter* Character = Cast<AFallenEraCharacter>(GetOwner());
@@ -1476,7 +1517,16 @@ bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
 void UFEBuildingComponent::UpdateAimedPiece()
 {
     const APawn* Pawn = Cast<APawn>(GetOwner());
-    if (Pawn == nullptr || !Pawn->IsLocallyControlled()) return;
+    if (Pawn == nullptr) return;
+
+    // 서버에서 원격 플레이어가 빙의한 폰은 이 기계의 화면과 무관하다 → 타이머를 끈다.
+    // 클라의 다른 플레이어 폰(SimulatedProxy)과 빙의 전 폰은 끄지 않는다 — 늦게 빙의되면 내 폰이 될 수 있다 (판정 한 번이라 비용은 무시 가능)
+    if (Pawn->HasAuthority() && Pawn->GetController() != nullptr && !Pawn->IsLocallyControlled())
+    {
+        GetWorld()->GetTimerManager().ClearTimer(AimTimer);
+        return;
+    }
+    if (!Pawn->IsLocallyControlled()) return;
 
     // 망치를 들지 않았으면 트레이스도 하지 않는다
     const AFEBuildPiece* Piece = IsHoldingRepairTool() ? FindPieceUnderCrosshair() : nullptr;
@@ -1625,3 +1675,33 @@ void UFEBuildingComponent::ClientReceiveInventory_Implementation(const TArray<FF
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFEBuildRequestRateLimitTest, "FallenEra.Building.RequestRateLimit",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFEBuildRequestRateLimitTest::RunTest(const FString& Parameters)
+{
+    constexpr double Interval = 0.6;
+
+    // 조작된 클라: 절반 간격(0.3초)으로 10초 동안 보내도 평균 간격(0.6초)만큼만 받는다 (처음 1회 여유)
+    double NextAllowed = 0.0;
+    int32 Accepted = 0;
+    for (int32 Step = 0; Step < 34; ++Step)
+    {
+        Accepted += ConsumeRequestSlot(NextAllowed, Step * 0.3, Interval) ? 1 : 0;
+    }
+    TestTrue(FString::Printf(TEXT("spam held to the average interval (accepted %d)"), Accepted), Accepted >= 16 && Accepted <= 18);
+
+    // 정직한 클라: 0.6초 간격에 ±0.1초 지터가 섞여도 전부 받는다
+    NextAllowed = 0.0;
+    const double Jitter[] = { 0.0, 0.1, -0.1, 0.05, -0.1, 0.1, -0.1 };
+    for (int32 Index = 0; Index < UE_ARRAY_COUNT(Jitter); ++Index)
+    {
+        TestTrue(FString::Printf(TEXT("click %d accepted"), Index), ConsumeRequestSlot(NextAllowed, Index * Interval + Jitter[Index], Interval));
+    }
+    return true;
+}
+#endif

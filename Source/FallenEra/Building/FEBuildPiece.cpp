@@ -613,7 +613,7 @@ UStaticMeshComponent* AFEBuildPiece::GetMesh() const
 
 bool AFEBuildPiece::IsAnchor() const
 {
-    return Definition != nullptr && Definition->bCanPlaceOnGround;
+    return UFEBuildingSubsystem::IsAnchorAt(GetWorld(), Definition, GetActorTransform(), this);
 }
 
 int32 AFEBuildPiece::GetSupportCost() const
@@ -777,7 +777,8 @@ void AFEBuildPiece::HandleDefinitionLoaded()
 
 void AFEBuildPiece::ApplyMaterialToAll(UStaticMeshComponent* MeshComponent, const TSoftObjectPtr<UMaterialInterface>& SoftMaterial)
 {
-    // 고스트/청사진 머티리얼은 작은 Unlit 머티리얼이라 첫 사용 시 동기 로드해도 부담이 없다.
+    // 고스트/청사진 머티리얼은 UFEBuildingSubsystem 이 월드 시작 때 미리 받아 두므로 보통 바로 반환된다(동기 로드 없음).
+    // 접속 직후 미리 로드가 끝나기 전에만 실제로 동기 로드한다 — Get() 으로 바꾸면 그 사이 청사진이 완성품 색으로 보인다
     UMaterialInterface* Material = SoftMaterial.LoadSynchronous();
     if (MeshComponent == nullptr || Material == nullptr) return;
 

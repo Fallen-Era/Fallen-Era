@@ -66,7 +66,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void UpgradePiece();
 
-    /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 없으면 nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. 디버그 명령도 사용 */
+    /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 지형·월드 물체가 먼저 맞으면(벽 너머) nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. 디버그 명령도 사용 */
     AFEBuildPiece* FindPieceUnderCrosshair() const;
 
     /** [Client Only] 빌드 메뉴 열기/닫기 (Tab). 빌드 모드 밖이면 진입하며 연다. */
@@ -132,9 +132,10 @@ protected:
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building", meta = (AllowedTypes = "BuildPiece"))
     FPrimaryAssetId DefaultPieceId;
     
-    /** 빌드 모드 중에만 추가되는 입력 (배치·취소·회전·철거). 전투 IMC(우선순위 20)보다 높아야 좌·우클릭을 가져온다 */
+    /** 빌드 모드 중에만 추가되는 입력 (배치·취소·회전·철거). 전투 IMC(우선순위 20)보다 높아야 좌·우클릭을 가져온다.
+     *  소프트 참조: BeginPlay 에서 비동기 로드. 로드 전에 빌드 모드에 들어가면 로드가 끝날 때 추가된다 */
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Input")
-    TObjectPtr<UInputMappingContext> BuildModeMappingContext;
+    TSoftObjectPtr<UInputMappingContext> BuildModeMappingContext;
 
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Input")
     int32 BuildModeMappingPriority = 30;
@@ -313,14 +314,15 @@ private:
     /** [Client Only] 휘두르기 공통 처리: 간격 확인 + 원격 클라 로컬 재생. 휘둘렀으면 true */
     bool TrySwingTool(FGameplayTag InputTag);
 
-    /** [Server Only] 휘두르기 공통 처리: 망치 확인 + 간격 확인 + 다른 플레이어에게 몽타주 멀티캐스트. 계속 진행하면 true */
+    /** [Server Only] 휘두르기 공통 처리: 간격 확인(가장 먼저 — 도구 없는 요청도 속도 제한) → 망치 확인 → 다른 플레이어에게 몽타주 멀티캐스트. 계속 진행하면 true */
     bool ServerSwingTool(FGameplayTag InputTag);
 
     /** [Client Only] 마지막 수리 휘두르기 시각. RepairInterval 연타 방지 */
     double LastRepairClickTime = -1.0;
-
-    /** [Server Only] 마지막 수리 요청 처리 시각. RepairInterval 미만 간격의 RPC 는 무시 */
-    double LastRepairRequestTime = -1.0;
+    
+    /** [Server Only] 다음 수리·업그레이드 요청을 받을 수 있는 시각. 받을 때마다 RepairInterval 씩 누적한다
+     *  → 지터로 조금 일찍 온 요청은 받되 평균 간격은 RepairInterval 을 넘지 못한다 */
+    double NextRepairAllowedTime = 0.0;
     
     /** State.Building 태그와 빌드 모드 전용 입력(IMC)을 빌드 모드 여부에 맞춘다 */
     void UpdateBuildModeState();
@@ -330,4 +332,7 @@ private:
 
     /** IMC 를 넣은 로컬 플레이어 입력 서브시스템. 폰이 사라져 컨트롤러를 못 찾아도 같은 곳에서 빼기 위해 기억한다 */
     TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> BuildModeInputOwner;
+    
+    /** BuildModeMappingContext 비동기 로드 핸들 */
+    TSharedPtr<FStreamableHandle> BuildModeMappingLoadHandle;
 };

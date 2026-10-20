@@ -5,6 +5,7 @@
 #include "FEBuildInventoryProvider.h"
 #include "FEBuildPiece.h"
 #include "FEBuildPieceDefinition.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
 #include "HAL/IConsoleManager.h"
@@ -27,6 +28,9 @@ namespace
 
     /** 침구 위 리스폰 높이 */
     constexpr float RespawnHeight = 100.f;
+    
+    /** 계단처럼 소켓으로도 붙는 땅 피스의 "지면에 닿음" 판정 두께(바닥면 위아래 ±). 토대 밖 계단의 20cm 뜸(토대 높이)을 포함한다 */
+    constexpr float GroundContactTolerance = 25.f;
 }
 
 // 세이브 인터페이스가 오기 전까지 쓰는 인메모리 스냅샷. 그때 이 전역과 명령 2개는 어댑터 호출로 바뀐다.
@@ -93,6 +97,29 @@ bool UFEBuildingSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType
     return WorldType == EWorldType::Game || WorldType == EWorldType::PIE;
 }
 
+void UFEBuildingSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+    Super::OnWorldBeginPlay(InWorld);
+
+    // 재질 사슬(GetMaterialChain 은 로드 없이 Get() 만 한다)과 고스트·청사진 머티리얼을 미리 비동기로 받아 둔다.
+    // DA 는 소프트 참조만 가진 작은 데이터라 메시는 따라오지 않는다 (메시는 피스를 쓸 때 Runtime 번들로)
+    UAssetManager& AssetManager = UAssetManager::Get();
+    TArray<FSoftObjectPath> Paths;
+    AssetManager.GetPrimaryAssetPathList(UFEBuildPieceDefinition::AssetType, Paths);
+
+    const UFEBuildingSettings* Settings = UFEBuildingSettings::Get();
+    Paths.Add(Settings->GhostValidMaterial.ToSoftObjectPath());
+    Paths.Add(Settings->GhostInvalidMaterial.ToSoftObjectPath());
+    Paths.Add(Settings->BlueprintMaterial.ToSoftObjectPath());
+    Paths.RemoveAll([](const FSoftObjectPath& Path) { return Path.IsNull(); }); // 설정에서 비운 머티리얼
+
+    const int32 Count = Paths.Num();
+    PreloadHandle = AssetManager.GetStreamableManager().RequestAsyncLoad(Paths, FStreamableDelegate::CreateWeakLambda(this, [Count]()
+    {
+        UE_LOG(LogFEBuilding, Log, TEXT("Build assets preloaded: %d"), Count);
+    }));
+}
+
 IFEBuildInventoryProvider* UFEBuildingSubsystem::FindInventoryProvider(const AActor* Actor)
 {
     if (Actor == nullptr) return nullptr;
@@ -156,12 +183,10 @@ void UFEBuildingSubsystem::FindConnectedPieces(const UWorld* World, const UFEBui
     }
 }
 
-uint8 UFEBuildingSubsystem::PredictSupportDistance(const UFEBuildPieceDefinition* Piece, const TArray<AFEBuildPiece*>& Connected, bool bBuiltOnly)
+uint8 UFEBuildingSubsystem::PredictSupportDistance(const UFEBuildPieceDefinition* Piece, bool bIsAnchor, const TArray<AFEBuildPiece*>& Connected, bool bBuiltOnly)
 {
     if (Piece == nullptr) return Unreachable;
-    // 땅에 놓이는 피스는 토대(지지 비용 0)이거나 아무것에도 안 붙었을 때만 anchor — 천장에 매단 계단이 천장을 받치지 않게
-    if (Piece->bCanPlaceOnGround && (Piece->SupportCost == 0 || Connected.Num() == 0)) return 0; // anchor
-
+    if (bIsAnchor) return 0;
 
     int32 Best = Unreachable;
     for (const AFEBuildPiece* Neighbor : Connected)
@@ -174,6 +199,30 @@ uint8 UFEBuildingSubsystem::PredictSupportDistance(const UFEBuildPieceDefinition
         Best = FMath::Min(Best, NeighborDistance + Piece->SupportCost);
     }
     return static_cast<uint8>(FMath::Min(Best, static_cast<int32>(Unreachable)));
+}
+
+bool UFEBuildingSubsystem::IsAnchorAt(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* IgnoreActor)
+{
+    if (World == nullptr || Piece == nullptr || !Piece->bCanPlaceOnGround) return false;
+
+    // 토대(지지 비용 0)는 지금처럼 항상 anchor. 가구는 소켓이 없어 아무것도 받치지 않으므로 anchor 로 둬도 된다 (위층 가구가 무너지지 않게)
+    if (Piece->SupportCost == 0 || Piece->Sockets.IsEmpty()) return true;
+
+    // 소켓으로도 붙는 땅 피스(계단): 바닥면이 지면에 닿아 있을 때만 — 천장에 매단 채 받침을 잃은 계단이 공중에서 anchor 가 되지 않게
+    const UStaticMesh* StaticMesh = Piece->Mesh.Get();
+    if (StaticMesh == nullptr) return false; // Runtime 번들 로드 전 — 보수적으로 anchor 아님
+
+    // 점 하나가 아니라 바닥면 전체로 본다: 경사에서는 가장 높은 코너에 맞춰 올려 놓아 가운데가 떠 있을 수 있다.
+    // 피스·플레이어·적은 오브젝트 타입이 달라 잡히지 않는다
+    const FBox LocalBounds = StaticMesh->GetBoundingBox();
+    const FVector BottomCenter(LocalBounds.GetCenter().X, LocalBounds.GetCenter().Y, LocalBounds.Min.Z);
+    const FVector HalfExtent(LocalBounds.GetExtent().X, LocalBounds.GetExtent().Y, GroundContactTolerance);
+
+    FCollisionObjectQueryParams GroundTypes;
+    GroundTypes.AddObjectTypesToQuery(ECC_WorldStatic);
+    GroundTypes.AddObjectTypesToQuery(ECC_WorldDynamic);
+    FCollisionQueryParams Params(SCENE_QUERY_STAT(FEBuildGroundContact), false, IgnoreActor);
+    return World->OverlapAnyTestByObjectType(Transform.TransformPosition(BottomCenter), Transform.GetRotation(), GroundTypes, FCollisionShape::MakeBox(HalfExtent), Params);
 }
 
 bool UFEBuildingSubsystem::IsSupported(const UFEBuildPieceDefinition* Piece, uint8 Distance)
@@ -190,7 +239,7 @@ bool UFEBuildingSubsystem::CanComplete(const AFEBuildPiece* Piece)
 
     TArray<AFEBuildPiece*> Connected;
     FindConnectedPieces(Piece->GetWorld(), Definition, Piece->GetActorTransform(), Piece, Connected);
-    return IsSupported(Definition, PredictSupportDistance(Definition, Connected, true));
+    return IsSupported(Definition, PredictSupportDistance(Definition, Piece->IsAnchor(), Connected, true));
 }
 
 void UFEBuildingSubsystem::RegisterPiece(AFEBuildPiece* Piece)
@@ -442,7 +491,7 @@ void UFEBuildingSubsystem::Recalculate()
         }
         else if (Piece->IsFullySupplied())
         {
-            const uint8 Predicted = PredictSupportDistance(Definition, Adjacency[Piece], true);
+            const uint8 Predicted = PredictSupportDistance(Definition, Piece->IsAnchor(), Adjacency[Piece], true);
             if (IsSupported(Definition, Predicted))
             {
                 ToComplete.Add(Piece);
@@ -477,8 +526,8 @@ void UFEBuildingSubsystem::ComputeDistances(const TMap<AFEBuildPiece*, TArray<AF
         AFEBuildPiece* Piece = Pair.Key;
         if (bBuiltOnly && Piece->GetState() != EFEBuildPieceState::Built) continue;
 
-        // PredictSupportDistance 와 같은 규칙: 땅 피스는 토대이거나 이웃이 없을 때만 anchor (맨땅 계단·가구는 anchor, 매단 계단은 아님)
-        const bool bIsAnchor = Piece->IsAnchor() && (Piece->GetSupportCost() == 0 || Pair.Value.Num() == 0);
+        // 배치 예측과 같은 판정(IsAnchorAt). 연결 수는 보지 않는다 — 매단 계단은 받침을 잃어도 anchor 가 되지 않는다
+        const bool bIsAnchor = Piece->IsAnchor();
         OutDistance.Add(Piece, bIsAnchor ? 0 : Unreachable);
         if (bIsAnchor)
         {

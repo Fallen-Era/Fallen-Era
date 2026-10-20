@@ -98,7 +98,7 @@ protected:
 	virtual FText GetInteractTextBuilt(AActor* InstigatorActor) const override;
 	virtual void ReadRecord(const FFEBuildPieceRecord& Record) override;
 
-public:
+private:
 	/** [Server Only] 불이 켜져 있는 동안 0.5초 간격 */
 	void TickFire();
 

@@ -217,9 +217,10 @@ void AFEBuildFurnace::TickFire()
 		UE_LOG(LogFEBuilding, Log, TEXT("%s produced %s (now %d)"), *GetName(), *Output.ItemTag.ToString(), Output.Count);
 	}
 
-	if (FuelLeft <= 0.f && !ConsumeFuelUnit())
+	// 방금 마지막 재료를 썼으면(또는 결과 칸이 찼으면) 새 연료를 태우지 않고 바로 끈다 — 전에는 연료 1개를 태운 뒤 다음 틱에 꺼져서 버렸다
+	if (FuelLeft <= 0.f && (GetActiveRecipe() == nullptr || !ConsumeFuelUnit()))
 	{
-		SetLit(false); // 연료 소진
+		SetLit(false); // 연료 소진 또는 가공할 것 없음
 		return;
 	}
 
