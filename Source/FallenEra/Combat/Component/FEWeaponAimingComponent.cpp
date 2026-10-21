@@ -58,6 +58,14 @@ bool UFE_WeaponAimingComponent::BeginAim()
 	if (bIsAiming) { return true; }
 	// ADS must capture the uneffected baseline, not the previous frame's charge sway.
 	StopChargeSwayPresentation();
+	const bool bRecapture = bCapturedPresentation && bDetachedWeaponPresentation;
+	const float BaselineFOV = OriginalFOV;
+	const float BaselineFirstPersonFOV = OriginalFirstPersonFOV;
+	if (bRecapture)
+	{
+		if (ScopeWidget) { ScopeWidget->RemoveFromParent(); ScopeWidget = nullptr; }
+		bCapturedPresentation = false;
+	}
 	bIsAiming = true;
 	RefreshAimView();
 	if (UFE_PlayerMovementStatsComponent* Movement = GetOwner()->FindComponentByClass<UFE_PlayerMovementStatsComponent>();
@@ -77,11 +85,12 @@ bool UFE_WeaponAimingComponent::BeginAim()
 		ArmsMesh = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner());
 		OriginalArmsTransform = ArmsMesh->GetRelativeTransform();
 		SightMesh = Equipment->GetFirstPersonSightMesh();
-		OriginalFOV = Camera->FieldOfView;
-		OriginalFirstPersonFOV = Camera->FirstPersonFieldOfView;
+		OriginalFOV = bRecapture ? BaselineFOV : Camera->FieldOfView;
+		OriginalFirstPersonFOV = bRecapture ? BaselineFirstPersonFOV : Camera->FirstPersonFieldOfView;
 		bOriginalWeaponVisible = WeaponMesh->IsVisible();
 		bOriginalArmsVisible = ArmsMesh.IsValid() && ArmsMesh->IsVisible();
 		bCapturedPresentation = true;
+		bDetachedWeaponPresentation = false;
 		if (const UFE_RangedWeaponItemData* Weapon = Cast<UFE_RangedWeaponItemData>(Equipment->GetCurrentWeaponData()))
 		{
 			CachedSwaySettings = Weapon->Template.AimSwaySettings;
@@ -108,6 +117,7 @@ bool UFE_WeaponAimingComponent::BeginAim()
 			}
 		}
 	}
+	StartCameraBlend(Sight->BlendInTime);
 	SetComponentTickEnabled(true);
 	if (Sight->BlendInTime <= 0.0f) { AimAlpha = 1.0f; UpdatePresentation(); }
 	return true;
@@ -119,8 +129,30 @@ void UFE_WeaponAimingComponent::EndAim(bool bImmediate)
 	bIsAiming = false;
 	RefreshAimView();
 	if (bWasAiming && GetOwner()->HasAuthority()) { GetOwner()->ForceNetUpdate(); }
+	if (bWasAiming && Sight) { StartCameraBlend(Sight->BlendOutTime); }
 	if (bImmediate || !Sight || Sight->BlendOutTime <= 0.0f) { RestorePresentation(); }
 	else if (bCapturedPresentation) { SetComponentTickEnabled(true); }
+}
+
+void UFE_WeaponAimingComponent::StartCameraBlend(float Duration)
+{
+	if (!Camera.IsValid()) { return; }
+	CameraBlendStartFOV = Camera->FieldOfView;
+	CameraBlendStartFirstPersonFOV = Camera->FirstPersonFieldOfView;
+	CameraBlendElapsed = 0.0f;
+	CameraBlendDuration = FMath::Max(0.0f, Duration);
+}
+
+void UFE_WeaponAimingComponent::PrepareForEquipmentChange()
+{
+	EndAim();
+	if (bCapturedPresentation && !bDetachedWeaponPresentation)
+	{
+		ReleaseMeshPresentation();
+		bDetachedWeaponPresentation = true;
+		ResetSway();
+		ResetVisualRecoil();
+	}
 }
 
 void UFE_WeaponAimingComponent::OnRep_IsAiming()
@@ -161,21 +193,26 @@ void UFE_WeaponAimingComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 		ArmsMesh->SetRelativeTransform(SwayWorld.GetRelativeTransform(ParentWorld));
 		return;
 	}
-	if (!IsLocallyControlled() || !Sight || !Camera.IsValid() || !WeaponMesh.IsValid() || !ArmsMesh.IsValid() ||
-		!ArmsMesh->GetAttachParent() || (bFirstPersonPresentation && Sight->Mode != EFE_WeaponSightMode::Scope2D &&
-			(!SightMesh.IsValid() || !SightMesh->DoesSocketExist(Sight->AimSocketName))))
+	if (!IsLocallyControlled() || !Sight || !Camera.IsValid())
 	{
 		RestorePresentation();
 		return;
+	}
+	if (!bDetachedWeaponPresentation && (!WeaponMesh.IsValid() || !ArmsMesh.IsValid() ||
+		!ArmsMesh->GetAttachParent() || (bFirstPersonPresentation && Sight->Mode != EFE_WeaponSightMode::Scope2D &&
+			(!SightMesh.IsValid() || !SightMesh->DoesSocketExist(Sight->AimSocketName)))))
+	{
+		PrepareForEquipmentChange(); // Missing old meshes must not force a camera snap.
 	}
 	const float Duration = bIsAiming ? Sight->BlendInTime : Sight->BlendOutTime;
 	AimAlpha = FMath::FInterpConstantTo(AimAlpha, bIsAiming ? 1.0f : 0.0f, DeltaTime,
 		Duration > 0.0f ? 1.0f / Duration : BIG_NUMBER);
 	UpdateSway(DeltaTime);
 	UpdateVisualRecoil(DeltaTime);
+	CameraBlendElapsed += DeltaTime;
 	UpdatePresentation();
-	if (!bIsAiming && AimAlpha <= 0.0f) { RestorePresentation(); }
-	else if (bIsAiming && AimAlpha >= 1.0f && Sight->Mode == EFE_WeaponSightMode::Scope2D)
+	if (!bIsAiming && AimAlpha <= 0.0f && CameraBlendElapsed >= CameraBlendDuration) { RestorePresentation(); }
+	else if (bIsAiming && AimAlpha >= 1.0f && CameraBlendElapsed >= CameraBlendDuration && Sight->Mode == EFE_WeaponSightMode::Scope2D)
 	{
 		SetComponentTickEnabled(false);
 	}
@@ -341,8 +378,12 @@ void UFE_WeaponAimingComponent::ResetVisualRecoil()
 void UFE_WeaponAimingComponent::UpdatePresentation()
 {
 	const float Alpha = FMath::SmoothStep(0.0f, 1.0f, AimAlpha);
-	Camera->SetFieldOfView(FMath::Lerp(OriginalFOV, Sight->AimFieldOfView, Alpha));
-	Camera->SetFirstPersonFieldOfView(FMath::Lerp(OriginalFirstPersonFOV, Sight->AimFieldOfView, Alpha));
+	const float CameraAlpha = CameraBlendDuration > 0.0f
+		? FMath::SmoothStep(0.0f, 1.0f, FMath::Clamp(CameraBlendElapsed / CameraBlendDuration, 0.0f, 1.0f)) : 1.0f;
+	Camera->SetFieldOfView(FMath::Lerp(CameraBlendStartFOV, bIsAiming ? Sight->AimFieldOfView : OriginalFOV, CameraAlpha));
+	Camera->SetFirstPersonFieldOfView(FMath::Lerp(CameraBlendStartFirstPersonFOV, bIsAiming ? Sight->AimFieldOfView : OriginalFirstPersonFOV, CameraAlpha));
+	if (ScopeWidget) { ScopeWidget->SetRenderOpacity(Alpha); }
+	if (bDetachedWeaponPresentation) { AimAlphaChanged.Broadcast(Alpha); return; }
 	if (Sight->Mode == EFE_WeaponSightMode::Scope2D)
 	{
 		// Attachments inherit visibility when hiding the parent weapon.
@@ -386,6 +427,22 @@ FTransform UFE_WeaponAimingComponent::CalculateAlignedArmsTransform(const FTrans
 	return FTransform(Rotation, Location, ArmsScale);
 }
 
+void UFE_WeaponAimingComponent::ReleaseMeshPresentation()
+{
+	if (WeaponMesh.IsValid()) { WeaponMesh->SetVisibility(bOriginalWeaponVisible, true); }
+	if (ArmsMesh.IsValid())
+	{
+		ArmsMesh->SetRelativeTransform(OriginalArmsTransform);
+		ArmsMesh->SetVisibility(bOriginalArmsVisible, false);
+		RemoveTickPrerequisiteComponent(ArmsMesh.Get());
+	}
+	if (USkeletalMeshComponent* Mesh = Cast<USkeletalMeshComponent>(WeaponMesh.Get())) { RemoveTickPrerequisiteComponent(Mesh); }
+	if (USkeletalMeshComponent* Mesh = Cast<USkeletalMeshComponent>(SightMesh.Get())) { RemoveTickPrerequisiteComponent(Mesh); }
+	WeaponMesh.Reset();
+	ArmsMesh.Reset();
+	SightMesh.Reset();
+}
+
 void UFE_WeaponAimingComponent::RestorePresentation()
 {
 	// EndAim may be called while only charging (for example during equipment cancellation).
@@ -397,21 +454,11 @@ void UFE_WeaponAimingComponent::RestorePresentation()
 			Camera->SetFieldOfView(OriginalFOV);
 			Camera->SetFirstPersonFieldOfView(OriginalFirstPersonFOV);
 		}
-		if (WeaponMesh.IsValid())
-		{
-			WeaponMesh->SetVisibility(bOriginalWeaponVisible, true);
-		}
-		if (ArmsMesh.IsValid())
-		{
-			ArmsMesh->SetRelativeTransform(OriginalArmsTransform);
-			ArmsMesh->SetVisibility(bOriginalArmsVisible, false);
-			RemoveTickPrerequisiteComponent(ArmsMesh.Get());
-		}
-		if (USkeletalMeshComponent* Mesh = Cast<USkeletalMeshComponent>(WeaponMesh.Get())) { RemoveTickPrerequisiteComponent(Mesh); }
-		if (USkeletalMeshComponent* Mesh = Cast<USkeletalMeshComponent>(SightMesh.Get())) { RemoveTickPrerequisiteComponent(Mesh); }
+		ReleaseMeshPresentation();
 	}
 	if (ScopeWidget) { ScopeWidget->RemoveFromParent(); ScopeWidget = nullptr; }
 	bCapturedPresentation = false;
+	bDetachedWeaponPresentation = false;
 	bIsAiming = false;
 	RefreshAimView();
 	AimAlpha = 0.0f;

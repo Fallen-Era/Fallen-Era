@@ -150,7 +150,7 @@ void UFE_CombatComponent::CancelAttackActions()
 	StopLocalWeaponRecoil();
 	if (UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>())
 	{
-		Aiming->EndAim(true);
+		Aiming->EndAim();
 	}
 	if (UAbilitySystemComponent* ASC = FindAbilitySystemComponent(GetOwner()))
 	{
@@ -438,7 +438,7 @@ void UFE_CombatComponent::ApplyDamageReactionInternal(const AActor* DamageSource
 		{
 			if (UFE_WeaponAimingComponent* Aiming = Victim->FindComponentByClass<UFE_WeaponAimingComponent>())
 			{
-				Aiming->EndAim(true);
+				Aiming->EndAim();
 			}
 		}
 		StopChargeProjectilePresentation(false);

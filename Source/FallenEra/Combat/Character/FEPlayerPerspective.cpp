@@ -131,7 +131,7 @@ void AFallenEraCharacter::ResetPerspectiveAim()
 		const FGameplayTagContainer AimTags(FallenEraCombatGameplayTags::Ability_Combat_Aim);
 		ASC->CancelAbilities(&AimTags);
 	}
-	if (WeaponAimingComponent) { WeaponAimingComponent->EndAim(true); }
+	if (WeaponAimingComponent) { WeaponAimingComponent->PrepareForEquipmentChange(); }
 	if (CombatComponent) { CombatComponent->StopChargeCameraPresentation(); }
 }
 

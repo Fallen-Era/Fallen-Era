@@ -30,6 +30,8 @@ public:
 		const FTransform& DesiredSightInParent, const FVector& ArmsScale);
 	bool BeginAim();
 	void EndAim(bool bImmediate = false);
+	/** Release old mesh ownership before equipment destroys/repositions it; retain the local camera blend. */
+	void PrepareForEquipmentChange();
 	/** Charge-only motion: no optic alignment, FOV changes, or ADS state/stat changes. */
 	void BeginChargeSway(UObject* Source, const FFE_WeaponAimSwaySettings& Settings);
 	void EndChargeSway(UObject* Source);
@@ -73,6 +75,11 @@ private:
 	FRotator PreviousViewRotation = FRotator::ZeroRotator;
 	float MovementPhase = 0.0f;
 	bool bCapturedPresentation = false;
+	bool bDetachedWeaponPresentation = false;
+	float CameraBlendStartFOV = 90.0f;
+	float CameraBlendStartFirstPersonFOV = 70.0f;
+	float CameraBlendElapsed = 0.0f;
+	float CameraBlendDuration = 0.0f;
 	bool bFirstPersonPresentation = true;
 	TWeakObjectPtr<UObject> ChargeSwaySource;
 	FFE_WeaponAimSwaySettings ChargeSwaySettings;
@@ -93,6 +100,8 @@ private:
 	void UpdateVisualRecoil(float DeltaTime);
 	void ResetVisualRecoil();
 	void RestorePresentation();
+	void ReleaseMeshPresentation();
+	void StartCameraBlend(float Duration);
 	void StartChargeSwayPresentation();
 	void StopChargeSwayPresentation();
 };

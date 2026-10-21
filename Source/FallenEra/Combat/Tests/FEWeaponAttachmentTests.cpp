@@ -23,6 +23,8 @@
 #include "Engine/StaticMeshSocket.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "AbilitySystem/FallenEraAbilitySystemComponent.h"
+#include "Combat/Ability/FEWeaponAimAbility.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFE_WeaponAttachmentTest, "FallenEra.Combat.Attachments.InstanceAndStats",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -415,15 +417,41 @@ bool FFE_FirstPersonWeaponTransformTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Mount a skeletal sight"), Equipment->SetWeaponAttachments({Part}));
 	TestTrue(TEXT("Skeletal sight takes priority over static mesh"), Equipment->GetFirstPersonSightMesh()->IsA<USkeletalMeshComponent>());
 	TestTrue(TEXT("Skeletal sight socket supports ADS"), Aiming->CanAim());
+	UFallenEraAbilitySystemComponent* ASC = Character->GetFallenEraAbilitySystemComponent();
+	TestTrue(TEXT("Real aim GA activates"), ASC->TryActivateAbilityByClass(UFE_WeaponAimAbility::StaticClass()));
+	Aiming->TickComponent(0.3f, LEVELTICK_All, nullptr);
+	const float AimedFOV = Character->GetFirstPersonCameraComponent()->FieldOfView;
+	const FGameplayTagContainer AimTags(FallenEraCombatGameplayTags::Ability_Combat_Aim);
+	ASC->CancelAbilities(&AimTags);
+	TestFalse(TEXT("Ability cancellation ends ADS gameplay immediately"), Aiming->IsAiming());
+	TestEqual(TEXT("Ability cancellation does not snap the camera FOV"), Character->GetFirstPersonCameraComponent()->FieldOfView, AimedFOV);
+	Aiming->TickComponent(SkeletalSight->BlendOutTime * 0.5f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Cancelled camera returns through an intermediate FOV"),
+		Character->GetFirstPersonCameraComponent()->FieldOfView > AimedFOV && Character->GetFirstPersonCameraComponent()->FieldOfView < OriginalFOV);
+	Aiming->TickComponent(SkeletalSight->BlendOutTime, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Cancelled camera restores the original FOV"), Character->GetFirstPersonCameraComponent()->FieldOfView, OriginalFOV);
 	Aiming->BeginAim();
 	Aiming->TickComponent(0.2f, LEVELTICK_All, nullptr);
 	Aiming->ApplyShotRecoil(VisualRecoil, 0.0f);
 	Aiming->TickComponent(0.02f, LEVELTICK_All, nullptr);
 	TestFalse(TEXT("Visual recoil is active before swapping"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
+	const float PreSwapFOV = Character->GetFirstPersonCameraComponent()->FieldOfView;
 	Equipment->EquipWeaponByItemTag(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
 	TestFalse(TEXT("Swap cancels ADS"), Aiming->IsAiming());
 	TestTrue(TEXT("Swap clears the previous weapon's visual kick"), Aiming->GetVisualRecoilTransform().Equals(FTransform::Identity));
 	TestTrue(TEXT("Swap applies the new base, not the previous aim pose"), Arms->GetRelativeTransform().Equals(SecondWeapon->Template.FirstPersonMeshTransform));
+	TestEqual(TEXT("Destroyed old optic does not snap the camera"), Character->GetFirstPersonCameraComponent()->FieldOfView, PreSwapFOV);
+	Aiming->TickComponent(SkeletalSight->BlendOutTime * 0.5f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Old optic blends camera out after the new weapon is equipped"),
+		Character->GetFirstPersonCameraComponent()->FieldOfView > PreSwapFOV && Character->GetFirstPersonCameraComponent()->FieldOfView < OriginalFOV);
+	TestTrue(TEXT("Old camera blend cannot overwrite the new weapon pose"), Arms->GetRelativeTransform().Equals(SecondWeapon->Template.FirstPersonMeshTransform));
+	TestTrue(TEXT("New weapon can aim before the old camera blend finishes"), Aiming->BeginAim());
+	const float NewAimStartFOV = Character->GetFirstPersonCameraComponent()->FieldOfView;
+	TestTrue(TEXT("Re-aim starts from the current camera, not a reset FOV"), NewAimStartFOV < OriginalFOV);
+	Aiming->TickComponent(0.3f, LEVELTICK_All, nullptr);
+	Aiming->EndAim();
+	Aiming->TickComponent(0.3f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("New weapon release preserves the original unzoomed baseline"), Character->GetFirstPersonCameraComponent()->FieldOfView, OriginalFOV);
 	Equipment->UnequipWeapon();
 	TestTrue(TEXT("Unequip restores original character arms pose"), Arms->GetRelativeTransform().Equals(UnequippedTransform));
 	World->DestroyWorld(false);

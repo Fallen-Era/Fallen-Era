@@ -55,7 +55,7 @@ void UFE_WeaponAimAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
 	const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo,
 	bool bReplicateEndAbility, bool bWasCancelled)
 {
-	if (Aiming.IsValid()) { Aiming->EndAim(bWasCancelled); }
+	if (Aiming.IsValid()) { Aiming->EndAim(); }
 	Aiming.Reset();
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }

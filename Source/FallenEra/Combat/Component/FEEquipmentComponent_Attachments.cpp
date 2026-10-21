@@ -74,7 +74,7 @@ void UFE_EquipmentComponent::ClearWeaponAttachments()
 	// A released ability may already have ended while its local blend-out is still running.
 	if (UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>())
 	{
-		Aiming->EndAim(true);
+		Aiming->PrepareForEquipmentChange();
 	}
 	if (UAbilitySystemComponent* ASC = UFE_CombatComponent::FindAbilitySystemComponent(GetOwner()))
 	{

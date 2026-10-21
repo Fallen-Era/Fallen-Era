@@ -230,7 +230,7 @@ void UFE_EquipmentComponent::OnRep_AmmoState()
 {
 	if (AmmoState.bReloading)
 	{
-		if (UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>()) { Aiming->EndAim(true); }
+		if (UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>()) { Aiming->EndAim(); }
 	}
 	OnAmmoChanged.Broadcast();
 }

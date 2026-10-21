@@ -37,7 +37,7 @@ void UFE_WeaponReloadAbility::ActivateAbility(const FGameplayAbilitySpecHandle H
 	Actions.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim);
 	ASC->CancelAbilities(&Actions);
 	// Also clear a released aim ability's remaining local blend-out.
-	if (UFE_WeaponAimingComponent* Aiming = Avatar->FindComponentByClass<UFE_WeaponAimingComponent>()) { Aiming->EndAim(true); }
+	if (UFE_WeaponAimingComponent* Aiming = Avatar->FindComponentByClass<UFE_WeaponAimingComponent>()) { Aiming->EndAim(); }
 	const FFE_WeaponAmmoSettings& Settings = Equipment->GetCurrentWeaponData()->Template.AmmoSettings;
 	const bool bCharged = Equipment->GetCurrentWeaponData()->Template.AttackActions.ContainsByPredicate(
 		[](const TObjectPtr<UFE_WeaponAttackData>& Attack) { return Attack && Attack->IsA<UFE_ChargedProjectileAttackData>(); });
