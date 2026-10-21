@@ -26,6 +26,7 @@
 *.lib
 
 *.md
+!/docs/RUNTIME_MESSAGE_SYSTEM.md
 
 # Executables
 *.exe
@@ -84,3 +85,11 @@ DerivedDataCache/*
 
 FallenEra.slnx
 Automation_FallenEra.slnx
+
+
+# World Generator ignore
+Content/VoxelExamples/*
+docs/RUNTIME_MESSAGE_SYSTEM.md
+
+# Licensed Voxel Plugin files belong to the private submodule.
+/Plugins/Voxel/

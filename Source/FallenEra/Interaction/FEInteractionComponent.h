@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "GameplayTagContainer.h"
 #include "FEInteractionComponent.generated.h"
 
 class UFEInteractPromptViewModel;
@@ -54,6 +55,10 @@ protected:
     /** 후보로 볼 오브젝트 타입. 기본: WorldStatic, WorldDynamic, Pawn, PhysicsBody, BuildPiece(GameTraceChannel2) */
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Interaction")
     TArray<TEnumAsByte<ECollisionChannel>> ObjectTypes;
+    
+    /** 소유자 ASC 가 이 중 하나라도 가지면 프롬프트와 상호작용을 끈다. 예: State.Building (빌드 모드 중 E 는 회전). 비우면 항상 허용 */
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Interaction")
+    FGameplayTagContainer BlockedTags;
 
     /** [Server RPC] 거리와 CanInteract 재검증 후 Interact 실행 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -66,6 +71,8 @@ protected:
 private:
     bool GetViewPoint(FVector& OutLocation, FRotator& OutRotation) const;
     FCollisionObjectQueryParams MakeObjectQuery() const;
+    
+    bool IsBlockedByTags() const;
     
     /** 0.1초마다. 로컬 플레이어일 때만 대상 탐색 → 프롬프트 갱신 */
     void UpdatePrompt();
