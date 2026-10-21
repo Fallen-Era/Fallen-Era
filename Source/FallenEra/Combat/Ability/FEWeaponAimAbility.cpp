@@ -13,6 +13,7 @@ UFE_WeaponAimAbility::UFE_WeaponAimAbility()
 	SetAssetTags(FGameplayTagContainer(FallenEraCombatGameplayTags::Ability_Combat_Aim));
 	ActivationOwnedTags.AddTag(FallenEraCombatGameplayTags::State_Combat_Aiming);
 	ActivationBlockedTags.AddTag(FallenEraCombatGameplayTags::State_Combat_Reloading);
+	ActivationBlockedTags.AddTag(FallenEraCombatGameplayTags::State_Combat_SelectingAmmo);
 }
 
 bool UFE_WeaponAimAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handle,

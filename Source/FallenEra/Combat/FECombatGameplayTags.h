@@ -4,6 +4,8 @@
 
 namespace FallenEraCombatGameplayTags
 {
+	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_Damage_AmmoMultiplier);
+	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_SelectingAmmo);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Combat_LeftClick);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Combat_RightClick);
 	FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Combat_Swap);

@@ -3,6 +3,7 @@
 #include "Combat/FECombatGameplayTags.h"
 #include "Combat/Ability/FEWeaponAimAbility.h"
 #include "Combat/Ability/FEWeaponReloadAbility.h"
+#include "Combat/Ability/FEAmmoSelectionAbility.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Animation/AnimInstance.h"
@@ -31,6 +32,7 @@ void UFE_EquipmentComponent::BeginPlay()
 {
 	Super::BeginPlay();
 	InitializeAmmoInventory();
+	PreloadAmmoSelectionUI();
 	if (bPreloadWeaponAssetsOnBeginPlay)
 	{
 		PreloadWeaponAssets();
@@ -52,6 +54,9 @@ void UFE_EquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	bArmorEndingPlay = true;
+	InterruptWeaponActions();
+	if (AmmoLoadHandle) { AmmoLoadHandle->CancelHandle(); AmmoLoadHandle.Reset(); }
+	if (AmmoUIHandle) { AmmoUIHandle->CancelHandle(); AmmoUIHandle.Reset(); }
 	ClearWeaponAttachments();
 	if (WarmWeaponLoadHandle) { WarmWeaponLoadHandle->CancelHandle(); WarmWeaponLoadHandle.Reset(); }
 	if (ArmorLoadHandle)
@@ -410,10 +415,12 @@ bool UFE_EquipmentComponent::SetWeaponInstanceData(const FFE_WeaponInstanceData&
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority() || !CurrentWeaponData || !NewInstance.IsValid()) { return false; }
 	if (CurrentWeaponData->Template.AmmoSettings.bUsesAmmo && NewInstance.LoadedAmmo > CurrentWeaponData->Template.AmmoSettings.MagazineCapacity) { return false; }
+	if (NewInstance.LoadedAmmoData.AmmoType.IsValid() && NewInstance.LoadedAmmoData.AmmoType != CurrentWeaponData->Template.AmmoSettings.AmmoType) { return false; }
 	InterruptWeaponActions();
 	CurrentWeaponInstance = NewInstance;
 	if (!CurrentWeaponInstance.InstanceId.IsValid()) { CurrentWeaponInstance.InstanceId = FGuid::NewGuid(); }
 	WeaponInstanceTemplate = CurrentWeaponData;
+	InitializeWeaponAmmo();
 	ClearEquippedWeaponOffense();
 	ApplyEquippedWeaponOffense();
 	WeaponAttachmentLoadout.WeaponTag = FGameplayTag();
@@ -796,8 +803,10 @@ void UFE_EquipmentComponent::CacheWeaponAbilities()
 	if (CurrentWeaponData->Template.AmmoSettings.bUsesAmmo)
 	{
 		FGameplayAbilitySpec ReloadSpec(UFE_WeaponReloadAbility::StaticClass(), 1, INDEX_NONE, CurrentWeaponData);
-		ReloadSpec.GetDynamicSpecSourceTags().AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_Reload);
 		GrantedWeaponAbilityHandles.Add(AbilitySystem->GiveAbility(ReloadSpec));
+		FGameplayAbilitySpec SelectionSpec(UFE_AmmoSelectionAbility::StaticClass(), 1, INDEX_NONE, CurrentWeaponData);
+		SelectionSpec.GetDynamicSpecSourceTags().AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_Reload);
+		GrantedWeaponAbilityHandles.Add(AbilitySystem->GiveAbility(SelectionSpec));
 		GrantedInputTags.Add(FallenEraCombatGameplayTags::Ability_Input_Combat_Reload);
 	}
 	if (const UFE_RangedWeaponItemData* Ranged = Cast<UFE_RangedWeaponItemData>(CurrentWeaponData);

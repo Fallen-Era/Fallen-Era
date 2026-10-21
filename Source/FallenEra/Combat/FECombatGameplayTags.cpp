@@ -2,6 +2,8 @@
 
 namespace FallenEraCombatGameplayTags
 {
+	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Damage_AmmoMultiplier, "SetByCaller.Damage.AmmoMultiplier");
+	UE_DEFINE_GAMEPLAY_TAG(State_Combat_SelectingAmmo, "State.Combat.SelectingAmmo");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_LeftClick, "Ability.Input.Combat.LeftClick");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_RightClick, "Ability.Input.Combat.RightClick");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_Input_Combat_Swap, "Ability.Input.Combat.Swap");

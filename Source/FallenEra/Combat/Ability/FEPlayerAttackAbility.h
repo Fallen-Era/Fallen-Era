@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "AbilitySystem/Abilities/FallenEraGameplayAbility.h"
+#include "Combat/Item/FEWeaponAmmoData.h"
 #include "FEPlayerAttackAbility.generated.h"
 
 class ACharacter;
@@ -104,4 +105,5 @@ protected:
 	mutable float LastSpreadUpdateTime = 0.0f;
 	bool bAmmoConsumedThisActivation = false;
 	FGuid AmmoShotInstanceId;
+	UPROPERTY(Transient) FFE_AmmoRoundData ShotAmmo;
 };

@@ -39,7 +39,8 @@ bool UFE_WeaponAimingComponent::CanAim() const
 	const UAbilitySystemComponent* ASC = UFE_CombatComponent::FindAbilitySystemComponent(GetOwner());
 	// Tag and owner-only ammo state can arrive independently. Both must permit ADS,
 	// including direct component calls and BP abilities with overridden tag defaults.
-	if (Equipment->GetAmmoState().bReloading || (ASC && ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_Reloading))) { return false; }
+	if (Equipment->GetAmmoState().bReloading || (ASC && (ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_Reloading) ||
+		ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_SelectingAmmo)))) { return false; }
 	if (!IsLocallyControlled()) { return true; }
 	const UFE_WeaponSightData* Data = Equipment->GetActiveSightData();
 	const UMeshComponent* Mesh = Equipment->GetFirstPersonSightMesh();

@@ -264,9 +264,9 @@ bool UFE_CombatComponent::ApplyDamageFromHit(
 	const FHitResult& HitResult,
 	const UFE_WeaponAttackData* AttackData,
 	EFE_DamageHitType HitType,
-	float HitQualityMultiplier)
+	float HitQualityMultiplier, float AmmoDamageMultiplier)
 {
-	return ApplyDamageInternal(TargetActor, CachedDamageEffectClass, &HitResult, AttackData, HitType, HitQualityMultiplier);
+	return ApplyDamageInternal(TargetActor, CachedDamageEffectClass, &HitResult, AttackData, HitType, HitQualityMultiplier, AmmoDamageMultiplier);
 }
 
 bool UFE_CombatComponent::ApplyDamageWithEffect(AActor* TargetActor, TSubclassOf<UGameplayEffect> DamageEffectClassOverride)
@@ -280,7 +280,7 @@ bool UFE_CombatComponent::ApplyDamageWithEffectFromHit(
 	const FHitResult& HitResult,
 	const UFE_WeaponAttackData* AttackData,
 	EFE_DamageHitType HitType,
-	float HitQualityMultiplier)
+	float HitQualityMultiplier, float AmmoDamageMultiplier)
 {
 	return ApplyDamageInternal(
 		TargetActor,
@@ -288,7 +288,7 @@ bool UFE_CombatComponent::ApplyDamageWithEffectFromHit(
 		&HitResult,
 		AttackData,
 		HitType,
-		HitQualityMultiplier);
+		HitQualityMultiplier, AmmoDamageMultiplier);
 }
 
 void UFE_CombatComponent::RefreshHitZoneData()
@@ -686,7 +686,7 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	const FHitResult* HitResult,
 	const UFE_WeaponAttackData* AttackData,
 	EFE_DamageHitType HitType,
-	float HitQualityMultiplier)
+	float HitQualityMultiplier, float AmmoDamageMultiplier)
 {
 	AActor* SourceActor = GetOwner();
 	if (!IsActorAlive(SourceActor) || SourceActor == TargetActor ||
@@ -712,6 +712,7 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	DamageRequest.AttackData = const_cast<UFE_WeaponAttackData*>(AttackData);
 	DamageRequest.DamageEffectClass = EffectClass;
 	DamageRequest.HitType = HitType;
+	DamageRequest.AmmoDamageMultiplier = FMath::IsFinite(AmmoDamageMultiplier) ? FMath::Max(0.0f, AmmoDamageMultiplier) : 1.0f;
 	DamageRequest.HitQualityMultiplier = FMath::IsFinite(HitQualityMultiplier)
 		? FMath::Clamp(HitQualityMultiplier, 0.0f, 1.0f) : 0.0f;
 	DamageRequest.bHasHitResult = HitResult != nullptr;
@@ -724,7 +725,8 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 		UFallenEraAttributeSet::GetAttackPowerAttribute()))
 	{
 		DamageRequest.SourceAttackPower = SourceAbilitySystem->GetNumericAttribute(
-			UFallenEraAttributeSet::GetAttackPowerAttribute());
+			UFallenEraAttributeSet::GetAttackPowerAttribute()) * DamageRequest.AmmoDamageMultiplier;
+		if (!FMath::IsFinite(DamageRequest.SourceAttackPower)) { DamageRequest.SourceAttackPower = 0.0f; }
 	}
 
 	FFE_CombatDamageResult DamageResult;
@@ -800,6 +802,8 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 		FallenEraCombatGameplayTags::SetByCaller_Damage_HitRegionMultiplier, Result.HitRegionMultiplier);
 	EffectSpec.Data->SetSetByCallerMagnitude(
 		FallenEraCombatGameplayTags::SetByCaller_Damage_HitQualityMultiplier, DamageRequest.HitQualityMultiplier);
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_AmmoMultiplier, DamageRequest.AmmoDamageMultiplier);
 
 	const float HealthBeforeDamage = TargetAbilitySystem->HasAttributeSetForAttribute(
 		UFallenEraAttributeSet::GetHealthAttribute())

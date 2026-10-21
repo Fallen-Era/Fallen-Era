@@ -33,6 +33,10 @@ struct FALLENERA_API FFE_CombatDamageRequest
 	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
 	float SourceAttackPower = 0.0f;
 
+	/** SourceAttackPower already includes this factor for non-GAS receivers; GAS captures base power separately. */
+	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	float AmmoDamageMultiplier = 1.0f;
+
 	/** Multiply damage after the receiver's defense/region formula. x1 direct, lower for glancing hits. */
 	UPROPERTY(BlueprintReadOnly, Category="FallenEra|Combat|Damage")
 	float HitQualityMultiplier = 1.0f;

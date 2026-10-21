@@ -76,7 +76,10 @@ void UFE_DamageExecutionCalculation::Execute_Implementation(
 		FallenEraCombatGameplayTags::SetByCaller_Damage_HitQualityMultiplier, false, 1.0f);
 	// Two uniform samples form a triangular distribution: ordinary hits are more common than extremes.
 	const float CenteredRoll = DamageVarianceRatio > 0.0f ? FMath::FRand() + FMath::FRand() - 1.0f : 0.0f;
-	const float FinalDamage = CalculateDamage(SourceAttackPower, TargetDefensePower, RequestedMultiplier, CenteredRoll, HitQualityMultiplier);
+	const float AmmoMultiplier = Spec.GetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_AmmoMultiplier, false, 1.0f);
+	const float SafeAmmoMultiplier = FMath::IsFinite(AmmoMultiplier) ? FMath::Max(0.0f, AmmoMultiplier) : 1.0f;
+	const float FinalDamage = CalculateDamage(SourceAttackPower * SafeAmmoMultiplier, TargetDefensePower, RequestedMultiplier, CenteredRoll, HitQualityMultiplier);
 
 	if (FinalDamage > 0.0f)
 	{

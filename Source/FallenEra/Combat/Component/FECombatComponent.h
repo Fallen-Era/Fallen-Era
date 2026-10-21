@@ -111,7 +111,8 @@ public:
 		const FHitResult& HitResult,
 		const UFE_WeaponAttackData* AttackData,
 		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
-		float HitQualityMultiplier = 1.0f);
+		float HitQualityMultiplier = 1.0f,
+		float AmmoDamageMultiplier = 1.0f);
 
 	/** Applies a custom damage GameplayEffect; damage is calculated from attributes by the effect. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat")
@@ -124,7 +125,8 @@ public:
 		const FHitResult& HitResult,
 		const UFE_WeaponAttackData* AttackData,
 		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
-		float HitQualityMultiplier = 1.0f);
+		float HitQualityMultiplier = 1.0f,
+		float AmmoDamageMultiplier = 1.0f);
 
 	/** GAS receiver implementation used by Damageable actors that own an ASC. */
 	FFE_CombatDamageResult ApplyGameplayEffectDamage(const FFE_CombatDamageRequest& DamageRequest);
@@ -271,7 +273,8 @@ private:
 		const FHitResult* HitResult = nullptr,
 		const UFE_WeaponAttackData* AttackData = nullptr,
 		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
-		float HitQualityMultiplier = 1.0f);
+		float HitQualityMultiplier = 1.0f,
+		float AmmoDamageMultiplier = 1.0f);
 	/** Debug-only, server confirmed message sent to the attacking player's owning client. */
 	UFUNCTION(Client, Unreliable)
 	void ClientShowHitDamageDebug(const FString& Message);

@@ -149,6 +149,7 @@ bool UFE_ProjectileAttackAbility::SpawnProjectile(
 		GetCachedDamageEffectClass(),
 		LaunchDirection * FMath::Max(0.0f, LaunchSpeed),
 		AttackData->GravityScale);
+	Projectile->SetAmmoDamageMultiplier(ShotAmmo.Instance.ResolveStats().DamageMultiplier);
 	return true;
 }
 

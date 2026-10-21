@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Combat/Weapon/Attachment/FEWeaponAttachmentData.h"
+#include "Combat/Item/FEWeaponAmmoData.h"
 #include "FEEquipmentInstanceData.generated.h"
 
 USTRUCT(BlueprintType)
@@ -36,6 +37,10 @@ struct FALLENERA_API FFE_WeaponInstanceData
 	/** Editable DA test seed. Runtime writes affect the equipped copy, never the shared DA. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Instance|Ammo", meta=(ClampMin="0"))
 	int32 LoadedAmmo = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Instance|Ammo")
+	FFE_AmmoRoundData LoadedAmmoData;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Instance|Ammo")
+	FGuid SelectedAmmoId;
 	/** Per-swing cost; copied into runtime equipment so inventory instances can override it independently. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Instance|Combat", meta=(ClampMin="0.0"))
 	float StaminaCost = 10.0f;

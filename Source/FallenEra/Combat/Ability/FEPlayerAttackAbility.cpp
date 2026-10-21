@@ -29,6 +29,7 @@ UFE_PlayerAttackAbility::UFE_PlayerAttackAbility()
 	SetAssetTags(AttackAbilityTags);
 	ActivationBlockedTags.AddTag(FallenEraCombatGameplayTags::State_Combat_Reloading);
 	InputRetryBlockedTags.AddTag(FallenEraCombatGameplayTags::State_Combat_Reloading);
+	ActivationBlockedTags.AddTag(FallenEraCombatGameplayTags::State_Combat_SelectingAmmo);
 }
 
 bool UFE_PlayerAttackAbility::CheckCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
@@ -58,7 +59,7 @@ bool UFE_PlayerAttackAbility::CommitWeaponShotCost()
 	{
 		UFE_EquipmentComponent* Equipment = Avatar->FindComponentByClass<UFE_EquipmentComponent>();
 		AmmoShotInstanceId = Equipment->GetWeaponInstanceData().InstanceId;
-		if (!Equipment->ConsumeWeaponAmmo(GetCachedWeaponData())) { return false; }
+		if (!Equipment->ConsumeWeaponAmmo(GetCachedWeaponData(), ShotAmmo)) { return false; }
 		bAmmoConsumedThisActivation = GetCachedWeaponData()->Template.AmmoSettings.bUsesAmmo;
 	}
 	return true;
@@ -70,7 +71,7 @@ void UFE_PlayerAttackAbility::RefundFailedProjectileAmmo()
 	{
 		if (UFE_EquipmentComponent* Equipment = Avatar->FindComponentByClass<UFE_EquipmentComponent>())
 		{
-			Equipment->RefundWeaponAmmo(GetCachedWeaponData(), AmmoShotInstanceId);
+			Equipment->RefundWeaponAmmo(GetCachedWeaponData(), AmmoShotInstanceId, ShotAmmo);
 		}
 		bAmmoConsumedThisActivation = false;
 	}
@@ -137,6 +138,7 @@ void UFE_PlayerAttackAbility::EndAbility(
 		}
 	}
 	bAmmoConsumedThisActivation = false;
+	ShotAmmo = FFE_AmmoRoundData();
 }
 
 const UFE_WeaponAttackData* UFE_PlayerAttackAbility::ResolveAttackData(const ACharacter* CombatCharacter) const
@@ -310,7 +312,7 @@ void UFE_PlayerAttackAbility::ApplyDamage(
 			HitResult,
 			AttackData,
 			EFE_DamageHitType::Direct,
-			HitQualityMultiplier);
+			HitQualityMultiplier, ShotAmmo.Instance.ResolveStats().DamageMultiplier);
 	}
 	else
 	{
@@ -319,7 +321,7 @@ void UFE_PlayerAttackAbility::ApplyDamage(
 			HitResult,
 			AttackData,
 			EFE_DamageHitType::Direct,
-			HitQualityMultiplier);
+			HitQualityMultiplier, ShotAmmo.Instance.ResolveStats().DamageMultiplier);
 	}
 }
 

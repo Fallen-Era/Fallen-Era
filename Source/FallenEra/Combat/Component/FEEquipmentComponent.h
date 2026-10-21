@@ -17,6 +17,7 @@ class UFE_WeaponAttackData;
 class UFE_WeaponItemData;
 class UFE_ArmorItemData;
 class UFE_WeaponSightData;
+class UFE_AmmoRadialWidget;
 class UStaticMeshComponent;
 class USkeletalMeshComponent;
 struct FStreamableHandle;
@@ -79,11 +80,28 @@ public:
 	bool SetReserveAmmo(FGameplayTag AmmoType, int32 Count);
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment|Ammo")
 	bool RequestReload();
+	/** Selects one server-owned stack, never accepts client-provided damage/counts. */
+	UFUNCTION(BlueprintCallable, Category="FallenEra|Equipment|Ammo")
+	bool RequestReloadAmmo(FGuid AmmoId, FGuid WeaponInstanceId);
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Equipment|Ammo")
+	bool AddAmmoInstance(const FFE_AmmoStack& Stack);
+	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Ammo")
+	TArray<FFE_AmmoStack> GetCompatibleAmmo() const;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Equipment|Ammo Selection", meta=(ClampMin="0.1", Units="s"))
+	float AmmoSelectionHoldDuration = 0.25f;
+	/** WBP parent must be FE_AmmoRadialWidget; the class and sector WBP are preloaded asynchronously. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Equipment|Ammo Selection")
+	TSoftClassPtr<UFE_AmmoRadialWidget> AmmoSelectionWidgetClass;
+	void PreloadAmmoSelectionUI();
+	UClass* GetAmmoSelectionWidgetClass() const { return LoadedAmmoOptionWidgetClass ? LoadedAmmoSelectionWidgetClass.Get() : nullptr; }
+	FSimpleMulticastDelegate AmmoSelectionUIReady;
 	UPROPERTY(BlueprintAssignable, Category="FallenEra|Equipment|Ammo")
 	FOnFEAmmoChanged OnAmmoChanged;
 	bool CanFireWeaponAmmo(const UFE_WeaponItemData* Weapon) const;
 	bool ConsumeWeaponAmmo(const UFE_WeaponItemData* Weapon);
+	bool ConsumeWeaponAmmo(const UFE_WeaponItemData* Weapon, FFE_AmmoRoundData& OutRound);
 	void RefundWeaponAmmo(const UFE_WeaponItemData* Weapon, FGuid InstanceId);
+	void RefundWeaponAmmo(const UFE_WeaponItemData* Weapon, FGuid InstanceId, const FFE_AmmoRoundData& Round);
 	bool CanReloadWeapon() const;
 	bool BeginWeaponReload();
 	bool FinishWeaponReload();
@@ -142,7 +160,7 @@ public:
 	bool bInitialArmorApplied = false;
 
 protected:
-	/** Seeded once on authority. Duplicate exact tags are combined; unrelated ammo never substitutes. */
+	/** Seeded once on authority. Only identical definitions AND instance stats can combine. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Equipment|Test Inventory")
 	TArray<FFE_AmmoStack> TestAmmoInventory;
 	/** Temporary test inventory. Replace with inventory data when that system is available. */
@@ -225,10 +243,24 @@ protected:
 private:
 	UPROPERTY(ReplicatedUsing=OnRep_AmmoState)
 	FFE_WeaponAmmoState AmmoState;
-	UPROPERTY(Replicated, Transient)
+	UPROPERTY(ReplicatedUsing=OnRep_AmmoState, Transient)
 	TArray<FFE_AmmoStack> AmmoInventory;
 	UPROPERTY(Transient)
-	TMap<FGameplayTag, int32> TestLoadedAmmoByItemTag;
+	TMap<FGameplayTag, FFE_WeaponInstanceData> TestLoadedAmmoByItemTag;
+	FGuid PendingReloadAmmoId;
+	FGuid ReloadWeaponInstanceId;
+	FGuid RequestedReloadAmmoId;
+	TSharedPtr<FStreamableHandle> AmmoLoadHandle;
+	TSharedPtr<FStreamableHandle> AmmoUIHandle;
+	UPROPERTY(Transient) TObjectPtr<UClass> LoadedAmmoSelectionWidgetClass;
+	UPROPERTY(Transient) TObjectPtr<UClass> LoadedAmmoOptionWidgetClass;
+	void FinishLoadingAmmoSelectionUI();
+	UPROPERTY(Transient) TArray<TObjectPtr<UFE_AmmoItemData>> LoadedAmmoDefinitions;
+	void FinishLoadingAmmoInventory();
+	const FFE_AmmoStack* FindSelectedAmmo() const;
+	bool StoreAmmoStack(const FFE_AmmoStack& Stack);
+	UFUNCTION(Server, Reliable, WithValidation)
+	void ServerRequestReloadAmmo(FGuid AmmoId, FGuid WeaponInstanceId);
 	FGameplayTag AmmoInstanceItemTag;
 	bool bAmmoInventoryInitialized = false;
 	void InitializeAmmoInventory();

@@ -197,6 +197,7 @@ void AFE_CombatProjectile::PrepareForPool()
 	WeaponData = nullptr;
 	AttackData = nullptr;
 	DamageEffectClass = nullptr;
+	AmmoDamageMultiplier = 1.0f;
 	SetOwner(nullptr);
 	SetInstigator(nullptr);
 
@@ -279,8 +280,8 @@ bool AFE_CombatProjectile::ApplyProjectileDamage(AActor* TargetActor, const FHit
 	if (UFE_CombatComponent* SourceCombat = DamageSource->FindComponentByClass<UFE_CombatComponent>())
 	{
 		return DamageEffectClass
-			? SourceCombat->ApplyDamageWithEffectFromHit(TargetActor, DamageEffectClass, Hit, AttackData, HitType)
-			: SourceCombat->ApplyDamageFromHit(TargetActor, Hit, AttackData, HitType);
+			? SourceCombat->ApplyDamageWithEffectFromHit(TargetActor, DamageEffectClass, Hit, AttackData, HitType, 1.0f, AmmoDamageMultiplier)
+			: SourceCombat->ApplyDamageFromHit(TargetActor, Hit, AttackData, HitType, 1.0f, AmmoDamageMultiplier);
 	}
 
 	return false;
