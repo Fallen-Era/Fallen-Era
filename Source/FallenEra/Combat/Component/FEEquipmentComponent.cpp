@@ -76,6 +76,7 @@ void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 	ClearArmorEffects();
 	// PlayerState-owned ASCs may outlive the equipped character.
+	ClearEquippedWeaponTags();
 	ClearEquippedWeaponOffense();
 	ClearWeaponAbilities();
 	RestoreFirstPersonMeshTransform();
@@ -217,6 +218,7 @@ void UFE_EquipmentComponent::EquipCurrentWeapon()
 		WeaponLoadHandle->CancelHandle();
 		WeaponLoadHandle.Reset();
 	}
+	ClearEquippedWeaponTags();
 	ClearEquippedWeaponOffense();
 	ClearWeaponAbilities();
 	CurrentWeaponData = nullptr;
@@ -395,6 +397,7 @@ void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 	CurrentWeaponData = WeaponData;
 	PendingWeaponData = nullptr;
 
+	ApplyEquippedWeaponTags();
 	ApplyEquippedWeaponOffense();
 	ApplyWeaponVisuals();
 	InitializeWeaponAttachments();
@@ -553,6 +556,36 @@ void UFE_EquipmentComponent::ClearEquippedWeaponOffense()
 	}
 
 	EquippedWeaponOffenseEffectHandle = FActiveGameplayEffectHandle();
+}
+
+void UFE_EquipmentComponent::ApplyEquippedWeaponTags()
+{
+	ClearEquippedWeaponTags();
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !CurrentWeaponData || CurrentWeaponData->Template.EquippedTags.IsEmpty())
+	{
+		return;
+	}
+	if (UAbilitySystemComponent* AbilitySystem = UFE_CombatComponent::FindAbilitySystemComponent(GetOwner()))
+	{
+		EquippedTagsAbilitySystem = AbilitySystem;
+		AppliedEquippedTags = CurrentWeaponData->Template.EquippedTags;
+		// [Server Only] Clients receive these counts from the ASC; OnRep equipment must not add them again.
+		AbilitySystem->AddLooseGameplayTags(AppliedEquippedTags, 1, EGameplayTagReplicationState::TagAndCountToAll);
+	}
+}
+
+void UFE_EquipmentComponent::ClearEquippedWeaponTags()
+{
+	if (GetOwner() && GetOwner()->HasAuthority())
+	{
+		if (UAbilitySystemComponent* AbilitySystem = EquippedTagsAbilitySystem.Get())
+		{
+			// Remove only our contribution, not tags granted by other equipment/effects.
+			AbilitySystem->RemoveLooseGameplayTags(AppliedEquippedTags, 1, EGameplayTagReplicationState::TagAndCountToAll);
+		}
+	}
+	AppliedEquippedTags.Reset();
+	EquippedTagsAbilitySystem.Reset();
 }
 
 void UFE_EquipmentComponent::ClearWeaponVisuals()

@@ -211,6 +211,8 @@ protected:
 	void ClearWeaponAbilities();
 	void ApplyEquippedWeaponOffense();
 	void ClearEquippedWeaponOffense();
+	void ApplyEquippedWeaponTags();
+	void ClearEquippedWeaponTags();
 	void FinishLoadingWeaponDataAssets();
 	void FinishLoadingWeaponDependencies();
 	void FinishPreloadingWeaponDataAssets();
@@ -227,6 +229,9 @@ protected:
 	TArray<FGameplayAbilitySpecHandle> GrantedWeaponAbilityHandles;
 	FActiveGameplayEffectHandle EquippedWeaponOffenseEffectHandle;
 	TWeakObjectPtr<UAbilitySystemComponent> WeaponAbilitySystem;
+	// Separate ownership: ClearWeaponAbilities resets WeaponAbilitySystem, and the old ASC can outlive this pawn.
+	TWeakObjectPtr<UAbilitySystemComponent> EquippedTagsAbilitySystem;
+	FGameplayTagContainer AppliedEquippedTags;
 	TSharedPtr<FStreamableHandle> WeaponLoadHandle;
 	/** Temporary catalog scan handle. Released once ItemTag -> asset paths have been cached. */
 	TSharedPtr<FStreamableHandle> WeaponPreloadHandle;

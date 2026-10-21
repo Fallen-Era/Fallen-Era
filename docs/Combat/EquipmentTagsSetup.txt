@@ -1,0 +1,30 @@
+장비 장착 상태 ASC 태그 연동
+=========================
+
+설정
+- 망치 무기 DA > Template > EquippedTags에 Equipment.Weapon.Hammer를 추가합니다.
+- ItemTags/WeaponTags는 아이템 검색/분류용입니다. ASC에 자동으로 부여하지 않습니다.
+- EquippedTags는 장착 중에만 부여할 상태/도구 태그입니다. 다른 도구도 같은 경로를 사용합니다.
+- 망치 DA는 이번 작업에서 수정하지 않았으므로, 건설 담당자의 망치 DA에 위 태그 설정이 필요합니다.
+
+조회 (장비 컴포넌트나 캐릭터 구체 클래스 include 불필요)
+- C++: ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::Equipment_Weapon_Hammer)
+  태그 헤더: Combat/FECombatGameplayTags.h
+- BP: Get Ability System Component(플레이어) -> Has Matching Gameplay Tag
+  Tag = Equipment.Weapon.Hammer
+- 이벤트 기반 갱신: ASC의 RegisterGameplayTagEvent(..., NewOrRemoved)를 구독합니다.
+- 망치가 필수인 GA는 Activation Required Tags에 Equipment.Weapon.Hammer를 지정할 수 있습니다.
+- 건설 서버 요청에서도 동일한 ASC 태그를 검사해야 합니다. 클라이언트 UI 검사만으로 권한을 허용하지 마세요.
+
+수명과 네트워크
+- 무기/의존 에셋 로딩 및 Instance 유효성 검사를 통과한 실제 장착 시점에 서버가 태그를 추가합니다.
+- TagAndCountToAll 정책으로 ASC를 통해 클라이언트에도 복제합니다. 클라이언트 장비 OnRep는 태그를 중복 추가하지 않습니다.
+- 교체/해제/로딩 전 기존 장착 상태를 제거하며, 로딩 실패 시 망치 장착 상태가 남지 않습니다.
+- RefreshEquipment 반복, ASC 교체, 장비 컴포넌트 EndPlay에서 이전 ASC에 부여한 횟수만 제거합니다.
+  SetLooseGameplayTagCount(..., 0)으로 다른 소스의 태그까지 지우지 않습니다.
+- ASC 초기화/교체 후에는 기존 계약대로 RefreshEquipment를 호출해야 합니다.
+- 건설 쪽의 기존 장비 조회 코드는 이번 작업에서 수정하지 않았습니다.
+
+자동 테스트
+- FallenEra.Combat.Equipment.EquippedTags
+  장착/해제/교체, 반복 갱신, 다른 소스의 카운트 유지, 늦은 ASC 초기화, ASC 교체, EndPlay 정리.

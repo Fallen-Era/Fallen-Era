@@ -18,6 +18,7 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(State_Combat_Aiming, "State.Combat.Aiming");
 	UE_DEFINE_GAMEPLAY_TAG(State_Combat_KnockedDown, "State.Combat.KnockedDown");
 	UE_DEFINE_GAMEPLAY_TAG(Equipment_WeaponSlot_Sight, "Equipment.WeaponSlot.Sight");
+	UE_DEFINE_GAMEPLAY_TAG(Equipment_Weapon_Hammer, "Equipment.Weapon.Hammer");
 
 	UE_DEFINE_GAMEPLAY_TAG(State_Condition_Bleeding, "State.Condition.Bleeding");
 	UE_DEFINE_GAMEPLAY_TAG(State_Condition_Infection, "State.Condition.Infection");

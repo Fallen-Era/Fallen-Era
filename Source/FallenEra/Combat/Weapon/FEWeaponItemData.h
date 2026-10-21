@@ -469,6 +469,10 @@ struct FALLENERA_API FFE_WeaponTemplateData
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Tags")
 	FGameplayTagContainer WeaponTags;
 
+	/** Granted to the owner's ASC only while equipped, e.g. Equipment.Weapon.Hammer. Classification tags are not automatically granted. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Tags", meta=(Categories="Equipment"))
+	FGameplayTagContainer EquippedTags;
+
 	/** Static weapon mesh. Used only when SkeletalMesh is empty. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Weapon|Presentation", meta=(DisplayName="Static Mesh"))
 	TSoftObjectPtr<UStaticMesh> Mesh;
