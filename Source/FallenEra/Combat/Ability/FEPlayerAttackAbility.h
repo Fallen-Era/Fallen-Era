@@ -2,12 +2,15 @@
 
 #include "CoreMinimal.h"
 #include "AbilitySystem/Abilities/FallenEraGameplayAbility.h"
+#include "Combat/Item/FEWeaponAmmoData.h"
 #include "FEPlayerAttackAbility.generated.h"
 
 class ACharacter;
 class UAnimMontage;
 class UFE_WeaponAttackData;
 class UFE_WeaponItemData;
+struct FFE_AccuracySettings;
+struct FFE_RecoilSettings;
 
 /** Reusable attack ability that executes the attack data owned by the equipped weapon. */
 UCLASS(Abstract, Blueprintable)
@@ -17,6 +20,8 @@ class FALLENERA_API UFE_PlayerAttackAbility : public UFallenEraGameplayAbility
 
 public:
 	UFE_PlayerAttackAbility();
+	virtual bool CheckCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
+		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
 
 	virtual void ActivateAbility(
 		const FGameplayAbilitySpecHandle Handle,
@@ -32,6 +37,10 @@ public:
 		bool bWasCancelled) override;
 
 protected:
+	/** GAS cost plus one round, once per shot (never per pellet or charge start). */
+	bool CommitWeaponShotCost();
+	void RefundFailedProjectileAmmo();
+	bool HasLoadedWeaponAmmo() const;
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Attack|Animation")
 	bool bPlayAttackMontage = true;
 
@@ -62,7 +71,23 @@ protected:
 		const UFE_WeaponItemData* WeaponData,
 		const UFE_WeaponAttackData* AttackData,
 		AActor* TargetActor,
-		const FHitResult& HitResult) const;
+		const FHitResult& HitResult,
+		float HitQualityMultiplier = 1.0f) const;
+
+	/** Resolves intrinsic + attribute penalty + recovered bloom without advancing bloom. */
+	float CalculateSpreadAngle(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponAttackData* AttackData,
+		float IntrinsicSpreadAngle,
+		const FFE_AccuracySettings& AccuracySettings) const;
+	FVector ApplySpreadToDirection(const FVector& Direction, float SpreadAngle) const;
+	void CommitSpreadShot(
+		const ACharacter* CombatCharacter,
+		const UFE_WeaponAttackData* AttackData,
+		const FFE_AccuracySettings& AccuracySettings) const;
+	void ApplyLocalRecoil(
+		const ACharacter* CombatCharacter,
+		const FFE_RecoilSettings& RecoilSettings) const;
 
 	virtual void ExecuteAttack(const ACharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const;
 
@@ -74,4 +99,11 @@ protected:
 
 	UPROPERTY(Transient)
 	TSubclassOf<UGameplayEffect> CachedDamageEffectClass;
+
+	mutable TWeakObjectPtr<UFE_WeaponAttackData> SpreadAttackData;
+	mutable float CurrentSpreadBloom = 0.0f;
+	mutable float LastSpreadUpdateTime = 0.0f;
+	bool bAmmoConsumedThisActivation = false;
+	FGuid AmmoShotInstanceId;
+	UPROPERTY(Transient) FFE_AmmoRoundData ShotAmmo;
 };

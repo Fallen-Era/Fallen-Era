@@ -1,0 +1,122 @@
+탄약 인스턴스 / R 홀드 선택 / 단일 탄종 장전
+============================================
+
+조작
+- R 짧게 누르고 놓기: 현재 선택된 탄약으로 재장전.
+- R 0.25초 이상 누르기: 화면 중앙 원형 UMG 표시.
+  EquipmentComponent.AmmoSelectionHoldDuration에서 홀드 시간을 변경한다.
+- 커서를 항목에 올리고 R을 놓기: 선택한 탄약으로 재장전 요청.
+- 중앙/원 바깥에서 놓기, Escape, 앱 비활성화, 무기 교체, 사망/쓰러짐, Pawn 교체: 취소.
+- 탄약 0인 항목은 비활성. 메뉴에서 카메라 회전/공격/조준을 제한하되 게임은 정지하지 않는다.
+- UI는 디자이너 편집 가능한 WBP이며, C++ NativePaint/런타임 WidgetTree 생성은 사용하지 않는다.
+  목록/강조는 기존 MVVM 및 델리게이트로 갱신한다. 탄약을 매 프레임 조회하지 않는다.
+
+WBP 설정 / 바인딩
+- /Game/Combat/UI/WBP/WBP_FE_AmmoRadial (부모 FE_AmmoRadialWidget): 메뉴 전체.
+  필수: SizeBox_Wheel(SizeBox), CanvasPanel_Options(CanvasPanel), Text_Title(TextBlock), Text_Hint(TextBlock).
+  선택: Text_SelectedAmmo(TextBlock).
+- /Game/Combat/UI/WBP/WBP_FE_AmmoOption (부모 FE_AmmoOptionWidget): 탄약 한 항목.
+  필수: Image_Sector(Image), Border_Content(Border), Text_AmmoName/Text_Count/Text_Damage(TextBlock).
+  선택: Image_AmmoIcon(Image), Text_Loaded(TextBlock).
+  Border_Content는 CanvasPanel 바로 아래에 놓아 각 항목의 각도에 맞게 위치를 갱신한다.
+- 필수 이름과 타입을 유지하고 Is Variable을 체크한다. 디자인/폰트/색/배경/애니메이션은 WBP에서 편집한다.
+- Radial WBP Class Defaults.OptionWidgetClass = WBP_FE_AmmoOption.
+- BP_HT_PlayerCharacter > Equipment > Ammo Selection > AmmoSelectionWidgetClass = WBP_FE_AmmoRadial.
+  위 두 연결은 현재 에셋에 저장했다. 위젯을 교체할 때 같은 부모/바인딩을 사용한다.
+- 메뉴와 항목 Is Focusable은 False로 유지한다. Button/TextBox 등 포커스를 가져가는 자식은 추가하지 않는다.
+- Image_Sector Brush에는 /Game/Combat/UI/Materials/M_UI_AmmoSector를 사용한다.
+  SectorStart/SectorAngle(라디안), InnerRadius/OuterRadius(휠 크기에 대한 비율), Tint 파라미터를 코드가 갱신한다.
+  이 Image는 보통 UMG 머티리얼 브러시이며 직접 NativePaint로 그리지 않는다.
+- 휠 크기/선택 반경은 Radial WBP의 WheelSize/InnerRadius/OuterRadius에서 지정한다.
+- 두 WBP 클래스는 장비 BeginPlay에서 비동기 프리로드한다. 로딩 중 R을 놓으면 취소하며 재장전을 강행하지 않는다.
+- 초기 에셋 생성 스크립트: Scripts/Combat/FECreateAmmoWidgets.py.
+  재실행하면 해당 WBP 디자이너 트리를 기본 디자인으로 덮어쓰므로 커스텀 편집 후에는 실행하지 않는다.
+  변경 전 플레이어 BP 백업: Saved/Backups/AmmoWBP/20261020_BeforeMigration/.
+
+공용 RadialMenu
+- 탄약 메뉴의 각도/배치/선택/실행/입력 공통 코드는 Combat/UI/Radial 하위로 분리했습니다.
+- 기존 탄약 WBP는 공용 위젯의 탄약 어댑터를 부모로 유지하므로 에셋 재연결은 필요 없습니다.
+- 다른 메뉴의 항목별 내용/함수 바인딩 방법은 docs/Combat/RadialMenuSetup.txt를 참고하세요.
+
+데이터
+- Data Asset을 FE_AmmoItemData로 생성한다.
+- Template.AmmoType: 호환 규격. 예 Item.Ammo.9mm / Item.Ammo.5mm / Item.Ammo.7mm.
+- Template.ItemTag: 탄약 아이템 정체성. 예 Item.Ammo.9mm.Enhanced.
+- Template.DisplayName / Icon: 원형 메뉴 이름/텍스처. 아이콘이 없어도 사용 가능.
+- Instance.ItemData.DamageMultiplier: 일반탄 1.0, 강화탄 예 1.2. 0 이상 유한한 값만 허용.
+- InstanceId는 서버가 런타임 스택에 생성한다. 공유 DA의 ID를 플레이어 간 공유하지 않는다.
+- 무기 Template.AmmoSettings.AmmoType에는 호환 규격만 설정한다. 상위/하위 태그로 대체하지 않는다.
+- 독립 태그 소스 Config/Tags/CombatAmmoTags.ini의 GameplayTagList=(...) 표기를 유지한다.
+  태그 사전 등록과 저장 에셋의 Invalid GameplayTag 경고 여부를 별도로 검증했다.
+- Weapon.Instance.LoadedAmmo는 최초 장전 수량이다.
+  LoadedAmmoData에는 초기 장전탄의 규격/AmmoData/Instance 성능을 같이 지정한다.
+  이를 비워 둔 이전 테스트 무기는 해당 규격의 DA 없는 일반 x1탄으로 해석한다.
+  장전탄이 이미 있는데 보유한 강화탄으로 자동 변환하지 않는다.
+- 활/수류탄도 같은 인스턴스 정보를 사용하되 기존 1발 자동 준비 동작은 유지한다.
+- 관통력/방어력 관통은 이번 구현에 포함하지 않았다.
+
+테스트 인벤토리
+- BP_HT_PlayerCharacter > EquipmentComponent > Test Ammo Inventory.
+- AmmoData, Count를 지정한다. DA가 있으면 호환 규격은 DA에서 읽는다.
+- Use Definition Stats를 켜면 DA.Instance 성능을 테스트 시드로 복사한다.
+  끄면 항목 Instance.ItemData를 입력하여 같은 DA의 랜덤 성능 차이를 테스트한다.
+- Definition 경로 + 정확한 규격 + 동일한 성능일 때만 스택을 합친다.
+- 이미 장전된 탄약은 Count에 포함하지 않는다. 공유 DA는 런타임에 수정하지 않는다.
+- 샘플 6개: /Game/Combat/Equiment/Ammo/DA_Ammo_{9mm,5mm,7mm}_{Standard,Enhanced}.
+  일반 1.0 / 강화 1.2. 권총=9mm, 라이플=5mm. 7mm는 향후 무기에 지정할 샘플이다.
+- 플레이어 보유 수량은 각 규격 일반 90 / 강화 30. 기존 화살/수류탄 항목은 유지한다.
+- 최초 설정 스크립트: Scripts/Combat/FESetupAmmoSelection.py.
+  무기/플레이어 BP의 테스트 기본값을 다시 덮어쓰므로 의도적으로 재설정할 때만 실행한다.
+  원본 백업: Saved/Backups/AmmoSelection/20261020_InitialSetup/.
+
+재장전 거래 및 UI 수량
+- 탄창 하나에는 한 Definition/성능만 존재한다. 일반/강화 혼합 큐는 없다.
+- 같은 종류/성능: 부족한 수량 보충. 다른 종류/성능: 이전 장전탄 전량 반환 후 새 탄약 장전.
+- 가득 찬 탄창도 다른 탄약으로 교체 가능. 부족하면 보유 수량까지만 장전한다.
+- 서버는 시작 및 완료에 ID, 호환 규격, 보유량, 무기 InstanceId를 검사한다.
+- 예비 탄약 감소/기존탄 반환/탄창 교체는 정상 완료 시 한 번에 처리한다.
+- 취소/스왑/사망/보유량 소진 시 이전 탄창을 보존한다. 도중에 미리 탄약을 빼지 않는다.
+- 선택한 탄약 소진 시 다른 종류로 자동 변경하지 않는다. R 홀드로 다시 선택한다.
+- PlayerStatus 보유탄 표시는 선택된 종류/성능의 예비 수량이다. 호환탄 전체 합이 아니다.
+- GetReserveAmmo(규격)는 인벤토리 조회용 전체 호환탄 합계다.
+- 테스트 스왑 캐시는 ItemTag당 무기 한 개를 보존한다. 실제 인벤토리는 각 무기의 InstanceId와
+  FFE_WeaponInstanceData 전체(LoadedAmmoData/SelectedAmmoId/LoadedAmmo 포함)를 전달해야 한다.
+
+입력 / 네트워크
+- 기존 IA_Combat_Reload(Boolean) / AbilityInputBindings의 Ability.Input.Combat.Reload를 사용한다.
+- 장비가 FE_AmmoSelectionAbility(LocalOnly)를 해당 입력에 부여한다.
+- FE_WeaponReloadAbility(ServerOnly)는 확정 요청/자동 장전에서 실행한다. 직접 입력 태그는 없다.
+- Hold 전용 Enhanced Input 트리거를 추가하지 않는다. Started부터 GA 타이머로 길이를 구분한다.
+- UIOnly 전환/입력 Flush 없이 GameAndUI에서 R 릴리즈를 GAS까지 전달한다.
+  키보드 포커스는 WBP가 아닌 게임 뷰포트에 유지한다. WBP 포커스 이동으로 눌린 R이 초기화되는 반복 열림을 방지한다.
+  메뉴 중 마우스 누름/더블클릭은 소유 뷰포트에서만 소비한다. 기존에 누른 공격/조준의 마우스 해제는 전달한다.
+  닫힐 때 현재 포커스 검사 없이 커서/마우스 캡처/락을 복원하고 자체 LookInput 잠금만 해제한다.
+- 메뉴는 선택 스택 ID와 예상 무기 InstanceId만 전송한다. 수량/성능은 서버가 조회한다.
+- 목록/수량은 소유 클라이언트에만 복제한다. 마우스 이동 중 RPC는 없다.
+- Definition/아이콘은 비동기 로딩. FireOnce에서 LoadSynchronous를 호출하지 않는다.
+
+피해 계산
+- AttackPower Attribute에 탄약 효과를 장착/해제하지 않는다.
+- 서버 발사 비용 처리에서 1발과 그 탄약 정보 복사본을 함께 얻는다.
+- Hitscan의 모든 펠릿/관통 대상은 같은 발사의 복사본을 사용한다.
+- Projectile은 배율을 액터에 보관하여 발사 후 장전/무기 교체의 영향을 받지 않는다.
+  풀 반환 시 초기화하고 생성 실패 시 원래 성능의 탄약을 반환한다.
+- GAS: SetByCaller.Damage.AmmoMultiplier -> DamageExecutionCalculation.
+  Max(AttackPower * AmmoMultiplier에 기존 편차 적용 - DefensePower, 0) * 기존 부위 * 타격 품질.
+- EffectContext.SourceObject는 기존 AttackData를 유지하여 Impact Cue에 영향을 주지 않는다.
+- 비-GAS Damageable의 Request.SourceAttackPower에는 이미 탄약 배율이 포함된다.
+  Request.AmmoDamageMultiplier를 다시 곱하면 이중 적용되므로 기존 피해식에 그대로 사용한다.
+- 수신자가 직접 만드는 GAS GE는 기본 AttackPower 캡처에 Request.AmmoDamageMultiplier를
+  SetByCaller.Damage.AmmoMultiplier로 전달한다. SourceAttackPower를 또 곱하지 않는다.
+
+검증
+- FallenEra.Combat.Ammo: 수량 보존, 취소, 식별자 검증, 실제 피해 Execution, 원형 선택,
+  짧은 R 입력, 샘플 DA, 기존 발사/재장전/조준/홀드 입력 회귀 테스트.
+- RadialRendering은 RHI 필요. -RenderOffscreen 실행 시 Saved/Screenshots/AmmoSelection.png 저장.
+  -NullRHI에서는 렌더 검증만 건너뛴다.
+- InputRestore: 중복 열기/닫기, 기존 커서 및 다른 시스템의 LookInput 잠금 보존 검증.
+- FallenEra.Integration.AmmoViewportHold: 실제 PIE 뷰포트 R 키 상태/장시간 유지/좌클릭 소비/릴리즈 복구.
+  -FEAmmoViewportTest -RenderOffscreen 옵션이 있는 격리된 에디터에서 단독 실행한다.
+  실행 시 테스트용 빈 맵/PIE를 생성한다. 일반 단위 테스트들과 같은 프로세스에서 이어 실행하지 않는다.
+  실제 프레임 이후 원형 머티리얼까지 캡처한 이미지는 Saved/Screenshots/AmmoSelectionPIE.png.
+- 실제 Listen Server + Client에서 커서 선택/릴리즈, 포커스 복구, 네트워크 지연도 확인한다.

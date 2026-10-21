@@ -27,14 +27,15 @@ void UFE_DamageGameplayEffect::PostLoad()
 	bool bHasDamageExecution = false;
 	for (int32 ExecutionIndex = Executions.Num() - 1; ExecutionIndex >= 0; --ExecutionIndex)
 	{
-		if (Executions[ExecutionIndex].CalculationClass != UFE_DamageExecutionCalculation::StaticClass())
+		const UClass* CalculationClass = Executions[ExecutionIndex].CalculationClass;
+		if (!CalculationClass || !CalculationClass->IsChildOf(UFE_DamageExecutionCalculation::StaticClass()))
 		{
 			continue;
 		}
 
 		// A Blueprint can retain the native entry and also serialize a manually
-		// added one. Keep exactly one; duplicate executions would apply 5 damage
-		// twice and appear as 10 damage against AttackPower 10 / DefensePower 5.
+		// added one. Keep the last configured entry, including a Blueprint child
+		// with its own variance settings; duplicate executions would deal damage twice.
 		if (bHasDamageExecution)
 		{
 			Executions.RemoveAt(ExecutionIndex);

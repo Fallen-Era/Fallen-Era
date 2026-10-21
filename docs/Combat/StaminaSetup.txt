@@ -1,0 +1,55 @@
+스태미너 소비 / 회복 / 탈진
+==========================
+
+기본값
+- 점프: 실제 점프 성공마다 20 소비. 입력만 하거나 점프 실패 시 소비하지 않는다.
+- 달리기: 시작 비용 없음. 지상에서 실제 달리는 동안 초당 10 소비.
+  Shift만 누른 정지 상태, 걷기, 공중에서는 달리기 소비 없음.
+- 근접 공격: 무기 DA > Instance > StaminaCost (기본 10).
+  장착된 런타임 인스턴스 값을 사용한다. 자동 공격/콤보의 각 타격 동작마다 소비한다.
+  명중 여부와 무관하게 소비하며, 시작에 필요한 양이 부족하면 공격하지 않는다.
+- 원거리 발사/차징에는 이 근접 비용을 사용하지 않는다.
+- 조준: 소비 없음, 자동 회복만 중단. 탈진 중에도 조준/걷기는 가능하다.
+
+에디터 설정
+- 플레이어 BP의 StaminaComponent:
+  JumpStaminaCost, SprintStaminaPerSecond, RecoveryDelay(기본 1초), ExhaustionRecoveryThreshold(기본 20).
+- GE_InitializeAttributes 등에 FallenEraAttributeSet.StaminaRecoveryRate 모디파이어를 추가해
+  초당 자동 회복량을 지정한다. 미지정 시 네이티브 기본값은 초당 10.
+  특성/장비/디버프도 해당 Attribute에 GE 모디파이어를 적용하면 된다.
+- 근접 무기 DA의 Instance.StaminaCost로 테스트한다.
+  추후 인벤토리 연동 시 FFE_WeaponInstanceData.StaminaCost를 함께 전달하면 된다.
+- 기존 근접 GA의 Cost GE에 Stamina 감소가 있다면 제거한다.
+  근접 스태미너 비용의 단일 설정 원천은 무기 인스턴스이며, 중복 설정 시 이중 소모된다.
+  기존 GA Cost의 다른 자원 비용은 각 스윙마다 그대로 적용된다.
+- 새 GameplayEffect BP를 만들거나 AbilitySet/InputMapping을 변경할 필요는 없다.
+
+회복 / 행동 제한
+- 마지막 Stamina 감소로부터 1초가 지난 시점부터 초당 회복량을 적분해 회복한다.
+  서버 타이머 간격은 0.1초이므로 UI의 첫 증가는 대략 1.1초부터 보인다.
+- 외부 GameplayEffect가 Stamina를 감소시켜도 대기 시간을 다시 계산한다.
+- 조준 해제 시 마지막 소비 이후의 대기 시간이 이미 지났다면 회복을 재개한다.
+- Stamina가 0이면 State.Stamina.Exhausted를 서버에서 부여한다.
+  1~19로 회복되어도 점프/달리기/유료 근접 공격은 금지하고 20에 도달해야 해제한다.
+  진행 중인 마지막 근접 공격은 완료하되 다음 스윙은 시작하지 않는다.
+  달리기는 탈진 시 중단되며 다시 시작하려면 Sprint를 새로 입력한다.
+- 최대 스태미너가 20 미만인 특수 설정에서는 최대치 도달을 해제 기준으로 사용해 영구 잠김을 방지한다.
+- 사망 시 소비/자동 회복 타이머를 중단한다.
+
+UI / 네트워크 / 비용
+- 기존 PlayerStatusWidget의 ProgressBar_StaminaBar를 그대로 사용한다.
+- 최초 정상 색상을 캐싱하고 탈진 태그가 있으면 회색, 해제되면 캐싱한 색상으로 복원한다.
+- ASC Attribute/Tag 델리게이트 -> PlayerStatusViewModel -> 기존 위젯/MVVM 값 변경 알림.
+  위젯 Tick/폴링은 추가하지 않는다.
+- 스태미너 부족/탈진으로 점프, Sprint, 근접 공격 시작이 거부되면 소유자 바가 3회 깜빡인다.
+  StaminaComponent.OnActionRejected -> ViewModel.StaminaActionRejected -> 위젯 타이머.
+  근접 공격은 GAS의 Ability.ActivateFail.Stamina 실패 이유 또는 다음 스윙의 비용 실패를 사용한다.
+  단순 CanSpendStamina 조회/지속 소비/홀드 재시도는 경고를 반복하지 않는다.
+  새 입력으로 BeginActionAttempt를 호출하면 다시 경고할 수 있다.
+- PlayerStatus 위젯 BP > Player Status > Stamina Warning:
+  StaminaBlinkInterval(기본 0.12초), StaminaBlinkCount(기본 3), StaminaBlinkDimOpacity(기본 0.2).
+  색상이 아닌 RenderOpacity로 깜빡이므로 회색 탈진 표시와 정상 색상을 유지한다.
+  반복 입력은 진행 중인 깜빡임을 연장하지 않으며 완료/위젯 제거 시 원래 투명도를 복원한다.
+- 스태미너 값은 AttributeSet에만 저장하며 서버 Instant GE로 증감한다.
+  클라이언트는 입력 가능 여부만 선검사하고 실제 소비/탈진 판정은 서버가 확정한다.
+- 가득 참/조준 회복 금지/사망 시 자원 타이머를 끈다. 매 프레임 RPC나 별도 Actor Tick 없음.

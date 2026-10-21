@@ -1,0 +1,95 @@
+무기 탄약 / 테스트 인벤토리 / 재장전
+===================================
+
+1. 무기 DataAsset
+- Template > Ammo Settings > Uses Ammo를 켜고 Ammo Type에 해당 무기의 정확한 탄약 태그를 지정한다.
+  예: Item.Ammo.Rifle / Item.Ammo.Arrow / Item.Ammo.Grenade.
+  같은 부모 태그 아래에 있어도 다른 종류의 탄약으로 대신 장전하지 않는다.
+- Magazine Capacity: 최대 장전 수량. 활/수류탄은 1을 사용한다.
+- Instance > Loaded Ammo: DA 테스트 아이템의 최초 장전 수량.
+  공유 DA를 런타임에 수정하지 않고 EquipmentComponent가 장착 복사본을 수정한다.
+- Reload Montage / Weapon Reload Montage는 선택 사항이다.
+  별도 ReloadDuration 없이 두 몽타주의 길이 / RateScale 중 최댓값으로 완료 시간을 계산한다.
+  캐릭터 몽타주는 CombatComponent를 통해 1/3인칭 및 다른 클라이언트에도 재생한다.
+  두 몽타주는 장착 비동기 프리로드 대상이며 발사 때 동기 로딩하지 않는다.
+- Uses Ammo가 꺼진 기존 무기/근접 공격은 기존 동작을 유지한다.
+
+2. 테스트 인벤토리
+- BP_HT_PlayerCharacter > EquipmentComponent > Equipment > Test Inventory > Test Ammo Inventory.
+- AmmoData / Instance / Count로 예비 탄약을 설정한다. Definition과 성능까지 같은 항목만 합산한다.
+- Count는 이미 장전된 Loaded Ammo를 제외한 예비 탄약이다.
+- 예비 탄약은 무기별로 복제 저장하지 않고 탄약 종류별로 공유한다.
+  같은 탄약을 쓰는 다른 무기들도 같은 예비 탄약을 사용한다.
+- 현재 기본 테스트값:
+  DA_RifleData: Item.Ammo.5mm, 일반/강화 예비 90/30. 권총은 Item.Ammo.9mm.
+  DA_Bow: Item.Ammo.Arrow, 장전 1 / 예비 20.
+  DA_Granade: Item.Ammo.Grenade, 장전 1 / 예비 10.
+- 테스트 스왑/해제/다시 장착/RefreshEquipment로 Loaded Ammo가 DA 초기값으로 복원되지 않는다.
+  현재 테스트 인벤토리는 ItemTag당 무기 하나다. 실제 인벤토리의 동일 종류 여러 무기는
+  각각의 FFE_WeaponInstanceData.LoadedAmmo / InstanceId를 전달해서 구분해야 한다.
+
+3. 입력과 GAS
+- IA_Combat_Reload(Boolean) / IMC_Combat R.
+- AbilityInputBindings: IA_Combat_Reload -> Ability.Input.Combat.Reload.
+- EquipmentComponent가 FE_AmmoSelectionAbility(LocalOnly)와 FE_WeaponReloadAbility(ServerOnly)를 부여한다.
+  R 짧게 누르고 놓기=현재 탄약 재장전, R 홀드=선택 UI. 상세는 AmmoSelectionSetup.txt 참조.
+  수동 재장전 및 탄창이 빈 뒤의 자동 재장전은 같은 서버 전용 GA를 사용한다.
+- 재장전 중 State.Combat.Reloading 태그로 공격을 막고 기존 공격/조준을 취소한다.
+- 예비 탄약 부족 시 남은 수량만큼 장전한다. 같은 탄약/가득 찬 탄창은 보충하지 않지만,
+  다른 종류/성능으로 교체할 때는 가득 찬 탄창도 교체할 수 있다.
+- 장전이 정상 완료될 때만 예비 탄약 감소와 장전 수량 증가를 함께 적용한다.
+  취소/무기 교체/사망/쓰러짐에서는 이전 재장전으로 탄약이 이동하지 않는다.
+- 연사는 한 발마다 차감하고, 산탄 PelletCount나 관통 대상 수만큼 추가 차감하지 않는다.
+  마지막 탄약을 사용하면 공격 GA를 종료하고 자동 재장전을 시작한다.
+  재장전 중 공격 입력을 계속 누르면 완료 후 바로 공격을 재개한다.
+  연사는 재개 후 기존 FireInterval로 지속되고, 단발/즉발 투사체는 한 번만 발사한다.
+  완료 전에 입력을 놓거나 무기를 교체하면 대기 입력은 취소된다.
+  태그와 장전 수량의 복제 순서가 달라도 준비될 때까지 유지하되, 입력을 놓으면 즉시 버린다.
+- 즉발 투사체는 성공한 발사에 한 발을 쓴다. 클래스/생성이 실패하면 탄약을 잃지 않는다.
+- 차징은 시작/유지/취소에 탄약을 쓰지 않는다. 실제 릴리즈 발사에 한 발을 쓴다.
+  발사 후 Ability 종료 시 모션/대기 없이 다음 한 발을 예비 탄약에서 준비한다.
+  예비 탄약까지 소진되면 다음 차징을 시작하지 못한다.
+- 빈 무기를 최초 장착할 때 예비 탄약이 있으면 총기는 일반 재장전, 활/수류탄은 즉시 준비한다.
+
+4. 서버/인벤토리 연동
+- 수량 변경은 서버만 수행한다. 발사 요청에 클라이언트가 보낸 탄약 수량을 사용하지 않는다.
+- GetAmmoState(): 현재 무기의 LoadedAmmo / ReserveAmmo / AmmoType / bReloading.
+- OnAmmoChanged: UI에서 수량/재장전 표시를 갱신할 때 사용한다.
+- 현재 탄약 상태와 예비 탄약 목록은 소유 클라이언트에만 복제한다.
+  재장전 상태 태그 및 몽타주 연출은 기존 GAS/CombatComponent 경로를 사용한다.
+- 서버 SetReserveAmmo(AmmoType, Count): DA 없는 일반 x1 예비 탄약 교체 지점.
+  생성된 탄약 인스턴스는 AddAmmoInstance(Stack)로 전달한다. 태그만으로 강화탄을 덮어쓰지 않는다.
+  추후 실제 인벤토리에 연결할 때는 이 저장소와 장전 이체 연산을 함께 이관해야 한다.
+- 실제 아이템 교체는 기존 SetWeaponInstanceData에 LoadedAmmo도 포함해서 전달한다.
+  서버 검사로 음수 및 탄창 용량 초과 수량을 거절한다.
+- 탄약 수량은 무기 Instance에 속하므로 캐릭터 공용 AttributeSet에 Ammo Attribute를 추가하지 않았다.
+  발사 Cost는 기존 GAS Cost 처리와 탄약 검사를 공통 발사 함수에서 함께 실행한다.
+- 평상시 추가 Tick은 없으며 재장전 GA의 WaitDelay만 사용한다.
+- 재장전 시작 시 기존 조준 및 조준 블렌드아웃을 취소하고, State.Combat.Reloading 태그와
+  소유자 AmmoState.bReloading 중 하나라도 남아 있으면 조준 재시작을 차단한다.
+- 별도의 재장전 시간 변수는 없다. 캐릭터 ReloadMontage와 WeaponReloadMontage 각각의
+  길이 / RateScale 중 최댓값까지 기다린 뒤 장전을 완료한다.
+  두 몽타주가 모두 없으면 즉시 장전한다. 활/수류탄의 즉시 자동 준비도 그대로 유지한다.
+  지정된 몽타주의 RateScale이 0 이하이거나 유효하지 않으면 즉시 장전 대신 취소한다.
+- 재생 배율 1.1은 장전속도 10% 증가로, 시간은 원래 시간 / 1.1(약 9.1% 단축)이다.
+  향후 캐릭터별 동적 보정은 공유 몽타주 에셋의 RateScale을 바꾸지 말고,
+  캐릭터/무기의 Montage_Play 배율과 서버 완료 시간 계산에 같은 배율을 전달해야 한다.
+  현재는 몽타주 에셋의 기본 RateScale을 재생과 시간 계산 양쪽에서 사용한다.
+- 우클릭을 계속 누르고 있으면 재장전 완료 후 기존 WhileInputActive 정책으로 조준을 재개한다.
+  취소/무기 교체 시에는 기존 취소 경로로 재장전 차단 상태를 해제한다.
+
+5. 검증 및 백업
+- FallenEra.Combat.Ammo.*: 탄종 일치, 부분 장전, 취소, 스왑 보존, 권한 검사,
+  산탄 발사당 소모, 빈 탄창, 즉발 투사체, 차징 취소/발사 후 준비 및 재장전 GA 수명 검증.
+- IA/IMC/플레이어 BP/무기 DA 변경 전 파일은 Saved/Backups/WeaponAmmo/<시각>/에 보관한다.
+- 실제 Listen Server + Client에서 지연/패킷 손실에 따른 예측 연출과 UI 표시도 별도로 확인해야 한다.
+
+6. PlayerStatus 탄약 표시
+- WBP_HT_PlayerStatus의 Text_LoadedAmmo: 현재 무기의 장전 탄약 수(장탄).
+- WBP_HT_PlayerStatus의 Text_ReserveAmmo: 같은 탄약 종류의 예비 탄약 수(보유). 장전 수량은 제외한다.
+- EquipmentComponent.OnAmmoChanged -> PlayerStatusViewModel -> AmmoChanged -> Text 갱신.
+  공격/재장전 코드는 UI를 직접 참조하지 않으며 Tick/매 프레임 UMG 속성 바인딩은 사용하지 않는다.
+- 무기 변경 및 Pawn/PlayerState 재연결 시 초기값을 읽고 이전 객체의 델리게이트를 해제한다.
+- 소유 클라이언트는 기존 AmmoState RepNotify에서 같은 이벤트 경로로 갱신한다.
+- 무기 미장착/탄약 미사용 무기에서는 두 Text를 숨긴다. 탄약이 0이면 숨기지 않고 0을 표시한다.
+- Text 포맷은 PlayerStatusWidget의 LoadedAmmoFormat / ReserveAmmoFormat 로컬라이제이션 키를 사용한다.

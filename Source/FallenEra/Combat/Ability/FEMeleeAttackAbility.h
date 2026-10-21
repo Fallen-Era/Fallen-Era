@@ -8,16 +8,17 @@ class UFE_MeleeAttackData;
 class UAbilityTask_WaitDelay;
 class UAbilityTask_WaitGameplayEvent;
 class UAbilityTask_WaitInputRelease;
-class UFE_MeleeTraceTask;
 class AActor;
 
-/** Melee attack implementation using a server-authoritative socket sweep. */
+/** One server-authoritative center/box query per swing, triggered by an attack notify. */
 UCLASS(Blueprintable)
 class FALLENERA_API UFE_MeleeAttackAbility : public UFE_PlayerAttackAbility
 {
 	GENERATED_BODY()
 
 public:
+	virtual bool CheckCost(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
+		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
 	virtual void ActivateAbility(
 		const FGameplayAbilitySpecHandle Handle,
 		const FGameplayAbilityActorInfo* ActorInfo,
@@ -32,12 +33,11 @@ public:
 		bool bWasCancelled) override;
 
 protected:
+	virtual ECollisionChannel GetAttackTraceChannel() const override;
 	virtual void ExecuteAttack(const ACharacter* CombatCharacter, const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData) const override;
 
 private:
 	void PerformCurrentAttack();
-	void StartMeleeTrace();
-	void StopMeleeTrace();
 	void WaitForAttackEvents();
 	void CompleteCurrentAttack();
 	int32 SelectDeterministicRandomAttackIndex();
@@ -54,7 +54,6 @@ private:
 	UFUNCTION()
 	void OnAttackResetEvent(FGameplayEventData Payload);
 
-	UFUNCTION()
 	void ExecuteCurrentTrace();
 
 	UFUNCTION()
@@ -74,9 +73,6 @@ private:
 	TObjectPtr<UAbilityTask_WaitGameplayEvent> AttackResetTask;
 
 	UPROPERTY()
-	TObjectPtr<UFE_MeleeTraceTask> MeleeTraceTask;
-
-	UPROPERTY()
 	TObjectPtr<UAbilityTask_WaitDelay> FallbackIntervalTask;
 
 	UPROPERTY(Transient)
@@ -87,10 +83,18 @@ private:
 	int32 AttackSelectionOrdinal = 0;
 	bool bAttackAutomatic = false;
 	bool bAttackInProgress = false;
-	bool bMeleeTraceActive = false;
+	bool bAttackTraceConsumed = false;
 	bool bInputReleased = false;
 
-	/** Prevents applying the same melee attack to the same actor every trace frame. */
-	mutable TSet<AActor*> DamagedActorsThisAttack;
-	mutable TMap<TWeakObjectPtr<AActor>, float> NextRepeatedHitTimes;
+	struct FFE_MeleeHit
+	{
+		FHitResult Hit;
+		float QualityMultiplier = 1.0f;
+	};
+	/** First contact locks region and quality, so later camera motion cannot upgrade/re-hit the target. */
+	mutable TMap<TWeakObjectPtr<AActor>, FFE_MeleeHit> FirstHitsThisAttack;
+	mutable int32 AreaTargetsHit = 0;
+	/** World objects are center-ray only, and at most one is selected per swing. */
+	mutable TWeakObjectPtr<AActor> WorldTargetThisAttack;
+	mutable bool bWorldTargetSelected = false;
 };

@@ -1,0 +1,46 @@
+1인칭 메쉬 계층 설정
+
+CapsuleComponent
+  Mesh (3인칭 전신)
+    EquippedWorldWeaponMesh (손 소켓)
+  First Person Legs (1인칭 다리)
+  First Person Camera
+    First Person Mesh (1인칭 팔)
+      EquippedFirstPersonWeaponMesh (손 소켓)
+
+적용 대상
+- AFallenEraCharacter의 기본 컴포넌트 계층을 변경한다.
+- BP_HT_PlayerCharacter와 BP_FirstPersonCharacter에 SKM_HT_Arms / SKM_HT_Legs를 지정했다.
+- Camera의 head 소켓 연결과 이전 머리 소켓 기준 위치/회전을 제거한다.
+- 카메라는 캡슐 중심에서 BaseEyeHeight만큼 높인다. 높이는 Camera의 Relative Location에서 조정한다.
+- 팔은 카메라를 따라 회전하며, 다리와 전신은 카메라 Pitch를 따라 회전하지 않는다.
+- 팔/다리는 OnlyOwnerSee이며 NoCollision이다. 다리의 월드 그림자는 전신이 담당한다.
+
+현재 애니메이션 호환
+- BP_FirstPersonCharacter의 ABP_FP_Copy는 유지한다. 카메라 아래에서는 부모 탐색으로 전신을 찾을 수 없으므로,
+  PostInitializeComponents와 OnAnimInitialized에서 Copy Pose 노드의 SourceMeshComponent를 GetMesh()로 연결한다.
+- 이 연결은 애니메이션 초기화 시에만 수행하며 매 프레임 탐색하지 않는다.
+- BP_HT_PlayerCharacter는 독립 팔 AnimBP인 ABP_HT_FPPCharacter를 사용한다.
+  전신 포즈 복사에 의존하지 않으며 로컬 공격 몽타주를 별도로 재생한다.
+- 다리는 SetLeaderPoseComponent(GetMesh())로 전신 포즈를 공유한다. 별도 다리 ABP는 필요하지 않다.
+- 팔/다리 메쉬는 전신과 호환되는 Skeleton을 사용해야 한다.
+- 다리의 상대 Transform은 전신과 같은 값으로 시작하고, 1인칭 외형에 맞는 개별 오프셋은 유지한다.
+
+기존 무기 경로
+- FirstPersonMesh의 컴포넌트 이름과 GetFirstPersonMesh / GetCombatFirstPersonMesh를 유지한다.
+- EquipmentComponent의 로컬 무기 소켓 장착과 CombatComponent의 카메라 조회 경로는 변경하지 않는다.
+- WeaponAnimLayerClass, 이동 BlendSpace, 공격 몽타주 구성은 이번 계층 변경에서 수정하지 않는다.
+
+무기/애니메이션 설정
+- 무기별 1인칭 Idle을 사용하려면 독립 팔 ABP와 FirstPersonWeaponPose 레이어를 추가한다.
+- Copy Pose 노드가 없는 독립 팔 ABP는 위 호환 연결의 영향을 받지 않는다.
+- 팔 전용 포즈에 맞는 FirstPersonMeshTransform을 무기 DA에서 설정한다.
+  장착 시 캐릭터 팔의 상대 Transform을 대체하며, 무기 해제 시 캐릭터 원래 값을 복원한다.
+- 총기 3D 조준은 파츠/무기의 AimSocket을 카메라 중앙에 정렬하도록 팔 전체를 보간한다.
+  조준 해제 시 해당 무기의 FirstPersonMeshTransform으로 복귀한다. 2D 스코프는 이동하지 않는다.
+- 무기 SocketOffset은 여전히 손 소켓 기준의 무기 자체 위치 보정이다.
+- 독립 팔 ABP를 지원하기 위해 공격 몽타주를 로컬 FirstPersonMesh에도 별도로 재생한다.
+  호환 Skeleton과 같은 Slot이 출력 포즈에 연결되어 있어야 한다.
+- 조준/활 차징 CameraRelativeTransform은 더 이상 head 소켓 기준이 아니라 캡슐 기준이다.
+- 이번 변경은 시각적 계층 변경이며 무기별 조준/차징 오프셋 재튜닝은 포함하지 않는다.
+- PIE에서 조준, 차징, 고개 회전, 원격 플레이어의 전신/무기 표시를 확인한다.

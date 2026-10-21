@@ -1,0 +1,75 @@
+공용 RadialMenu / 탄약 어댑터
+===========================
+
+구조
+- Combat/UI/Radial/FERadialMenuViewModel: 범용 항목, 선택, 확정, 아이콘 비동기 로딩.
+- FERadialMenuWidget: 항목 수에 맞춰 옵션 WBP를 만들고 마우스 위치를 섹터 인덱스로 변환.
+- FERadialMenuOptionWidget: Image_Sector 머티리얼 각도와 Border_Content 위치, 항목 내용 갱신.
+- FERadialMenuInput: 뷰포트 포커스 유지, 커서/캡처/LookInput 잠금의 균형 잡힌 복원.
+- FEAmmoSelectionViewModel / FEAmmoRadialWidget / FEAmmoOptionWidget은 탄약 전용 어댑터.
+  공통 Radial 계층은 인벤토리, 탄약, 장비, GAS 클래스를 참조하지 않습니다.
+
+사용할 디자이너 에셋
+- /Game/Combat/UI/WBP/WBP_FE_RadialMenu (부모 FE_RadialMenuWidget)
+- /Game/Combat/UI/WBP/WBP_FE_RadialOption (부모 FE_RadialMenuOptionWidget)
+- 기존 WBP_FE_AmmoRadial / WBP_FE_AmmoOption 연결은 그대로 유지합니다.
+- 공통 메뉴의 OptionWidgetClass에 공통 옵션 WBP 또는 해당 부모를 사용하는 커스텀 WBP를 설정합니다.
+  해당 소프트 클래스와 메뉴 클래스를 메뉴 사용 전에 비동기로 로드해야 합니다.
+- 생성 스크립트 Scripts/Combat/FECreateRadialMenuWidgets.py는 없는 공통 에셋만 만듭니다.
+  기존 디자이너 편집, 탄약 DA, 무기 DA, 플레이어 BP는 덮어쓰지 않습니다.
+
+BP 설정 순서
+1. Construct Object from Class로 FE_RadialMenuViewModel을 생성하여 소유 HUD/GA 등에 보관합니다.
+2. Make FE_RadialMenuItem 배열을 만듭니다.
+   Id: 고유한 비어 있지 않은 Name. 배열 순서 변경 시에도 이 ID로 선택을 유지합니다.
+   Label / SecondaryText / DetailText / MarkerText: 표시할 FText (로컬라이제이션 가능).
+   Icon: 선택적 텍스처 소프트 참조. 모델에서 비동기 로드합니다.
+   Enabled: 선택/실행 허용. False 항목도 섹터는 남지만 어둡게 표시합니다.
+   Marked: 현재 장착/선택 표시용 마커.
+   OnExecute: Create Event로 각 항목의 함수를 바인딩합니다. 시그니처는 void Function(Name ItemId).
+   또는 공통 ViewModel의 OnItemExecuted 이벤트 하나를 구독하고 ID로 라우팅합니다.
+   두 방식을 동시에 연결하면 둘 다 호출되므로 동일 작업을 중복 실행하지 마세요.
+3. SetMenuText로 제목/확정 힌트/취소 힌트/빈 목록 문구를 지정합니다.
+4. SetItems 결과를 확인합니다. 중복 ID나 None ID가 있으면 False이며 기존 목록을 보존합니다.
+5. BeginInteraction -> Create Widget(WBP_FE_RadialMenu) -> SetMenuModel -> AddToPlayerScreen.
+6. CaptureMenuInput을 호출합니다. 마우스는 커서용, 키보드 포커스는 게임 뷰포트에 남습니다.
+7. 여는 입력의 Released/Completed에서 ConfirmMenu를 호출합니다.
+   유효한 선택이면 해당 함수가 한 번 실행되고 메뉴를 닫고 입력을 복원합니다.
+   선택이 없으면 False이므로 CancelMenu로 닫습니다. Escape도 취소합니다.
+8. 재사용하는 모델은 다음 열기 전에 BeginInteraction, 최종 종료 시 Shutdown을 호출합니다.
+
+동작 / 네트워크
+- 메뉴 개수가 N이면 N개의 옵션을 생성하고 섹터 각도를 2PI/N으로 설정합니다.
+  같은 개수에서 내용만 바뀌면 기존 옵션 위젯을 재사용합니다. UMG 트리는 WBP가 소유합니다.
+- 항목 추가/제거는 SetItems로 갱신합니다. 0개도 허용하며 빈 목록 문구를 표시합니다.
+- 중앙 InnerRadius 안, OuterRadius 밖, 비활성 항목은 취소 영역입니다.
+- 마우스 호버는 선택만 바꿉니다. ConfirmSelection/ConfirmMenu는 상호작용마다 한 번만 실행합니다.
+- 함수 실행은 로컬 UI 명령입니다. 서버에 영향을 주는 행동은 GA/서버 요청에서 다시 검증합니다.
+  UI에서 수량/장착 가능 여부를 체크했다고 서버 검증을 생략하면 안 됩니다.
+- 탄약은 공통 ConfirmSelection -> 탄약 스택 ID 확정 -> UI/입력 정리 -> 기존 RequestReloadAmmo 흐름입니다.
+  서버의 수량/규격/무기 InstanceId 검증, R 짧게 누르기/홀드, 재장전 거래는 유지합니다.
+- BP의 CaptureMenuInput과 C++ FFE_RadialMenuInput을 같은 상호작용에서 중복 캡처하지 마세요.
+  탄약 GA는 기존 C++ 입력 lease를 유지하므로 CaptureMenuInput을 별도로 호출하지 않습니다.
+
+WBP 바인딩
+- 메뉴 필수: SizeBox_Wheel, CanvasPanel_Options, Text_Title, Text_Hint.
+  선택: Text_SelectedItem.
+- 옵션 필수: Image_Sector, Border_Content (CanvasPanelSlot 자식).
+  선택: Text_Label, Text_Secondary, Text_Detail, Text_Marker, Image_Icon.
+- Image_Sector는 기존 M_UI_AmmoSector UI 머티리얼을 공통 재사용합니다.
+  SectorStart/SectorAngle, InnerRadius/OuterRadius, Tint 파라미터가 필요합니다.
+- 각 항목의 커스텀 표시는 옵션 WBP의 OnItemUpdated에서 Item과 Selected를 받아 확장합니다.
+- 메뉴/항목은 IsFocusable=False. 포커스를 가져가는 Button/TextBox를 항목에 추가하지 마세요.
+
+테스트
+- FallenEra.Combat.RadialMenu.ModelAndActions: 1/2/3/5/8/12개 섹터, ID 선택 유지, 비활성,
+  잘못된 ID, 항목별 함수, 확정 중 재진입/중복 실행, 종료 정리.
+- FallenEra.Combat.RadialMenu.DesignerBindings: 디자이너 WBP의 0/1/3/8/2개 동적 항목과 각도/내용 바인딩.
+- FallenEra.Combat.Ammo 및 FallenEra.Integration.AmmoViewportHold로 기존 입력/탄약 흐름을 회귀 검증합니다.
+
+조준 취소 변경
+- GA 취소/재장전/경직/메뉴/무기 변경은 조준 게임플레이 상태를 즉시 해제하되 카메라는 Sight.BlendOutTime으로 복귀합니다.
+- 장비/파츠/시점 변경은 이전 메시 제어권만 해제하고 카메라 보간은 유지합니다.
+  기존 메시/파츠가 사라져도 카메라가 즉시 원 FOV로 튀거나 새 무기에 예전 팔 Transform을 덮어쓰지 않습니다.
+- 보간 중 새 무기로 재조준하면 현재 FOV에서 다시 시작하고 원래 비조준 FOV를 보존합니다.
+- EndAim(true)는 컴포넌트 EndPlay 등 즉시 정리가 필요한 경우에만 사용합니다.

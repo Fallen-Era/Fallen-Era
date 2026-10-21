@@ -56,6 +56,7 @@ void UFallenEraAbilitySystemComponent::AbilityInputTagReleased(const FGameplayTa
 			InputReleasedSpecHandles.AddUnique(AbilitySpec.Handle);
 			InputHeldSpecHandles.Remove(AbilitySpec.Handle);
 			PendingReactivationSpecHandles.Remove(AbilitySpec.Handle);
+			BlockedInputRetrySpecHandles.Remove(AbilitySpec.Handle);
 		}
 	}
 }
@@ -81,6 +82,11 @@ void UFallenEraAbilitySystemComponent::ProcessAbilityInput(float DeltaTime, bool
 			if (AbilityCDO && AbilityCDO->GetActivationPolicy() == EFallenEraAbilityActivationPolicy::WhileInputActive && !AbilitySpec->IsActive())
 			{
 				AbilitiesToActivate.AddUnique(AbilitySpec->Handle);
+			}
+			else if (AbilityCDO && AbilityCDO->GetActivationPolicy() == EFallenEraAbilityActivationPolicy::OnInputTriggered &&
+				!AbilitySpec->IsActive() && HasAnyMatchingGameplayTags(AbilityCDO->GetInputRetryBlockedTags()))
+			{
+				BlockedInputRetrySpecHandles.AddUnique(SpecHandle);
 			}
 		}
 	}
@@ -108,7 +114,7 @@ void UFallenEraAbilitySystemComponent::ProcessAbilityInput(float DeltaTime, bool
 
 	for (const FGameplayAbilitySpecHandle& AbilitySpecHandle : AbilitiesToActivate)
 	{
-		TryActivateAbility(AbilitySpecHandle);
+		if (TryActivateAbility(AbilitySpecHandle)) { BlockedInputRetrySpecHandles.Remove(AbilitySpecHandle); }
 	}
 
 	for (const FGameplayAbilitySpecHandle& SpecHandle : InputReleasedSpecHandles)
@@ -142,8 +148,26 @@ void UFallenEraAbilitySystemComponent::ProcessAbilityInput(float DeltaTime, bool
 
 		if (!AbilitySpec->IsActive())
 		{
-			TryActivateAbility(SpecHandle);
+			if (TryActivateAbility(SpecHandle)) { BlockedInputRetrySpecHandles.Remove(SpecHandle); }
 			PendingReactivationSpecHandles.RemoveAtSwap(PendingIndex);
+		}
+	}
+
+	const TArray<FGameplayAbilitySpecHandle> RetryHandles = BlockedInputRetrySpecHandles;
+	for (const FGameplayAbilitySpecHandle& Handle : RetryHandles)
+	{
+		const FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(Handle);
+		const UFallenEraGameplayAbility* Ability = Spec ? Cast<UFallenEraGameplayAbility>(Spec->Ability) : nullptr;
+		if (!Ability || !InputHeldSpecHandles.Contains(Handle) || Spec->IsActive())
+		{
+			BlockedInputRetrySpecHandles.Remove(Handle);
+			continue;
+		}
+		// Tag and ammo replication can arrive separately. Keep the held request until both are ready.
+		if (!HasAnyMatchingGameplayTags(Ability->GetInputRetryBlockedTags()) && !AbilitiesToActivate.Contains(Handle) &&
+			TryActivateAbility(Handle))
+		{
+			BlockedInputRetrySpecHandles.Remove(Handle);
 		}
 	}
 
@@ -165,6 +189,7 @@ void UFallenEraAbilitySystemComponent::ClearAbilityInput()
 	InputReleasedSpecHandles.Reset();
 	InputHeldSpecHandles.Reset();
 	PendingReactivationSpecHandles.Reset();
+	BlockedInputRetrySpecHandles.Reset();
 }
 
 void UFallenEraAbilitySystemComponent::TryActivateAbilitiesOnSpawn()

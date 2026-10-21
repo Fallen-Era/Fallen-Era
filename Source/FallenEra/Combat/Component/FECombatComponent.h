@@ -7,6 +7,7 @@
 #include "GameplayTagContainer.h"
 #include "Combat/Interface/FEDamageable.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
+#include "Combat/Reaction/FEProceduralHitReactionSettings.h"
 #include "FECombatComponent.generated.h"
 
 class UGameplayEffect;
@@ -16,7 +17,27 @@ class UNiagaraSystem;
 class UParticleSystem;
 class USoundBase;
 class AFE_CombatProjectile;
+class APlayerController;
 class UCameraComponent;
+class UFE_HitZoneMappingData;
+class UFE_HitZoneMultiplierData;
+class USkeletalMeshComponent;
+struct FStreamableHandle;
+
+/** Persistent presentation state: no per-frame alpha replication or multicast history. */
+USTRUCT()
+struct FFE_ChargePresentationState
+{
+	GENERATED_BODY()
+	UPROPERTY() float StartServerTime = -1.0f;
+	UPROPERTY() float FullChargeSeconds = 1.0f;
+	UPROPERTY() bool bBow = false;
+	UPROPERTY() TSoftClassPtr<AFE_CombatProjectile> ProjectileClass;
+	UPROPERTY() TSoftObjectPtr<UAnimMontage> Montage;
+	UPROPERTY() EFE_ChargedProjectileAttachmentTarget AttachmentTarget = EFE_ChargedProjectileAttachmentTarget::WeaponMesh;
+	UPROPERTY() FName SocketName;
+	UPROPERTY() FTransform Offset;
+};
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEBowChargeChanged, float);
 
@@ -28,7 +49,11 @@ class FALLENERA_API UFE_CombatComponent : public UActorComponent
 
 public:
 	UFE_CombatComponent();
+	virtual void BeginPlay() override;
+	/** Rebind after PlayerState ASC actor info becomes available. */
+	void RefreshAbilitySystem();
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* TickFunction) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Authority multicasts; a predicting client only plays its local presentation. */
@@ -36,16 +61,7 @@ public:
 	void PlayAttackMontageLocal(UAnimMontage* Montage);
 	void PlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 	void PlayWeaponAttackEffects(
-		USoundBase* AttackSound,
-		float SoundVolume,
-		float SoundPitch,
-		float NoiseLoudness,
-		float NoiseMaxRange,
-		UNiagaraSystem* MuzzleSystem,
-		UParticleSystem* MuzzleParticleSystem,
-		FName MuzzleSocketName,
-		FVector MuzzleScale,
-		bool bPredictedByOwner);
+		const UFE_WeaponItemData* WeaponData, const UFE_WeaponAttackData* AttackData, bool bPredictedByOwner);
 
 	/** Reports a server-authoritative hearing stimulus. Use for footsteps and non-weapon sounds. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Combat|AI")
@@ -55,7 +71,10 @@ public:
 		EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
 		FName AttachSocketName,
 		const FTransform& AttachOffset,
-		bool bPredictedByOwner);
+		bool bPredictedByOwner,
+		float FullChargeSeconds,
+		UAnimMontage* ChargeMontage,
+		bool bBow);
 	void StopChargeProjectilePresentation(bool bPredictedByOwner);
 
 	/** Local-only camera presentation that survives the charging ability ending. */
@@ -64,11 +83,20 @@ public:
 		float BlendInDuration,
 		float BlendOutDuration);
 	void StopChargeCameraPresentation();
+	/** Reattach a held projectile preview without restarting the charge or its montage. */
+	void RefreshPerspectivePresentation();
 
-	/** Local presentation state consumed by BowCrossHairWidget. */
+	/** Owning-client presentation state consumed by BowCrossHairWidget. */
 	void SetBowChargeAlpha(float NewChargeAlpha);
-	float GetBowChargeAlpha() const { return BowChargeAlpha; }
+	float GetBowChargeAlpha() const;
+	bool IsBowCharging() const;
 	FOnFEBowChargeChanged& OnBowChargeChanged() { return BowChargeChangedDelegate; }
+
+	/** Applies an animation-curve value to both equipped bow meshes without replication. */
+	void SetBowVisualAlpha(float NewVisualAlpha);
+
+	/** Smoothly adds owning-player aim recoil without automatic recovery or recoil-specific RPCs. */
+	void ApplyLocalWeaponRecoil(const FFE_RecoilSettings& RecoilSettings, float RecoilControl);
 
 	/** Cancels montage/preview presentation before equipment data is replaced. */
 	void StopWeaponActionPresentation(bool bPredictedByOwner);
@@ -77,12 +105,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat")
 	bool ApplyDamage(AActor* TargetActor);
 
-	/** Applies damage and carries the trace hit plus weapon attack data into the effect context.
-	 * If TargetActor has no ASC, only the replicated impact cue is emitted. */
+	/** Routes a direct or area hit through Damageable; context retains hit and attack data for cues. */
 	bool ApplyDamageFromHit(
 		AActor* TargetActor,
 		const FHitResult& HitResult,
-		const UFE_WeaponAttackData* AttackData);
+		const UFE_WeaponAttackData* AttackData,
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
+		float HitQualityMultiplier = 1.0f,
+		float AmmoDamageMultiplier = 1.0f);
 
 	/** Applies a custom damage GameplayEffect; damage is calculated from attributes by the effect. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat")
@@ -93,14 +123,50 @@ public:
 		AActor* TargetActor,
 		TSubclassOf<UGameplayEffect> DamageEffectClass,
 		const FHitResult& HitResult,
-		const UFE_WeaponAttackData* AttackData);
+		const UFE_WeaponAttackData* AttackData,
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
+		float HitQualityMultiplier = 1.0f,
+		float AmmoDamageMultiplier = 1.0f);
 
 	/** GAS receiver implementation used by Damageable actors that own an ASC. */
 	FFE_CombatDamageResult ApplyGameplayEffectDamage(const FFE_CombatDamageRequest& DamageRequest);
 
+	/** Skeleton-specific bone -> zone rules on the receiving character. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	TSoftObjectPtr<UFE_HitZoneMappingData> HitZoneMappingData;
+
+	/** Monster-specific zone -> multiplier rules; independent of skeleton mapping. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Damage")
+	TSoftObjectPtr<UFE_HitZoneMultiplierData> HitZoneMultiplierData;
+
+	/** Prepares changed rules asynchronously. Never called from the damage path. */
+	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat|Damage")
+	void RefreshHitZoneData();
+	bool IsHitZoneDataReady() const;
+	void GatherHitZoneAssetPaths(TArray<FSoftObjectPath>& OutPaths) const;
+	const UFE_HitZoneMappingData* GetLoadedHitZoneMappingData() const { return CachedHitZoneMappingData; }
+	const UFE_HitZoneMultiplierData* GetLoadedHitZoneMultiplierData() const { return CachedHitZoneMultiplierData; }
+
+	float ResolveHitRegionMultiplier(FName BoneName, EFE_DamageHitType HitType, FName& OutRegionName) const;
+	/** Capsule broad-phase hits carry no bone. Refine only that target's physics bodies on the same path. */
+	static FHitResult RefineDirectDamageHit(const FHitResult& Hit, float SweepRadius = 0.0f);
+
 	/** Applies knockback, stun state, and a hit-reaction montage to this component's owner. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat|Reaction")
 	void ApplyDamageReaction(const AActor* DamageSource, const FFE_AttackReactionData& ReactionData);
+
+	/** Ability-owned, authority-only protection. Ending one ability cannot clear another's protection. */
+	void SetAttackStaggerProtection(UObject* Source, EFE_StaggerStrength Strength);
+	void ClearAttackStaggerProtection(UObject* Source);
+
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Reaction")
+	EFE_StaggerStrength GetIgnoredStaggerStrength() const;
+
+	FFE_DamageReactionDecision ResolveDamageReaction(const FFE_AttackReactionData& ReactionData) const;
+
+	/** Cosmetic policy shared by server dispatch and client simulation. Does not cancel abilities. */
+	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Reaction")
+	static bool CanActorPlayPhysicalHitReaction(AActor* Actor);
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat|Reaction")
 	float CalculateReceivedKnockback(float IncomingKnockback) const;
@@ -111,6 +177,14 @@ public:
 		HitReactionMontages = NewMontages;
 	}
 
+	/** Called during construction when an external preset owns combat defaults. */
+	void DeferCombatConfiguration() { bCombatConfigurationPending = true; }
+	/** Replace component defaults with already-loaded preset assets, including explicit empty values. */
+	void SetPreloadedCombatConfiguration(
+		TSoftClassPtr<UGameplayEffect> NewDamageEffect, TSoftObjectPtr<UAnimMontage> NewDeathMontage,
+		TSoftObjectPtr<UFE_HitZoneMappingData> NewHitZoneMapping,
+		TSoftObjectPtr<UFE_HitZoneMultiplierData> NewHitZoneMultipliers);
+
 	/** Plays the configured death montage once when this actor's Health reaches zero. */
 	UFUNCTION(BlueprintCallable, Category="FallenEra|Combat|Death")
 	void HandleDeath();
@@ -118,6 +192,8 @@ public:
 	/** Returns the ASC exposed by the actor, including PlayerState-owned ASCs. */
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat")
 	static UAbilitySystemComponent* FindAbilitySystemComponent(AActor* Actor);
+	static bool CanActorAttack(AActor* Actor);
+	static bool IsActorAlive(AActor* Actor);
 
 protected:
 	/** Override this per character or weapon when a different damage GE is required. */
@@ -128,9 +204,16 @@ protected:
 	TArray<TObjectPtr<UAnimMontage>> HitReactionMontages;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Combat|Death")
-	TObjectPtr<UAnimMontage> DeathMontage;
+	TSoftObjectPtr<UAnimMontage> DeathMontage;
 
 private:
+	void StopLocalWeaponRecoil();
+	TWeakObjectPtr<APlayerController> RecoilController;
+	FVector2D PendingRecoilKick = FVector2D::ZeroVector;
+	FVector2D RecoilVelocity = FVector2D::ZeroVector;
+	FVector2D BufferedRecoilKick = FVector2D::ZeroVector;
+	float RecoilSmoothingTime = 0.04f;
+	static constexpr float LocalPresentationUpdateInterval = 1.0f / 60.0f;
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayAttackMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 
@@ -138,29 +221,34 @@ private:
 	void MulticastPlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner);
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayWeaponAttackEffects(
-		USoundBase* AttackSound,
-		float SoundVolume,
-		float SoundPitch,
-		UNiagaraSystem* MuzzleSystem,
-		UParticleSystem* MuzzleParticleSystem,
-		FName MuzzleSocketName,
-		FVector MuzzleScale,
-		bool bPredictedByOwner);
+	void MulticastPlayWeaponAttackEffects(UFE_WeaponItemData* WeaponData, int32 AttackIndex, bool bPredictedByOwner);
+	void PlayWeaponDataEffectsLocal(const UFE_WeaponItemData* WeaponData, int32 AttackIndex);
 
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastStartChargeProjectilePresentation(
-		TSubclassOf<AFE_CombatProjectile> ProjectileClass,
-		EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
-		FName AttachSocketName,
-		FTransform AttachOffset,
-		bool bPredictedByOwner);
-
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastStopChargeProjectilePresentation(bool bPredictedByOwner);
-
-	UFUNCTION(NetMulticast, Reliable)
+	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastStopWeaponActionPresentation(bool bPredictedByOwner);
+
+	UPROPERTY(ReplicatedUsing=OnRep_ChargeState)
+	FFE_ChargePresentationState ChargeState;
+	FFE_ChargePresentationState LocalChargeState;
+	UFUNCTION() void OnRep_ChargeState(const FFE_ChargePresentationState& PreviousState);
+	void RestoreChargePresentation();
+	void HandleWeaponChanged(const UFE_WeaponItemData* WeaponData);
+	void HandleDeathTagChanged(FGameplayTag Tag, int32 NewCount);
+	void CancelAttackActions();
+	void FinishLoadingCombatAssets();
+	float GetPresentationServerTime() const;
+	TWeakObjectPtr<UAbilitySystemComponent> BoundAbilitySystem;
+	FDelegateHandle DeathTagHandle;
+	FDelegateHandle WeaponChangedHandle;
+	TSharedPtr<FStreamableHandle> CombatAssetLoadHandle;
+	TSharedPtr<FStreamableHandle> ChargeAssetLoadHandle;
+	TSharedPtr<FStreamableHandle> HitZoneLoadHandle;
+	void FinishLoadingHitZoneData();
+	void PrepareHitZoneHierarchy();
+	TWeakObjectPtr<USkeletalMeshComponent> HitZoneMeshComponent;
+	UPROPERTY(Transient) TObjectPtr<UFE_HitZoneMappingData> CachedHitZoneMappingData;
+	UPROPERTY(Transient) TObjectPtr<UFE_HitZoneMultiplierData> CachedHitZoneMultiplierData;
+	UPROPERTY(Transient) TSubclassOf<UGameplayEffect> CachedDamageEffectClass;
 
 	void StartChargeProjectilePresentationLocal(
 		TSubclassOf<AFE_CombatProjectile> ProjectileClass,
@@ -179,16 +267,18 @@ private:
 		UParticleSystem* MuzzleParticleSystem,
 		FName MuzzleSocketName,
 		const FVector& MuzzleScale);
-	void ApplyBowChargeAlphaLocal();
-
-	UFUNCTION()
-	void OnRep_BowChargeAlpha();
-
 	bool ApplyDamageInternal(
 		AActor* TargetActor,
 		TSubclassOf<UGameplayEffect> EffectClass,
 		const FHitResult* HitResult = nullptr,
-		const UFE_WeaponAttackData* AttackData = nullptr);
+		const UFE_WeaponAttackData* AttackData = nullptr,
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct,
+		float HitQualityMultiplier = 1.0f,
+		float AmmoDamageMultiplier = 1.0f);
+	/** Debug-only, server confirmed message sent to the attacking player's owning client. */
+	UFUNCTION(Client, Unreliable)
+	void ClientShowHitDamageDebug(const FString& Message);
+	void ShowHitDamageDebug(const FFE_CombatDamageRequest& Request, const FFE_CombatDamageResult& Result);
 	void ExecuteImpactCue(
 		UAbilitySystemComponent* SourceAbilitySystem,
 		AActor* SourceActor,
@@ -196,6 +286,8 @@ private:
 		const FHitResult& HitResult,
 		const UFE_WeaponAttackData* AttackData) const;
 	void ClearStunState();
+	void ApplyDamageReactionInternal(const AActor* DamageSource, const FFE_AttackReactionData& ReactionData,
+		const FHitResult* HitResult);
 	void PlayHitReactionMontage(UAnimMontage* HitMontage);
 	void PlayDeathMontage(UAnimMontage* Montage);
 	void ApplyDeathCollisionState();
@@ -204,12 +296,13 @@ private:
 	void OnRep_DeathCollisionDisabled();
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayHitReaction(UAnimMontage* HitMontage);
+	void MulticastPlayDamageReaction(UAnimMontage* HitMontage, const FFE_ProceduralHitReactionEvent& Event);
 
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastPlayDeathMontage(UAnimMontage* Montage);
+	UPROPERTY(Replicated)
+	float DeathStartServerTime = 0.0f;
 
 	FTimerHandle StunTimerHandle;
+	TMap<TWeakObjectPtr<UObject>, EFE_StaggerStrength> AttackStaggerProtections;
 
 	UPROPERTY(Transient)
 	TObjectPtr<AFE_CombatProjectile> ChargeProjectilePreview;
@@ -220,7 +313,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> ActiveWeaponMeshMontage;
 
-	UPROPERTY(ReplicatedUsing=OnRep_BowChargeAlpha)
+	UPROPERTY(Transient)
 	float BowChargeAlpha = 0.0f;
 	FOnFEBowChargeChanged BowChargeChangedDelegate;
 
@@ -238,6 +331,7 @@ private:
 
 	bool bReactionStunActive = false;
 	bool bDeathMontagePlayed = false;
+	bool bCombatConfigurationPending = false;
 
 	UPROPERTY(ReplicatedUsing=OnRep_DeathCollisionDisabled)
 	bool bDeathCollisionDisabled = false;

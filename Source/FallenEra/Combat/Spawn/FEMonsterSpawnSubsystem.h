@@ -120,6 +120,11 @@ private:
 
 	const FFEMonsterSpawnEntry* SelectWeightedEntry(const TArray<FFEMonsterSpawnEntry>& Entries) const;
 	void RequestEnemyClassLoad(const TSoftClassPtr<AFE_EnemyCharacter>& EnemyClass);
+	void PrepareEnemyAssets(FSoftObjectPath ClassPath, int32 Stage);
+	void RebuildCellPopulation();
+	TMap<FIntPoint, int32> CellPopulation;
+	TSet<FSoftObjectPath> ReadyEnemyClasses;
+	TMap<FSoftObjectPath, TArray<TSharedPtr<FStreamableHandle>>> EnemyDependencyLoadHandles;
 	float GetNearestPlayerDistanceSquared(
 		const FVector& Location,
 		const TArray<TWeakObjectPtr<APawn>>& PlayerPawns) const;

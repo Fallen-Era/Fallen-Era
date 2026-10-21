@@ -10,9 +10,10 @@
 #include "Combat/Component/FEEquipmentComponent.h"
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/GameplayEffect/FEDamageGameplayEffect.h"
+#include "Combat/GameplayEffect/FEDamageExecutionCalculation.h"
 #include "Combat/Interface/FEDamageable.h"
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFE_ArmorEquipmentTest, "FallenEra.HT.Armor.EquipmentAndDamage",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFE_ArmorEquipmentTest, "FallenEra.Combat.Armor.EquipmentAndDamage",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FFE_ArmorEquipmentTest::RunTest(const FString& Parameters)
@@ -59,21 +60,25 @@ bool FFE_ArmorEquipmentTest::RunTest(const FString& Parameters)
 		return Combat->ApplyGameplayEffectDamage(Request).bDamageApplied;
 	};
 
-	const FGameplayTag Head = FGameplayTag::RequestGameplayTag(TEXT("HT.Equipment.Slot.Head"));
-	const FGameplayTag Body = FGameplayTag::RequestGameplayTag(TEXT("HT.Equipment.Slot.Body"));
+	const FGameplayTag Head = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Head"));
+	const FGameplayTag Body = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Body"));
 	UFE_ArmorItemData* Helmet = NewObject<UFE_ArmorItemData>();
-	Helmet->EquipmentSlotTag = Head;
-	Helmet->ArmorStat.Defense = 3.0f;
-	Helmet->ArmorStat.KnockbackResistance = 100.0f;
+	Helmet->Template.EquipmentSlotTag = Head;
+	Helmet->Instance.ItemData.Defense = 3.0f;
+	Helmet->Instance.ItemData.KnockbackResistance = 100.0f;
 	UFE_ArmorItemData* Vest = NewObject<UFE_ArmorItemData>();
-	Vest->EquipmentSlotTag = Body;
-	Vest->ArmorStat.Defense = 4.0f;
-	Vest->ArmorStat.KnockbackResistance = 200.0f;
+	Vest->Template.EquipmentSlotTag = Body;
+	Vest->Instance.ItemData.Defense = 4.0f;
+	Vest->Instance.ItemData.KnockbackResistance = 200.0f;
 
 	TestTrue(TEXT("Equip helmet"), Equipment->EquipArmor(Helmet));
 	TestEqual(TEXT("Base + helmet defense"), Stats->GetDefensePower(), 5.0f);
 	TestTrue(TEXT("Accepted instant damage"), ApplyGasDamageToCharacter());
-	TestEqual(TEXT("10 attack - 5 defense = 5 damage"), Stats->GetHealth(), 95.0f);
+	const UFE_DamageExecutionCalculation* Calculation = GetDefault<UFE_DamageExecutionCalculation>();
+	const float HealthAfterFirstHit = Stats->GetHealth();
+	TestTrue(TEXT("Armor reduces randomized attack power before applying damage"),
+		HealthAfterFirstHit >= 100.0f - Calculation->CalculateDamage(10.0f, 5.0f, 1.0f, 1.0f) - KINDA_SMALL_NUMBER &&
+		HealthAfterFirstHit <= 100.0f - Calculation->CalculateDamage(10.0f, 5.0f, 1.0f, -1.0f) + KINDA_SMALL_NUMBER);
 	TestTrue(TEXT("Equip independent second slot"), Equipment->EquipArmor(Vest));
 	TestEqual(TEXT("Two armor slots add"), Stats->GetDefensePower(), 9.0f);
 	TestEqual(TEXT("Knockback reduced by both slots"), Combat->CalculateReceivedKnockback(600.0f), 300.0f);
@@ -91,7 +96,7 @@ bool FFE_ArmorEquipmentTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Resistance resumes after immunity ends"), Combat->CalculateReceivedKnockback(600.0f), 400.0f);
 	AttackASC->SetNumericAttributeBase(UFallenEraAttributeSet::GetAttackPowerAttribute(), 1.0f);
 	TestTrue(TEXT("Zero damage is still an accepted hit"), ApplyGasDamageToCharacter());
-	TestEqual(TEXT("Defense blocks all health damage"), Stats->GetHealth(), 95.0f);
+	TestEqual(TEXT("Defense blocks all health damage"), Stats->GetHealth(), HealthAfterFirstHit);
 	TestEqual(TEXT("Zero damage does not imply knockback immunity"), Combat->CalculateReceivedKnockback(600.0f), 400.0f);
 	Equipment->UnequipArmor(Body);
 	TestEqual(TEXT("Original defense restored"), Stats->GetDefensePower(), 2.0f);

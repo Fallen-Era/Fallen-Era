@@ -6,6 +6,18 @@
 
 class AFE_CombatProjectile;
 
+USTRUCT()
+struct FFE_ProjectilePoolBucket
+{
+	GENERATED_BODY()
+
+	UPROPERTY(Transient)
+	TArray<TWeakObjectPtr<AFE_CombatProjectile>> AuthorityProjectiles;
+
+	UPROPERTY(Transient)
+	TArray<TWeakObjectPtr<AFE_CombatProjectile>> LocalPreviews;
+};
+
 /** Bounded per-world pool for authoritative projectiles and local charge previews. */
 UCLASS()
 class FALLENERA_API UFE_ProjectilePoolSubsystem : public UWorldSubsystem
@@ -24,11 +36,6 @@ public:
 	bool ReleaseProjectile(AFE_CombatProjectile* Projectile, bool bLocalPreview);
 
 private:
-	struct FProjectilePoolBucket
-	{
-		TArray<TWeakObjectPtr<AFE_CombatProjectile>> AuthorityProjectiles;
-		TArray<TWeakObjectPtr<AFE_CombatProjectile>> LocalPreviews;
-	};
-
-	TMap<TSubclassOf<AFE_CombatProjectile>, FProjectilePoolBucket> Pools;
+	UPROPERTY(Transient)
+	TMap<TSubclassOf<AFE_CombatProjectile>, FFE_ProjectilePoolBucket> Pools;
 };

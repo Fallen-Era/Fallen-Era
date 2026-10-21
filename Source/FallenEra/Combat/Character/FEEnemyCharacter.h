@@ -11,16 +11,18 @@
 #include "FEEnemyCharacter.generated.h"
 
 class UFE_CombatComponent;
+class UFE_ProceduralHitReactionComponent;
+class UFE_KnockdownComponent;
 class UFE_EquipmentComponent;
 class UFE_EnemyMeleeAttackAbility;
 class UFE_AISettingsDataAsset;
-class UFallenEraAbilitySet;
 class UFallenEraAbilitySystemComponent;
 class UFallenEraAttributeSet;
 class UAnimMontage;
 class UBlendSpace;
 class UGameplayEffect;
 class UNavigationInvokerComponent;
+struct FStreamableHandle;
 
 /** Reusable ACharacter base for enemies with their own GAS owner and combat component. */
 UCLASS(Abstract)
@@ -38,6 +40,9 @@ public:
 	virtual FGenericTeamId GetGenericTeamId() const override;
 	virtual TArray<FFE_ConditionApplicationChance> GetConditionApplicationChances_Implementation() const override;
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	/** Spawn service preloads selectable presets, then their soft gameplay dependencies. */
+	bool GatherAISettingsAssetPaths(TArray<FSoftObjectPath>& OutPaths, bool bGameplayDependencies) const;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Combat")
@@ -63,6 +68,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|AI|Combat")
 	bool TryStartAttack(AActor* TargetActor);
+
+	/** Pawn targets keep center-based reach; world targets use their query-blocking collision surface. */
+	bool IsTargetWithinAttackRange(const AActor* TargetActor) const;
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|AI|Combat")
 	float GetAttackRange() const { return CachedAISettings.AttackRange; }
@@ -118,18 +126,17 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat")
 	TObjectPtr<UFE_CombatComponent> CombatComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Reaction")
+	TObjectPtr<UFE_ProceduralHitReactionComponent> PhysicalHitReactionComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Combat|Reaction")
+	TObjectPtr<UFE_KnockdownComponent> KnockdownComponent;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|Equipment")
 	TObjectPtr<UFE_EquipmentComponent> EquipmentComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="FallenEra|AI|Navigation")
 	TObjectPtr<UNavigationInvokerComponent> NavigationInvokerComponent;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Abilities")
-	TArray<TObjectPtr<UFallenEraAbilitySet>> DefaultAbilitySets;
-
-	/** Server-only, per-enemy attack ability. Granted automatically when it is not already in an ability set. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="FallenEra|Abilities")
-	TSubclassOf<UFE_EnemyMeleeAttackAbility> AttackAbilityClass;
 
 	/** Available AI presets. All runtime systems read the selected preset's cached copy. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="FallenEra|AI|Settings")
@@ -159,6 +166,10 @@ protected:
 private:
 	void SelectAISettingsIndexAtBeginPlay();
 	void CacheSelectedAISettings();
+	void CacheLoadedAISettings();
+	void FinishAISettingsInitialization();
+	TSharedPtr<FStreamableHandle> AISettingsLoadHandle;
+	TSharedPtr<FStreamableHandle> AISettingsEffectLoadHandle;
 	void InitializeEnemyAbilitySystem();
 
 	UFUNCTION()
@@ -170,7 +181,10 @@ private:
 	void ApplyManagedVisualCullDistance();
 
 	TWeakObjectPtr<AActor> PendingAttackTarget;
+	UPROPERTY(Transient)
 	TSubclassOf<UGameplayEffect> CachedAttackDamageEffect;
+	UPROPERTY(Transient)
+	TSubclassOf<UFE_EnemyMeleeAttackAbility> CachedAttackAbilityClass;
 	bool bManagedBySpawnSubsystem = false;
 	bool bManagedSimulationActive = true;
 };

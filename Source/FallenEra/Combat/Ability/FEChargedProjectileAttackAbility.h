@@ -6,6 +6,7 @@
 
 class UAbilityTask_WaitInputRelease;
 class UFE_ChargedProjectileAttackData;
+class UFE_WeaponAimingComponent;
 
 /** Hold-to-charge projectile flow used by bows and throwable weapons. */
 UCLASS(Abstract, Blueprintable)
@@ -50,6 +51,7 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UFE_ChargedProjectileAttackData> CachedChargedAttackData;
+	TWeakObjectPtr<UFE_WeaponAimingComponent> ChargeSwayComponent;
 
 	float ChargeStartTime = 0.0f;
 	float ReleasedChargeAlpha = 0.0f;

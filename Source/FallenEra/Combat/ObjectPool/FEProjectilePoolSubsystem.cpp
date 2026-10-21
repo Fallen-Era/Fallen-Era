@@ -17,7 +17,7 @@ AFE_CombatProjectile* UFE_ProjectilePoolSubsystem::AcquireProjectile(
 		return nullptr;
 	}
 
-	FProjectilePoolBucket& Bucket = Pools.FindOrAdd(ProjectileClass);
+	FFE_ProjectilePoolBucket& Bucket = Pools.FindOrAdd(ProjectileClass);
 	TArray<TWeakObjectPtr<AFE_CombatProjectile>>& InactiveProjectiles = bLocalPreview
 		? Bucket.LocalPreviews
 		: Bucket.AuthorityProjectiles;
@@ -60,7 +60,7 @@ bool UFE_ProjectilePoolSubsystem::ReleaseProjectile(AFE_CombatProjectile* Projec
 		return false;
 	}
 
-	FProjectilePoolBucket& Bucket = Pools.FindOrAdd(Projectile->GetClass());
+	FFE_ProjectilePoolBucket& Bucket = Pools.FindOrAdd(Projectile->GetClass());
 	TArray<TWeakObjectPtr<AFE_CombatProjectile>>& InactiveProjectiles = bLocalPreview
 		? Bucket.LocalPreviews
 		: Bucket.AuthorityProjectiles;

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AIController.h"
 #include "Perception/AIPerceptionTypes.h"
+#include "Combat/Interface/FEEncounterTarget.h"
 #include "FEEnemyAIController.generated.h"
 
 class UAIPerceptionComponent;
@@ -20,11 +21,12 @@ struct FFE_AITargetMemory
 	float LastSeenTime = -1.0f;
 	float LastDamageTime = -1.0f;
 	float AccumulatedDamage = 0.0f;
+	bool bReceivedDamageFromActor = false;
 };
 
 /** Event-driven sight with a staggered low-frequency decision loop for open-world enemies. */
 UCLASS()
-class FALLENERA_API AFE_EnemyAIController : public AAIController
+class FALLENERA_API AFE_EnemyAIController : public AAIController, public IFE_EncounterTarget
 {
 	GENERATED_BODY()
 
@@ -39,6 +41,7 @@ public:
 
 	/** Encounter spawns chase this target immediately, before perception has produced a stimulus. */
 	bool SetEncounterCombatTarget(AActor* TargetActor);
+	virtual bool SetEncounterTarget(AActor* TargetActor) override { return SetEncounterCombatTarget(TargetActor); }
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|AI|Target")
 	AActor* GetCurrentCombatTarget() const { return CurrentTarget.Get(); }
@@ -56,7 +59,9 @@ private:
 	void UpdatePatrol(AFE_EnemyCharacter& EnemyCharacter);
 	void UpdateInvestigation(AFE_EnemyCharacter& EnemyCharacter);
 	void UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AActor& TargetActor);
-	void EvaluateBestCombatTarget(bool bIgnoreMinimumLockTime = false);
+	void ResetCombatNavigation();
+	bool TryAttackBlockingObstacle(AFE_EnemyCharacter& EnemyCharacter, const FVector& PursuitLocation);
+	void EvaluateBestCombatTarget();
 	void SelectCombatTarget(AActor* TargetActor);
 	void ClearTarget();
 	void SetInvestigationLocation(const FVector& Location);
@@ -67,8 +72,11 @@ private:
 	void SetDecisionTimerRate(float Interval, float InitialDelay = -1.0f);
 	void ScheduleNextPatrolRequest();
 	void ApplyPerceptionSettings();
+	void SetCombatSightMode(bool bEnabled);
 	bool IsPlayerTarget(const AActor* Actor) const;
 	bool HasActiveSightStimulus(const AActor& Actor) const;
+	bool IsPersistentDamageTarget(const AActor& Actor) const;
+	bool IsWithinTargetEvaluationRadius(const AActor& Actor) const;
 	FFE_AITargetMemory& FindOrAddTargetMemory(AActor& Actor);
 	const FFE_AITargetMemory* FindTargetMemory(const AActor& Actor) const;
 	void RecordSightStimulus(AActor& Actor, const FAIStimulus& Stimulus);
@@ -100,6 +108,10 @@ private:
 
 	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Perception|Sight", meta=(ClampMin="0.0", ClampMax="180.0"))
 	float PeripheralVisionAngleDegrees = 70.0f;
+
+	/** Unreal stores the half-angle; 180 degrees gives full 360-degree combat awareness. */
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Perception|Sight", meta=(ClampMin="0.0", ClampMax="180.0"))
+	float CombatPeripheralVisionAngleDegrees = 180.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Perception|Sight", meta=(ClampMin="0.0"))
 	float SightMaxAge = 2.0f;
@@ -139,7 +151,29 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Perception|Hearing", meta=(ClampMin="0.0"))
 	float InvestigationAcceptanceRadius = 100.0f;
 
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Obstacles")
+	bool bAttackBlockingObstacles = true;
+
+	/** Only probe after a partial/blocked move finishes, or this long without meaningful movement. */
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Obstacles", meta=(ClampMin="0.1", Units="s"))
+	float BlockedMovementDelay = 2.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Obstacles", meta=(ClampMin="1.0", Units="cm"))
+	float CombatProgressDistance = 20.0f;
+
+	/** Bounds both obstruction probes and failed/finished pursuit move retries; no extra tick or timer. */
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Obstacles", meta=(ClampMin="0.1", Units="s"))
+	float ObstacleRetryInterval = 0.5f;
+
 	TWeakObjectPtr<AActor> CurrentTarget;
+	TWeakObjectPtr<AActor> BlockingObstacle;
+	FVector BlockingImpactPoint = FVector::ZeroVector;
+	FVector LastCombatProgressLocation = FVector::ZeroVector;
+	float LastCombatProgressTime = -1.0f;
+	float NextObstacleProbeTime = 0.0f;
+	float NextCombatMoveRequestTime = 0.0f;
+	FAIRequestID CombatMoveRequestId = FAIRequestID::InvalidRequest;
+	bool bCombatMoveBlocked = false;
 	TArray<FFE_AITargetMemory> TargetMemories;
 	FVector HomeLocation = FVector::ZeroVector;
 	FVector InvestigationLocation = FVector::ZeroVector;
@@ -152,5 +186,8 @@ private:
 	bool bUsesManagedSimulation = false;
 	bool bCurrentTargetVisible = false;
 	bool bEncounterTargetPendingSight = false;
+	/** Encounter-spawned enemies keep pursuing their current valid target without sight timeout. */
+	bool bEncounterPursuitActive = false;
 	bool bHasInvestigationLocation = false;
+	bool bCombatSightMode = false;
 };

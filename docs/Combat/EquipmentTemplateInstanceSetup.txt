@@ -1,0 +1,53 @@
+무기·방어구 Template / Instance 설정 및 외부 아이템 연결
+=========================================================
+
+1. DA 설정
+- 기존 무기/방어구 DA 클래스는 유지하며 두 구조체 변수로 설정을 묶었습니다.
+- Template: 종류별 고정 정보. 태그, 장착 슬롯/소켓, 메쉬, 애니메이션, 공격 구성, 연출, 기본 조준 등.
+  WeaponStat / ArmorStat은 향후 아이템 생성기의 기본 스탯입니다.
+- Instance.ItemData: 테스트 아이템 자체의 실제 스탯. 현재 장착 GE는 여기서 읽습니다.
+  무기: Offense / Accuracy / RecoilControl. 방어구: Defense / KnockbackResistance.
+  Template 기본 스탯만 수정해도 Instance 테스트 값은 자동 변경되지 않습니다.
+- Instance.InstanceId는 비워두면 장착 복사본에 GUID가 생성됩니다.
+- Instance.bOverrideAttachments=false: Template.DefaultAttachments 사용.
+  true: Instance.Attachments 사용. 빈 배열을 넣으면 실제 장착 파츠 없음이며 DefaultSight가 사용됩니다.
+- AttackActions의 Instanced 옵션은 DA 내부 편집용 UObject 소유 관계이며 인벤토리 인스턴스가 아닙니다.
+- 기존 공격 DataAsset 타입과 DamageEffect/Ability SourceObject 역할은 유지됩니다.
+
+2. 장착 시 동작
+- DA.Instance를 EquipmentComponent가 복사하여 보관합니다. 공유 DA를 런타임에 수정하지 않습니다.
+- 무기 Instance 스탯 -> 장착 GE -> AttackPower / Accuracy / RecoilControl.
+- 방어구 Instance 스탯 -> 슬롯별 장착 GE -> DefensePower / KnockbackResistance.
+- 파츠 스탯 및 캐릭터 이동/특성/버프/디버프 GE는 별도로 합산합니다.
+  Instance.ItemData에 파츠 또는 캐릭터 보정을 미리 넣으면 중복 적용되므로 넣지 마세요.
+- RefreshEquipment는 같은 무기의 Instance 값을 보존합니다. 테스트 무기를 해제/다른 종류로 교체하면 DA seed를 새로 복사합니다.
+- 단, Instance.LoadedAmmo는 테스트 ItemTag별로 별도 보존하여 다시 장착해도 탄약이 초기화되지 않습니다.
+  탄약 종류/탄창/재장전과 예비 탄약 설정은 WeaponAmmoSetup.txt를 참고하세요.
+- 현재 테스트 스왑은 ItemTag 목록 방식입니다. 동일 종류 여러 개의 인벤토리 선택/저장 시스템은 구현하지 않았습니다.
+- Instance 복사본/교체 API는 서버 기준입니다. 스탯은 기존 GAS Attribute로, 파츠 외형은 기존 Loadout으로 복제합니다.
+  인벤토리 UI에 원본 Instance 전체를 복제하는 것은 이후 인벤토리 시스템에서 담당해야 합니다.
+
+3. 다른 사람이 만든 생성 아이템 정보 연결
+- FFE_WeaponInstanceData / FFE_ArmorInstanceData의 ItemData가 외부 구조체를 넣을 지점입니다.
+- ItemData 타입 변경 시 ResolveStats()에서 외부 값을 FFE_WeaponStat / FFE_ArmorStat으로 변환합니다.
+  해당 변환과 IsValid를 유지하면 Ability/데미지 계산에 외부 인벤토리 필드 이름을 퍼뜨릴 필요가 없습니다.
+  구조체 타입만 바꿔도 서로 다른 타입이 자동 변환되는 것은 아닙니다.
+- 무기가 장착/로드 완료된 후 서버에서 SetWeaponInstanceData(NewInstance)를 호출하면 실제 생성된 값을 적용합니다.
+- 방어구는 서버에서 EquipArmorInstance(ArmorDA, NewInstance)를 호출합니다.
+- 기존 EquipArmor(ArmorDA)는 DA.Instance를 사용하는 테스트 편의 함수입니다.
+- GetWeaponInstanceData / GetArmorInstanceData는 서버의 장착 복사본을 확인하는 함수입니다.
+- 현재 장착 무기의 스탯 교체가 아니라 다른 종류의 무기를 선택하려면 기존 장착/비동기 로드를 먼저 완료해야 합니다.
+- AuthorityOnly 표시는 클라이언트가 임의 값을 전송하는 RPC가 아닙니다. 서버의 신뢰된 아이템 생성 코드에서 호출하세요.
+
+4. 기존 에셋 이전
+- 기존 루트 필드는 PostLoad에서 Template / Instance로 한 번 이전합니다.
+- 이전용 private 필드는 에디터에 표시되지 않으며 게임 로직의 fallback 경로로 사용하지 않습니다.
+- DA를 열어 Template / Instance 값과 AttackActions를 확인한 후 저장하면 새 형식과 버전으로 저장됩니다.
+  이번 변경에서는 프로젝트 에셋을 일괄 저장하지 않았습니다.
+- Blueprint에서 기존 DA의 직접 변수 Get 노드를 사용했다면 Template 또는 Instance.ItemData 접근으로 교체하세요.
+- 모든 이전 에셋의 재저장 완료가 확인된 후에만 load-only 필드를 제거할 수 있습니다.
+
+5. 검증
+- FallenEra.Combat.Items.InstanceIsolation: 공유 DA의 캐릭터별 스탯 분리, 외부 값 교체, GE 중복 방지, 방어구 해제.
+- FallenEra.Combat.Items.TemplateMigration: 이전 필드 이관 및 실제 무기/방어구 DA 로딩.
+- 기존 FallenEra.Combat 테스트와 함께 실행합니다. PIE의 실제 인벤토리 연동은 아직 범위 밖입니다.

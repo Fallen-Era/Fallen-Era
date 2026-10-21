@@ -2,7 +2,6 @@
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "GameplayEffectExtension.h"
-#include "Combat/Component/FECombatComponent.h"
 #include "Net/UnrealNetwork.h"
 
 UFallenEraAttributeSet::UFallenEraAttributeSet()
@@ -10,9 +9,12 @@ UFallenEraAttributeSet::UFallenEraAttributeSet()
 	, MaxHealth(100.0f)
 	, Stamina(100.0f)
 	, MaxStamina(100.0f)
+	, StaminaRecoveryRate(10.0f)
 	, AttackPower(0.0f)
 	, DefensePower(0.0f)
 	, KnockbackResistance(0.0f)
+	, Accuracy(1.0f)
+	, RecoilControl(1.0f)
 	, Healing(0.0f)
 {
 }
@@ -25,9 +27,14 @@ void UFallenEraAttributeSet::PreAttributeChange(const FGameplayAttribute& Attrib
 	{
 		NewValue = FMath::Max(NewValue, 1.0f);
 	}
-	else if (Attribute == GetAttackPowerAttribute() || Attribute == GetDefensePowerAttribute() || Attribute == GetKnockbackResistanceAttribute())
+	else if (Attribute == GetAttackPowerAttribute() || Attribute == GetDefensePowerAttribute() ||
+		Attribute == GetKnockbackResistanceAttribute() || Attribute == GetStaminaRecoveryRateAttribute())
 	{
 		NewValue = FMath::Max(NewValue, 0.0f);
+	}
+	else if (Attribute == GetAccuracyAttribute() || Attribute == GetRecoilControlAttribute())
+	{
+		NewValue = FMath::Clamp(NewValue, 0.0f, 1.0f);
 	}
 	else if (Attribute == GetHealthAttribute())
 	{
@@ -82,10 +89,22 @@ void UFallenEraAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModC
 	{
 		SetDefensePower(FMath::Max(GetDefensePower(), 0.0f));
 	}
+	else if (Data.EvaluatedData.Attribute == GetAccuracyAttribute())
+	{
+		SetAccuracy(FMath::Clamp(GetAccuracy(), 0.0f, 1.0f));
+	}
+	else if (Data.EvaluatedData.Attribute == GetRecoilControlAttribute())
+	{
+		SetRecoilControl(FMath::Clamp(GetRecoilControl(), 0.0f, 1.0f));
+	}
 	
 	else if (Data.EvaluatedData.Attribute == GetStaminaAttribute() || Data.EvaluatedData.Attribute == GetMaxStaminaAttribute())
 	{
 		SetStamina(FMath::Clamp(GetStamina(), 0.0f, GetMaxStamina()));
+	}
+	else if (Data.EvaluatedData.Attribute == GetStaminaRecoveryRateAttribute())
+	{
+		SetStaminaRecoveryRate(FMath::Max(GetStaminaRecoveryRate(), 0.0f));
 	}
 
 	UpdateDeadStateTag();
@@ -97,42 +116,31 @@ void UFallenEraAttributeSet::UpdateDeadStateTag()
 	AActor* OwnerActor = AbilitySystemComponent ? AbilitySystemComponent->GetOwnerActor() : nullptr;
 	if (AbilitySystemComponent && OwnerActor && OwnerActor->HasAuthority())
 	{
-		const bool bWasDead = AbilitySystemComponent->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead);
 		const bool bIsDead = GetHealth() <= 0.0f;
 		AbilitySystemComponent->SetLooseGameplayTagCount(
 			FallenEraGameplayTags::State_Dead,
 			bIsDead ? 1 : 0,
 			EGameplayTagReplicationState::TagAndCountToAll);
 
-		if (!bWasDead && bIsDead)
-		{
-			AActor* AvatarActor = AbilitySystemComponent->GetAvatarActor();
-			if (!AvatarActor)
-			{
-				AvatarActor = OwnerActor;
-			}
-
-			if (UFE_CombatComponent* CombatComponent = AvatarActor
-				? AvatarActor->FindComponentByClass<UFE_CombatComponent>()
-				: nullptr)
-			{
-				CombatComponent->HandleDeath();
-			}
-		}
 	}
 }
 
 void UFallenEraAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
+	// Gameplay Debugger can query this before a NetDriver builds the property RepIndex values.
+	GetClass()->SetUpRuntimeReplicationData();
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, Health, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, MaxHealth, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, Stamina, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, MaxStamina, COND_None, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, StaminaRecoveryRate, COND_OwnerOnly, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, AttackPower, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, DefensePower, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, KnockbackResistance, COND_None, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, Accuracy, COND_OwnerOnly, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, RecoilControl, COND_OwnerOnly, REPNOTIFY_Always);
 }
 
 void UFallenEraAttributeSet::OnRep_Health(const FGameplayAttributeData& OldValue)
@@ -155,6 +163,11 @@ void UFallenEraAttributeSet::OnRep_MaxStamina(const FGameplayAttributeData& OldV
 	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, MaxStamina, OldValue);
 }
 
+void UFallenEraAttributeSet::OnRep_StaminaRecoveryRate(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, StaminaRecoveryRate, OldValue);
+}
+
 void UFallenEraAttributeSet::OnRep_AttackPower(const FGameplayAttributeData& OldValue)
 {
 	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, AttackPower, OldValue);
@@ -168,4 +181,14 @@ void UFallenEraAttributeSet::OnRep_DefensePower(const FGameplayAttributeData& Ol
 void UFallenEraAttributeSet::OnRep_KnockbackResistance(const FGameplayAttributeData& OldValue)
 {
 	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, KnockbackResistance, OldValue);
+}
+
+void UFallenEraAttributeSet::OnRep_Accuracy(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, Accuracy, OldValue);
+}
+
+void UFallenEraAttributeSet::OnRep_RecoilControl(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, RecoilControl, OldValue);
 }

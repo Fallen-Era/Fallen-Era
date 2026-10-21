@@ -1,0 +1,26 @@
+차징 공격의 AimSwaySettings
+=========================
+
+- Weapon DA -> Template -> AimSwaySettings를 좌클릭 차징에도 사용합니다.
+- ChargedProjectileAttackAbility 공통 부모에서 시작/해제를 연결하므로 Bow/Grenade에 함께 적용됩니다.
+- bEnabled=True일 때 로컬 소유자의 차징 중에만 필요한 Tick을 활성화합니다.
+- 기존 ADS의 회전 지연/이동 흔들림/감쇠 계산을 공유합니다. AimMultiplier도 동일하게 적용됩니다.
+- 차징 모드에서는 AimSocket 정렬, FOV, 조준 태그, 정확도 보너스 등을 활성화하지 않습니다.
+- 카메라/몽타주 본 포즈를 바꾸지 않고, 저장한 1인칭 팔 Transform 기준의 카메라 공간 흔들림만 적용합니다.
+- 릴리즈/취소/무기 교체로 Ability가 종료되면 원래 Transform으로 돌아갑니다.
+- ADS와 차징이 겹치면 ADS가 단일 Transform 작성자가 됩니다. 흔들림을 두 번 합산하지 않습니다.
+  ADS를 해제해도 차징이 유지 중이면 차징 전용 흔들림이 다시 동작합니다.
+- AnimBP에서 GetAimSwayTransform을 같은 팔/무기에 다시 적용하면 중복되므로 추가 적용하지 않습니다.
+- 설정을 켜도 정지 상태에서 시야 입력이 없으면 지속적인 호흡 흔들림은 생성하지 않습니다.
+
+수류탄 차징 프리뷰 진단 (저장된 DA 기준)
+--------------------------------------
+DA_Granade.AttackActions[0].ProjectileClass가 네이티브 FE_GrenadeProjectile로 설정되어 있습니다.
+이 클래스의 ProjectileMesh.StaticMesh는 None이며, 생성돼도 보이는 외형이 없습니다.
+DA_Granade.Template.Mesh는 장착 외형 전용으로 투사체 프리뷰에 자동 복사하지 않습니다.
+
+에디터에서 ProjectileClass를 BP_Projectile_Granade로 설정하세요.
+그 BP의 ProjectileMesh.StaticMesh에는 이미 pineapple_grenade가 지정되어 있습니다.
+현재 AttachmentTarget=CharacterMesh, ChargeAttachSocketName=ThrowSocket_R입니다.
+1인칭 팔/3인칭 Mesh 양쪽에 해당 소켓이 있어야 같은 위치에 붙습니다.
+이 진단 작업에서는 DA나 BP를 변경하지 않았습니다.

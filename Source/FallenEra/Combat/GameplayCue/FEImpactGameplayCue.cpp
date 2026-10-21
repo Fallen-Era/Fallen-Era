@@ -31,7 +31,7 @@ bool UFE_ImpactGameplayCue::OnExecute_Implementation(
 	const UFE_WeaponItemData* WeaponData = AttackData
 		? Cast<UFE_WeaponItemData>(AttackData->GetOuter())
 		: Cast<UFE_WeaponItemData>(SourceObject);
-	const UFE_ImpactEffectData* ImpactData = WeaponData ? WeaponData->ImpactEffectData : nullptr;
+	const UFE_ImpactEffectData* ImpactData = WeaponData ? WeaponData->Template.ImpactEffectData : nullptr;
 	if (!ImpactData)
 	{
 		return false;

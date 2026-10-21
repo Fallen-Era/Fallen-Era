@@ -21,6 +21,7 @@ public:
 	UFE_CharacterStatusComponent();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Rolls the condition probabilities supplied by the damage source. Must run on the authority. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|Status")
@@ -44,6 +45,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Status")
 	TArray<FFE_ActiveCharacterCondition> GetActiveConditions() const { return ActiveConditions; }
+	const TArray<FFE_ActiveCharacterCondition>& GetActiveConditionsView() const { return ActiveConditions; }
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Status")
 	bool GetConditionDefinition(FGameplayTag ConditionTag, FFE_CharacterConditionDefinition& OutDefinition) const;
@@ -69,18 +71,19 @@ protected:
 private:
 	struct FActiveConditionRuntime
 	{
-		FTimerHandle TickTimer;
-		FTimerHandle ExpirationTimer;
+		FActiveGameplayEffectHandle LifetimeEffectHandle;
 		FActiveGameplayEffectHandle AppliedEffectHandle;
+		TWeakObjectPtr<class UAbilitySystemComponent> AbilitySystem;
 	};
 
 	UFUNCTION()
 	void OnRep_ActiveConditions();
 
 	const FFE_CharacterConditionDefinition* FindConditionDefinition(FGameplayTag ConditionTag) const;
-	void StartCondition(const FFE_CharacterConditionDefinition& Definition);
-	void HandleConditionTick(FGameplayTag ConditionTag);
-	void HandleConditionExpired(FGameplayTag ConditionTag);
+	bool StartCondition(const FFE_CharacterConditionDefinition& Definition);
+	void HandleConditionEffectRemoved(const FGameplayEffectRemovalInfo& Info, FGameplayTag Tag, bool bLifetimeEffect);
+	void HandleConditionTimeChanged(FActiveGameplayEffectHandle Handle, float StartTime, float Duration, FGameplayTag Tag);
+	bool bEndingPlay = false;
 	void ApplyFixedHealthLoss(float HealthLoss);
 	void NotifyConditionsChanged();
 	double GetServerWorldTime() const;
