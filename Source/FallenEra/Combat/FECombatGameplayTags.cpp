@@ -27,6 +27,7 @@ namespace FallenEraCombatGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG(State_Immune_PhysicalReaction, "State.Immune.PhysicalReaction");
 	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Walking, "State.Movement.Walking");
 	UE_DEFINE_GAMEPLAY_TAG(State_Movement_Sprinting, "State.Movement.Sprinting");
+	UE_DEFINE_GAMEPLAY_TAG(State_Slowed, "State.Slowed");
 	UE_DEFINE_GAMEPLAY_TAG(State_Stamina_Exhausted, "State.Stamina.Exhausted");
 	UE_DEFINE_GAMEPLAY_TAG(Ability_ActivateFail_Stamina, "Ability.ActivateFail.Stamina");
 	UE_DEFINE_GAMEPLAY_TAG(SetByCaller_Stamina_Change, "SetByCaller.Stamina.Change");

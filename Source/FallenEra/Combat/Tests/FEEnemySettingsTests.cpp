@@ -3,6 +3,7 @@
 #include "Misc/AutomationTest.h"
 #include "Combat/Tests/FEEnemySettingsTestCharacter.h"
 #include "Combat/AI/FEAISettingsDataAsset.h"
+#include "Combat/AI/FEEnemyAIController.h"
 #include "Combat/Ability/FEEnemyMeleeAttackAbility.h"
 #include "Combat/Armor/FEArmorItemData.h"
 #include "Combat/Component/FEEquipmentComponent.h"
@@ -16,6 +17,8 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Animation/AnimMontage.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "TimerManager.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -42,6 +45,71 @@ namespace
 			return Enemy;
 		}
 	};
+
+	class FFE_EnemySlowedMovementCommand : public IAutomationLatentCommand
+	{
+	public:
+		explicit FFE_EnemySlowedMovementCommand(FAutomationTestBase* InTest) : Test(InTest) {}
+		virtual bool Update() override
+		{
+			if (!Fixture)
+			{
+				Fixture = MakeUnique<FFE_EnemySettingsTestWorld>();
+				UFE_AISettingsDataAsset* Preset = NewObject<UFE_AISettingsDataAsset>();
+				Preset->AISettings.PatrolMovementSpeed = 180.0f;
+				Enemy = Fixture->Spawn(Preset);
+				Fixture->World->GetTimerManager().Tick(0.01f);
+				AFE_EnemyAIController* Controller = Fixture->World->SpawnActor<AFE_EnemyAIController>();
+				Controller->Possess(Enemy.Get());
+				Controller->SetManagedSimulationActive(true); // Avoid needing a nearby player or NavMesh in this fixture.
+				return false;
+			}
+			Fixture->World->GetTimerManager().Tick(0.3f); // Run the real low-frequency AI decision on a new engine frame.
+			UFallenEraAbilitySystemComponent* ASC = Enemy->GetEnemyAbilitySystemComponent();
+			const float Speed = Enemy->GetCharacterMovement()->MaxWalkSpeed;
+			switch (Stage++)
+			{
+			case 0:
+				Test->TestEqual(TEXT("Patrol uses its configured base speed"), Speed, 180.0f);
+				ASC->AddLooseGameplayTag(FallenEraCombatGameplayTags::State_Slowed);
+				break;
+			case 1:
+				Test->TestEqual(TEXT("Slowed halves movement on the next decision"), Speed, 90.0f);
+				break;
+			case 2:
+				Test->TestEqual(TEXT("Repeated decisions cannot compound the slow"), Speed, 90.0f);
+				ASC->AddLooseGameplayTag(FallenEraCombatGameplayTags::State_Slowed);
+				break;
+			case 3:
+				Test->TestEqual(TEXT("Two overlapping sources still apply one half-speed factor"), Speed, 90.0f);
+				ASC->RemoveLooseGameplayTag(FallenEraCombatGameplayTags::State_Slowed);
+				break;
+			case 4:
+				Test->TestEqual(TEXT("Leaving one source preserves the remaining slow"), Speed, 90.0f);
+				ASC->RemoveLooseGameplayTag(FallenEraCombatGameplayTags::State_Slowed);
+				break;
+			default:
+				Test->TestEqual(TEXT("Leaving all sources restores the base speed"), Speed, 180.0f);
+				return true;
+			}
+			return false;
+		}
+	private:
+		FAutomationTestBase* Test;
+		TUniquePtr<FFE_EnemySettingsTestWorld> Fixture;
+		TWeakObjectPtr<AFE_EnemySettingsTestCharacter> Enemy;
+		int32 Stage = 0;
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFE_EnemySlowedMovementTest, "FallenEra.Combat.AI.SlowedMovement",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FFE_EnemySlowedMovementTest::RunTest(const FString& Parameters)
+{
+	TestTrue(TEXT("State.Slowed is registered as a native gameplay tag"),
+		FGameplayTag::RequestGameplayTag(TEXT("State.Slowed"), false).IsValid());
+	FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FFE_EnemySlowedMovementCommand>(this));
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFE_EnemyPresetConfigurationTest, "FallenEra.Combat.AI.PresetConfiguration",

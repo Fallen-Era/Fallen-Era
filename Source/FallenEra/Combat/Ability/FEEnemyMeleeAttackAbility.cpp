@@ -45,8 +45,7 @@ bool UFE_EnemyMeleeAttackAbility::CanActivateAbility(
 		return false;
 	}
 
-	return FVector::DistSquared(EnemyCharacter->GetActorLocation(), TargetActor->GetActorLocation()) <=
-		FMath::Square(FMath::Max(0.0f, EnemyCharacter->GetAttackRange()));
+	return EnemyCharacter->IsTargetWithinAttackRange(TargetActor);
 }
 
 void UFE_EnemyMeleeAttackAbility::ActivateAbility(

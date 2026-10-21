@@ -9,6 +9,8 @@
 #include "AbilitySystemComponent.h"
 #include "GameplayEffect.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Combat/Collision/FECollisionChannels.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Combat/Ability/FEEnemyMeleeAttackAbility.h"
 #include "Combat/AI/FEAISettingsDataAsset.h"
@@ -316,6 +318,34 @@ bool AFE_EnemyCharacter::IsDead() const
 	return AbilitySystemComponent && AbilitySystemComponent->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead);
 }
 
+bool AFE_EnemyCharacter::IsTargetWithinAttackRange(const AActor* TargetActor) const
+{
+	if (!IsValid(TargetActor)) { return false; }
+	const float Range = FMath::Max(0.0f, CachedAISettings.AttackRange);
+	const FVector Origin = GetActorLocation();
+	if (TargetActor->IsA<APawn>())
+	{
+		return FVector::DistSquared(Origin, TargetActor->GetActorLocation()) <= FMath::Square(Range);
+	}
+	TInlineComponentArray<UPrimitiveComponent*> Components(TargetActor);
+	for (UPrimitiveComponent* Component : Components)
+	{
+		if (!Component->IsQueryCollisionEnabled() || Component->GetCollisionResponseToChannel(FECollisionChannels::EnemyTrace) != ECR_Block ||
+			Component->Bounds.GetBox().ComputeSquaredDistanceToPoint(Origin) > FMath::Square(Range)) { continue; }
+		FVector SurfacePoint;
+		const float Distance = Component->GetClosestPointOnCollision(Origin, SurfacePoint);
+		if (Distance >= 0.0f && Distance <= Range) { return true; }
+		if (Distance < 0.0f)
+		{
+			// Complex-only geometry may not support closest-point queries. Require a real surface hit, never just its bounds.
+			FHitResult Hit;
+			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_AIObstacleReach), true, this);
+			if (Component->LineTraceComponent(Hit, Origin, Component->Bounds.Origin, QueryParams) && Hit.Distance <= Range) { return true; }
+		}
+	}
+	return false;
+}
+
 bool AFE_EnemyCharacter::TryStartAttack(AActor* TargetActor)
 {
 	if (!HasAuthority() || !AbilitySystemComponent || !CachedAttackAbilityClass || !IsValid(TargetActor) ||
@@ -324,8 +354,7 @@ bool AFE_EnemyCharacter::TryStartAttack(AActor* TargetActor)
 	{
 		return false;
 	}
-	if (FVector::DistSquared(GetActorLocation(), TargetActor->GetActorLocation()) >
-		FMath::Square(FMath::Max(0.0f, CachedAISettings.AttackRange)))
+	if (!IsTargetWithinAttackRange(TargetActor))
 	{
 		return false;
 	}

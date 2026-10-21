@@ -69,6 +69,9 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="FallenEra|AI|Combat")
 	bool TryStartAttack(AActor* TargetActor);
 
+	/** Pawn targets keep center-based reach; world targets use their query-blocking collision surface. */
+	bool IsTargetWithinAttackRange(const AActor* TargetActor) const;
+
 	UFUNCTION(BlueprintPure, Category="FallenEra|AI|Combat")
 	float GetAttackRange() const { return CachedAISettings.AttackRange; }
 

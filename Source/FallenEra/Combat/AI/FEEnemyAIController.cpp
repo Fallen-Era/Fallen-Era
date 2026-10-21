@@ -7,8 +7,10 @@
 #include "Combat/AI/FEAITargetCoordinatorSubsystem.h"
 #include "Combat/Character/FEEnemyCharacter.h"
 #include "Combat/FECombatTeams.h"
+#include "Combat/FECombatGameplayTags.h"
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Component/FEKnockdownComponent.h"
+#include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/Interface/FEDamageable.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
@@ -78,6 +80,7 @@ void AFE_EnemyAIController::OnPossess(APawn* InPawn)
 	}
 
 	HomeLocation = InPawn->GetActorLocation();
+	ResetCombatNavigation();
 	TargetMemories.Reset();
 	CurrentTargetAcquiredTime = -1.0f;
 	bUsesManagedSimulation = CastChecked<AFE_EnemyCharacter>(InPawn)->IsSpawnManaged();
@@ -142,6 +145,21 @@ void AFE_EnemyAIController::OnMoveCompleted(
 	if (!CurrentTarget.IsValid())
 	{
 		ScheduleNextPatrolRequest();
+	}
+	else if (CombatMoveRequestId.IsEquivalent(RequestID))
+	{
+		// PathFollowing resets its path before this callback. DidMoveReachGoal retains
+		// the distinction between a full goal and a successfully reached partial-path end.
+		const UPathFollowingComponent* Following = GetPathFollowingComponent();
+		bCombatMoveBlocked = Result.Code == EPathFollowingResult::Blocked ||
+			(Result.IsSuccess() && Following && !Following->DidMoveReachGoal());
+		if (bCombatMoveBlocked && GetPawn())
+		{
+			LastCombatProgressLocation = GetPawn()->GetActorLocation();
+			LastCombatProgressTime = GetWorld()->GetTimeSeconds();
+			NextObstacleProbeTime = 0.0f;
+		}
+		CombatMoveRequestId = FAIRequestID::InvalidRequest;
 	}
 }
 
@@ -262,6 +280,7 @@ void AFE_EnemyAIController::UpdateDecision()
 		Knockdown && Knockdown->IsKnockedDown())
 	{
 		// Preserve target memory and perception. The next normal decision resumes pursuit after getting up.
+		ResetCombatNavigation();
 		StopMovement();
 		ClearFocus(EAIFocusPriority::Gameplay);
 		return;
@@ -269,6 +288,7 @@ void AFE_EnemyAIController::UpdateDecision()
 	if (UAbilitySystemComponent* AbilitySystem = EnemyCharacter->GetAbilitySystemComponent();
 		AbilitySystem && AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Stunned))
 	{
+		ResetCombatNavigation();
 		StopMovement();
 		ClearFocus(EAIFocusPriority::Gameplay);
 		EnemyCharacter->CancelActiveAttack();
@@ -401,32 +421,24 @@ void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AAc
 	}
 	SetMovementSpeed(EnemyCharacter, EnemyCharacter.GetChaseMovementSpeed());
 	const float AttackRange = FMath::Max(0.0f, EnemyCharacter.GetAttackRange());
-	const bool bCanTrackActor = HasActiveSightStimulus(TargetActor) ||
-		bEncounterPursuitActive || IsPersistentDamageTarget(TargetActor);
-	if (!bCanTrackActor)
+	const float CurrentTime = GetWorld()->GetTimeSeconds();
+	if (EnemyCharacter.IsAttackInProgress())
 	{
-		const FVector LastKnownLocation = GetLastKnownTargetLocation(TargetActor);
-		ClearFocus(EAIFocusPriority::Gameplay);
-		SetFocalPoint(LastKnownLocation, EAIFocusPriority::Gameplay);
-		if (GetMoveStatus() != EPathFollowingStatus::Moving)
-		{
-			MoveToLocation(
-				LastKnownLocation,
-				FMath::Max(50.0f, AttackRange * 0.8f),
-				true,
-				true,
-				true,
-				false);
-		}
+		// Do not turn back toward the player or restart path following during an obstacle swing.
+		LastCombatProgressLocation = EnemyCharacter.GetActorLocation();
+		LastCombatProgressTime = CurrentTime;
+		CombatMoveRequestId = FAIRequestID::InvalidRequest;
+		StopMovement();
 		return;
 	}
-
-	SetFocus(&TargetActor, EAIFocusPriority::Gameplay);
-	const float DistanceSquared = FVector::DistSquared(
-		EnemyCharacter.GetActorLocation(), TargetActor.GetActorLocation());
-	if (DistanceSquared <= FMath::Square(AttackRange) && LineOfSightTo(&TargetActor))
+	const bool bCanTrackActor = HasActiveSightStimulus(TargetActor) ||
+		bEncounterPursuitActive || IsPersistentDamageTarget(TargetActor);
+	const FVector PursuitLocation = bCanTrackActor ? TargetActor.GetActorLocation() : GetLastKnownTargetLocation(TargetActor);
+	if (bCanTrackActor && EnemyCharacter.IsTargetWithinAttackRange(&TargetActor) && LineOfSightTo(&TargetActor))
 	{
+		ResetCombatNavigation();
 		StopMovement();
+		SetFocus(&TargetActor, EAIFocusPriority::Gameplay);
 		FVector FacingDirection = TargetActor.GetActorLocation() - EnemyCharacter.GetActorLocation();
 		FacingDirection.Z = 0.0f;
 		if (!FacingDirection.IsNearlyZero())
@@ -437,10 +449,88 @@ void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AAc
 		return;
 	}
 
-	if (GetMoveStatus() != EPathFollowingStatus::Moving)
+	const FVector Location = EnemyCharacter.GetActorLocation();
+	if (LastCombatProgressTime < 0.0f || FVector::DistSquared2D(Location, LastCombatProgressLocation) >=
+		FMath::Square(FMath::Max(1.0f, CombatProgressDistance)))
 	{
-		MoveToActor(&TargetActor, FMath::Max(50.0f, AttackRange * 0.8f), false, true, true);
+		LastCombatProgressLocation = Location;
+		LastCombatProgressTime = CurrentTime;
+		bCombatMoveBlocked = false;
+		BlockingObstacle.Reset();
 	}
+	const bool bStalled = CurrentTime - LastCombatProgressTime >= FMath::Max(0.1f, BlockedMovementDelay);
+	if (bAttackBlockingObstacles && (bCombatMoveBlocked || bStalled || BlockingObstacle.IsValid()) &&
+		TryAttackBlockingObstacle(EnemyCharacter, PursuitLocation))
+	{
+		return;
+	}
+	if (bCanTrackActor) { SetFocus(&TargetActor, EAIFocusPriority::Gameplay); }
+	else { SetFocalPoint(PursuitLocation, EAIFocusPriority::Gameplay); }
+	if (GetMoveStatus() == EPathFollowingStatus::Moving || CurrentTime < NextCombatMoveRequestTime) { return; }
+
+	NextCombatMoveRequestTime = CurrentTime + FMath::Max(0.1f, ObstacleRetryInterval);
+	FAIMoveRequest MoveRequest;
+	if (bCanTrackActor) { MoveRequest.SetGoalActor(&TargetActor); }
+	else { MoveRequest.SetGoalLocation(PursuitLocation); }
+	MoveRequest.SetAcceptanceRadius(FMath::Max(50.0f, AttackRange * 0.8f));
+	MoveRequest.SetReachTestIncludesAgentRadius(!bCanTrackActor);
+	MoveRequest.SetUsePathfinding(true);
+	MoveRequest.SetProjectGoalLocation(true);
+	MoveRequest.SetCanStrafe(bCanTrackActor);
+	MoveRequest.SetAllowPartialPath(true);
+	const FPathFollowingRequestResult Result = MoveTo(MoveRequest);
+	CombatMoveRequestId = Result.Code == EPathFollowingRequestResult::RequestSuccessful ? Result.MoveId : FAIRequestID::InvalidRequest;
+}
+
+void AFE_EnemyAIController::ResetCombatNavigation()
+{
+	CombatMoveRequestId = FAIRequestID::InvalidRequest;
+	BlockingObstacle.Reset();
+	bCombatMoveBlocked = false;
+	LastCombatProgressTime = -1.0f;
+	NextObstacleProbeTime = 0.0f;
+	NextCombatMoveRequestTime = 0.0f;
+}
+
+bool AFE_EnemyAIController::TryAttackBlockingObstacle(AFE_EnemyCharacter& EnemyCharacter, const FVector& PursuitLocation)
+{
+	const float CurrentTime = GetWorld()->GetTimeSeconds();
+	const bool bProbeReady = CurrentTime >= NextObstacleProbeTime;
+	if (bProbeReady)
+	{
+		NextObstacleProbeTime = CurrentTime + FMath::Max(0.1f, ObstacleRetryInterval);
+		BlockingObstacle.Reset();
+		const FVector Start = EnemyCharacter.GetActorLocation();
+		const FVector ToGoal = PursuitLocation - Start;
+		const FVector End = Start + ToGoal.GetClampedToMaxSize(FMath::Max(0.0f, EnemyCharacter.GetAttackRange()));
+		FHitResult Hit;
+		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_AIBlockingObstacle), false, &EnemyCharacter);
+		if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, FECollisionChannels::EnemyTrace, QueryParams) &&
+			IsValidTarget(Hit.GetActor()) && !Hit.GetActor()->IsA<APawn>())
+		{
+			BlockingObstacle = Hit.GetActor();
+			BlockingImpactPoint = Hit.ImpactPoint;
+		}
+		else
+		{
+			NextCombatMoveRequestTime = 0.0f; // A cleared obstruction should resume path following promptly.
+		}
+	}
+	AActor* Obstacle = BlockingObstacle.Get();
+	if (!IsValidTarget(Obstacle) || !EnemyCharacter.IsTargetWithinAttackRange(Obstacle))
+	{
+		BlockingObstacle.Reset();
+		return false;
+	}
+	CombatMoveRequestId = FAIRequestID::InvalidRequest; // Our own StopMovement is not a navigation failure.
+	StopMovement();
+	SetFocalPoint(BlockingImpactPoint, EAIFocusPriority::Gameplay);
+	FVector FacingDirection = BlockingImpactPoint - EnemyCharacter.GetActorLocation();
+	FacingDirection.Z = 0.0f;
+	if (!FacingDirection.IsNearlyZero()) { EnemyCharacter.SetActorRotation(FacingDirection.Rotation()); }
+	// Keep the player in CurrentTarget/coordinator memory; damage still comes only from the GA's notify trace.
+	if (bProbeReady) { EnemyCharacter.TryStartAttack(Obstacle); }
+	return true;
 }
 
 void AFE_EnemyAIController::EvaluateBestCombatTarget()
@@ -525,6 +615,7 @@ void AFE_EnemyAIController::SelectCombatTarget(AActor* TargetActor)
 		return;
 	}
 
+	ResetCombatNavigation();
 	StopMovement();
 	ClearInvestigation();
 	if (UFE_AITargetCoordinatorSubsystem* Coordinator =
@@ -732,6 +823,7 @@ FVector AFE_EnemyAIController::GetLastKnownTargetLocation(const AActor& Actor) c
 
 void AFE_EnemyAIController::ClearTarget()
 {
+	ResetCombatNavigation();
 	StopMovement();
 	AActor* PreviousTarget = CurrentTarget.Get();
 	if (UFE_AITargetCoordinatorSubsystem* Coordinator =
@@ -765,6 +857,7 @@ void AFE_EnemyAIController::SetInvestigationLocation(const FVector& Location)
 		return;
 	}
 
+	ResetCombatNavigation();
 	StopMovement();
 	if (UFE_AITargetCoordinatorSubsystem* Coordinator =
 		GetWorld() ? GetWorld()->GetSubsystem<UFE_AITargetCoordinatorSubsystem>() : nullptr)
@@ -970,7 +1063,10 @@ void AFE_EnemyAIController::SetMovementSpeed(
 {
 	if (UCharacterMovementComponent* MovementComponent = EnemyCharacter.GetCharacterMovement())
 	{
-		MovementComponent->MaxWalkSpeed = FMath::Max(0.0f, MovementSpeed);
+		const UAbilitySystemComponent* AbilitySystem = EnemyCharacter.GetAbilitySystemComponent();
+		const bool bSlowed = AbilitySystem && AbilitySystem->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Slowed);
+		// Recompute from the patrol/chase base: repeated decisions and overlapping slow sources must not compound.
+		MovementComponent->MaxWalkSpeed = FMath::Max(0.0f, MovementSpeed) * (bSlowed ? 0.5f : 1.0f);
 	}
 }
 

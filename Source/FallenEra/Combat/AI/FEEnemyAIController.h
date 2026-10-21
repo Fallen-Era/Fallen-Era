@@ -59,6 +59,8 @@ private:
 	void UpdatePatrol(AFE_EnemyCharacter& EnemyCharacter);
 	void UpdateInvestigation(AFE_EnemyCharacter& EnemyCharacter);
 	void UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AActor& TargetActor);
+	void ResetCombatNavigation();
+	bool TryAttackBlockingObstacle(AFE_EnemyCharacter& EnemyCharacter, const FVector& PursuitLocation);
 	void EvaluateBestCombatTarget();
 	void SelectCombatTarget(AActor* TargetActor);
 	void ClearTarget();
@@ -149,7 +151,29 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Perception|Hearing", meta=(ClampMin="0.0"))
 	float InvestigationAcceptanceRadius = 100.0f;
 
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Obstacles")
+	bool bAttackBlockingObstacles = true;
+
+	/** Only probe after a partial/blocked move finishes, or this long without meaningful movement. */
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Obstacles", meta=(ClampMin="0.1", Units="s"))
+	float BlockedMovementDelay = 2.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Obstacles", meta=(ClampMin="1.0", Units="cm"))
+	float CombatProgressDistance = 20.0f;
+
+	/** Bounds both obstruction probes and failed/finished pursuit move retries; no extra tick or timer. */
+	UPROPERTY(EditDefaultsOnly, Category="FallenEra|AI|Obstacles", meta=(ClampMin="0.1", Units="s"))
+	float ObstacleRetryInterval = 0.5f;
+
 	TWeakObjectPtr<AActor> CurrentTarget;
+	TWeakObjectPtr<AActor> BlockingObstacle;
+	FVector BlockingImpactPoint = FVector::ZeroVector;
+	FVector LastCombatProgressLocation = FVector::ZeroVector;
+	float LastCombatProgressTime = -1.0f;
+	float NextObstacleProbeTime = 0.0f;
+	float NextCombatMoveRequestTime = 0.0f;
+	FAIRequestID CombatMoveRequestId = FAIRequestID::InvalidRequest;
+	bool bCombatMoveBlocked = false;
 	TArray<FFE_AITargetMemory> TargetMemories;
 	FVector HomeLocation = FVector::ZeroVector;
 	FVector InvestigationLocation = FVector::ZeroVector;
