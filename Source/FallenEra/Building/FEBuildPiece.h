@@ -106,7 +106,7 @@ public:
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     UStaticMeshComponent* GetMesh() const;
     
-    /** 지지의 출발점. 토대·가구는 항상, 계단처럼 소켓으로도 붙는 땅 피스는 바닥이 실제 지면에 닿아 있을 때만 (UFEBuildingSubsystem::IsAnchorAt) */
+    /** 지지의 출발점. 토대는 항상, 그 외 땅 피스(계단·가구·방어시설)는 바닥이 실제 지면에 닿아 있을 때만 (UFEBuildingSubsystem::IsAnchorAt) */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     bool IsAnchor() const;
 

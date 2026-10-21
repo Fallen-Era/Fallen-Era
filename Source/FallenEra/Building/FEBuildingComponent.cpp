@@ -107,6 +107,15 @@ namespace
      *  위아래 = 지면 접촉·천장 아래 끼우기 */
     constexpr float SideClearance = 22.f;
     constexpr float FaceClearance = 2.f;
+    
+    /** 소켓 없는 피스(가구·함정)의 옆 여유. 맞닿기만 허용하고 겹침은 막는다 */
+    constexpr float FreeSideClearance = 1.f;
+
+    /** 지지 면적(MinSupportCoverage) 검사: 바닥을 N×N 칸으로 나눠 각 칸 중앙 아래에서 표면을 찾는다 */
+    constexpr int32 CoverageSamples = 4;
+
+    /** 칸 배치 기준 판으로 인정하는 윗면 (법선 Z). 지붕 같은 경사면은 기준이 되지 않는다 */
+    constexpr float GridBoardMinNormalZ = 0.95f;
 
     /** bRequiresFoundationBelow: 피스 중심 아래 이 깊이까지 anchor(토대)를 찾는다. 2층 천장은 1층 천장을 지나 토대를 찾는다 */
     constexpr float FoundationSearchDepth = 2000.f;
@@ -140,7 +149,8 @@ namespace
 
     /**
      * 아래로 트레이스해 놓일 표면을 찾는다. 지형(WorldStatic/WorldDynamic)이 기본이고,
-     * bIncludeStructures 면 완성된 구조물(BuildPiece)도 표면으로 인정한다 (가구를 토대·천장 위에 놓을 때).
+     * bIncludeStructures 면 구조물(소켓 있는 BuildPiece — 토대·천장)도 표면으로 인정한다 (가구·함정을 그 위에 놓을 때).
+     * 가구·함정(소켓 없는 피스)은 표면이 아니다 — 그 위로 올라타 쌓이거나, 옆 함정 모서리에 코너가 걸려 들뜨지 않게
      */
     bool TraceSurface(const UWorld* World, const FVector& Point, float Slack, const AActor* IgnoreActor, bool bIncludeStructures, FHitResult& OutHit)
     {
@@ -152,9 +162,22 @@ namespace
             SurfaceTypes.AddObjectTypesToQuery(ECC_FEBuildPiece);
         }
 
+        // 오브젝트 타입 멀티 트레이스는 맞은 것을 전부(가까운 순) 돌려준다 → 위에서부터 첫 "표면"을 고른다
         const FVector Offset(0.f, 0.f, Slack);
         FCollisionQueryParams Params(SCENE_QUERY_STAT(FEBuildGround), false, IgnoreActor);
-        return World->LineTraceSingleByObjectType(OutHit, Point + Offset, Point - Offset, SurfaceTypes, Params);
+        TArray<FHitResult> Hits;
+        World->LineTraceMultiByObjectType(Hits, Point + Offset, Point - Offset, SurfaceTypes, Params);
+        for (const FHitResult& Hit : Hits)
+        {
+            const AFEBuildPiece* Piece = Cast<AFEBuildPiece>(Hit.GetActor());
+            const bool bIsAttachment = Piece != nullptr && Piece->GetDefinition() != nullptr && Piece->GetDefinition()->Sockets.IsEmpty();
+            if (!bIsAttachment)
+            {
+                OutHit = Hit;
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 바닥 4코너의 로컬 위치 (Z = 메시 하단) */
@@ -164,6 +187,96 @@ namespace
         OutCorners[1] = FVector(LocalBounds.Max.X, LocalBounds.Min.Y, LocalBounds.Min.Z);
         OutCorners[2] = FVector(LocalBounds.Min.X, LocalBounds.Max.Y, LocalBounds.Min.Z);
         OutCorners[3] = FVector(LocalBounds.Max.X, LocalBounds.Max.Y, LocalBounds.Min.Z);
+    }
+    
+    /** 바닥면을 CoverageSamples×CoverageSamples 칸으로 나눈 각 칸 중앙 아래 Slack 안에 표면이 있는 비율 (0~1) */
+    float GetSupportCoverage(const UWorld* World, const FBox& LocalBounds, const FTransform& Transform, float Slack, const AActor* IgnoreActor, bool bIncludeStructures)
+    {
+        int32 Hits = 0;
+        for (int32 IndexX = 0; IndexX < CoverageSamples; ++IndexX)
+        {
+            for (int32 IndexY = 0; IndexY < CoverageSamples; ++IndexY)
+            {
+                const FVector LocalPoint(
+                    FMath::Lerp(LocalBounds.Min.X, LocalBounds.Max.X, (IndexX + 0.5f) / CoverageSamples),
+                    FMath::Lerp(LocalBounds.Min.Y, LocalBounds.Max.Y, (IndexY + 0.5f) / CoverageSamples),
+                    LocalBounds.Min.Z);
+                FHitResult SurfaceHit;
+                if (TraceSurface(World, Transform.TransformPosition(LocalPoint), Slack, IgnoreActor, bIncludeStructures, SurfaceHit))
+                {
+                    ++Hits;
+                }
+            }
+        }
+        return static_cast<float>(Hits) / (CoverageSamples * CoverageSamples);
+    }
+
+    /**
+     * 칸 배치(GridCellSize > 0) 피스의 위치·회전을 칸에 맞춘다. 칸 크기는 DA 값이고 메시 크기와 무관하다.
+     * 1) 커서가 평평한 구조물(소켓 있는 피스 — 토대·천장) 윗면 → 그 판을 칸으로 나눈 칸 중앙 (판 밖으로 나가지 않음)
+     * 2) 아니면 SnapRadius 안 가장 가까운 칸 배치 피스 → 거기서 칸 단위로 이어 붙임 (함정끼리 스냅)
+     * 3) 둘 다 없으면 그대로 (자유 배치)
+     * 높이는 이후 표면 맞춤이 정한다. 클라 편의 기능이라 서버는 결과 위치만 검증한다(겹침·지지 면적)
+     */
+    void SnapToGrid(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FHitResult* CursorHit, int32 YawStepOffset, const AActor* IgnoreActor, FVector& InOutLocation, uint8& InOutYawStep)
+    {
+        const double Cell = Piece->GridCellSize;
+        if (Cell < 1.0) return;
+
+        const AFEBuildPiece* Board = CursorHit ? Cast<AFEBuildPiece>(CursorHit->GetActor()) : nullptr;
+        const bool bBoardIsStructure = Board != nullptr && Board->GetDefinition() != nullptr && !Board->GetDefinition()->Sockets.IsEmpty();
+        const UStaticMesh* BoardMesh = bBoardIsStructure ? Board->GetDefinition()->Mesh.Get() : nullptr;
+        const bool bOnFlatBoard = BoardMesh != nullptr && CursorHit->ImpactNormal.Z >= GridBoardMinNormalZ;
+
+        const AFEBuildPiece* Anchor = bOnFlatBoard ? Board : nullptr;
+        if (Anchor == nullptr)
+        {
+            TArray<AFEBuildPiece*> Nearby;
+            UFEBuildingSubsystem::GatherNearbyPieces(World, InOutLocation, UFEBuildingSettings::Get()->SnapRadius, IgnoreActor, Nearby);
+            float BestDistSq = TNumericLimits<float>::Max();
+            for (const AFEBuildPiece* Other : Nearby)
+            {
+                const float DistSq = FVector::DistSquared2D(Other->GetActorLocation(), InOutLocation);
+                if (Other->GetDefinition()->GridCellSize > 0.f && DistSq < BestDistSq)
+                {
+                    BestDistSq = DistSq;
+                    Anchor = Other;
+                }
+            }
+        }
+        if (Anchor == nullptr) return;
+
+        const FTransform AnchorXf = Anchor->GetActorTransform();
+        FVector Local = AnchorXf.InverseTransformPosition(InOutLocation);
+        if (bOnFlatBoard)
+        {
+            // 판 바운드를 칸으로 나눈 칸 중앙. 커서가 판 가장자리 밖이어도 가장자리 칸에 멈춘다
+            const FBox BoardBounds = BoardMesh->GetBoundingBox();
+            const auto SnapToCell = [Cell](double Value, double Min, double Max)
+            {
+                const int32 Count = FMath::Max(1, FMath::FloorToInt((Max - Min) / Cell + 0.01));
+                const int32 Index = FMath::Clamp(FMath::FloorToInt((Value - Min) / Cell), 0, Count - 1);
+                return Min + (Index + 0.5) * Cell;
+            };
+            Local.X = SnapToCell(Local.X, BoardBounds.Min.X, BoardBounds.Max.X);
+            Local.Y = SnapToCell(Local.Y, BoardBounds.Min.Y, BoardBounds.Max.Y);
+        }
+        else
+        {
+            // 기준 피스에서 칸 단위로 이어 붙인다
+            Local.X = FMath::RoundToDouble(Local.X / Cell) * Cell;
+            Local.Y = FMath::RoundToDouble(Local.Y / Cell) * Cell;
+        }
+
+        // 커서가 함정(소켓 없는 피스) 윗면이면 그 높이 대신 기준 피스의 바닥 높이에서 시작한다 —
+        // 안 그러면 고스트가 함정 위에 떠서 "Not enough support" 로 보인다. 최종 높이는 아래 표면 맞춤이 정한다
+        const bool bCursorOnAttachment = Board != nullptr && Board->GetDefinition() != nullptr && !bBoardIsStructure;
+        const double KeepZ = bCursorOnAttachment ? AnchorXf.GetLocation().Z : InOutLocation.Z;
+        InOutLocation = AnchorXf.TransformPosition(Local);
+        InOutLocation.Z = KeepZ;
+
+        // 회전 = 기준 회전 + Q/E 90° 단위. 기준이 15° 단계로 놓였으므로 YawStep 으로 그대로 표현된다
+        InOutYawStep = YawToStep(AnchorXf.Rotator().Yaw + (YawStepOffset % 4) * 90.f);
     }
 
     const FTransform& GetFlip180()
@@ -1013,6 +1126,12 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
     // 피스는 플레이어 방향을 RotationStep 단위로 따라가고, 거기에 Q/E 수동 오프셋을 더한다.
     const float PlayerYaw = Pawn->GetActorRotation().Yaw;
     OutYawStep = YawToStep(PlayerYaw + YawStepOffset * Settings->RotationStepDeg);
+    
+    // 칸 배치 피스(함정): 평평한 구조물 위면 그 판의 칸, 맨땅이면 근처 함정의 칸에 맞춘다. 높이는 아래 표면 맞춤이 정한다
+    if (SelectedPiece != nullptr && SelectedPiece->GridCellSize > 0.f)
+    {
+        SnapToGrid(GetWorld(), SelectedPiece, bHitSomething ? &Hit : nullptr, YawStepOffset, Pawn, OutLocation, OutYawStep);
+    }
 
     // 표면 배치 피스는 4코너 중 가장 높은 표면에 맞춰 올린다. 완만한 경사에서는 낮은 쪽이 떠서(다리) 파묻히지 않는다.
     const UStaticMesh* StaticMesh = SelectedPiece ? SelectedPiece->Mesh.Get() : nullptr;
@@ -1173,7 +1292,8 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
     // 스냅 판정과 지지 예측이 같은 연결 목록을 쓴다
     TArray<AFEBuildPiece*> Connected;
     UFEBuildingSubsystem::FindConnectedPieces(World, Piece, Transform, Instigator, Connected);
-    const bool bIsSnapped = Connected.Num() > 0;
+    // 소켓 없는 피스(가구·방어시설)의 Connected 는 받침이라 "스냅"이 아니다 — 표면 규칙·전체 오버랩 검사를 그대로 받는다
+    const bool bIsSnapped = !Piece->Sockets.IsEmpty() && Connected.Num() > 0;
 
     if (Piece->bRequiresSnap && !bIsSnapped)
     {
@@ -1232,23 +1352,37 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
             }
         }
 
-        // 4코너 모두 MaxGroundHeightDelta 안에 표면이 있어야 한다.
-        FVector Corners[4];
-        GetBottomCorners(LocalBounds, Corners);
-        for (const FVector& Corner : Corners)
+        if (Piece->MinSupportCoverage > 0.f)
         {
-            FHitResult SurfaceHit;
-            if (!TraceSurface(World, Transform.TransformPosition(Corner), Slack, Instigator, Piece->bCanPlaceOnStructure, SurfaceHit))
+            // 바닥 4×4 지점 중 MinSupportCoverage(함정 80%) 이상이 표면에 닿아야 한다 — 토대 가장자리에 반쯤 걸치거나 구멍 위에 놓이지 않게
+            const float Coverage = GetSupportCoverage(World, LocalBounds, Transform, Slack, Instigator, Piece->bCanPlaceOnStructure);
+            if (Coverage < Piece->MinSupportCoverage)
             {
-                return Fail(LOCTEXT("Uneven", "Ground is too uneven"));
+                return Fail(FText::Format(LOCTEXT("NotEnoughSurface", "Not enough surface below ({0}%)"), FText::AsNumber(FMath::RoundToInt(Coverage * 100.f))));
+            }
+        }
+        else
+        {
+            // 4코너 모두 MaxGroundHeightDelta 안에 표면이 있어야 한다.
+            FVector Corners[4];
+            GetBottomCorners(LocalBounds, Corners);
+            for (const FVector& Corner : Corners)
+            {
+                FHitResult SurfaceHit;
+                if (!TraceSurface(World, Transform.TransformPosition(Corner), Slack, Instigator, Piece->bCanPlaceOnStructure, SurfaceHit))
+                {
+                    return Fail(LOCTEXT("Uneven", "Ground is too uneven"));
+                }
             }
         }
     }
 
+    // 소켓 없는 피스(가구·함정)는 맞닿기만 허용(1cm). 구조물은 코너 겹침·소켓 어긋남 허용(22cm)
+    const float SideInset = Piece->Sockets.IsEmpty() ? FreeSideClearance : SideClearance;
     const FVector HalfExtent = LocalBounds.GetExtent();
     const FVector Extent(
-        FMath::Max(1.f, HalfExtent.X - SideClearance),
-        FMath::Max(1.f, HalfExtent.Y - SideClearance),
+        FMath::Max(1.f, HalfExtent.X - SideInset),
+        FMath::Max(1.f, HalfExtent.Y - SideInset),
         FMath::Max(1.f, HalfExtent.Z - FaceClearance));
     const FVector Center = Transform.TransformPosition(LocalBounds.GetCenter());
 

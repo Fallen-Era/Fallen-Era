@@ -31,6 +31,15 @@ namespace
     
     /** 계단처럼 소켓으로도 붙는 땅 피스의 "지면에 닿음" 판정 두께(바닥면 위아래 ±). 토대 밖 계단의 20cm 뜸(토대 높이)을 포함한다 */
     constexpr float GroundContactTolerance = 25.f;
+    
+    /** 소켓 없는 피스의 받침 찾기 상자를 옆으로 줄이는 양 — 옆에 붙어 선 벽은 받침이 아니다 */
+    constexpr float RestingSideInset = 10.f;
+
+    /** 소켓 없는 피스(가구·방어시설)는 받침에 기대기만 하고 다른 피스를 받치지 않는다 */
+    bool CanSupportOthers(const AFEBuildPiece* Piece)
+    {
+        return Piece->GetDefinition() != nullptr && !Piece->GetDefinition()->Sockets.IsEmpty();
+    }
 }
 
 // 세이브 인터페이스가 오기 전까지 쓰는 인메모리 스냅샷. 그때 이 전역과 명령 2개는 어댑터 호출로 바뀐다.
@@ -148,6 +157,37 @@ void UFEBuildingSubsystem::GatherNearbyPieces(const UWorld* World, const FVector
 void UFEBuildingSubsystem::FindConnectedPieces(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* IgnoreActor, TArray<AFEBuildPiece*>& OutConnected)
 {
     if (World == nullptr || Piece == nullptr) return;
+    
+    // 소켓 없는 피스(가구·방어시설): 바닥면 바로 아래(±GroundContactTolerance)에서 받치는 구조물이 이웃 — 받침이 무너지면 같이 무너진다
+    if (Piece->Sockets.IsEmpty())
+    {
+        const UStaticMesh* StaticMesh = Piece->Mesh.Get();
+        if (StaticMesh == nullptr) return;
+
+        const FBox LocalBounds = StaticMesh->GetBoundingBox();
+        const FVector BottomCenter(LocalBounds.GetCenter().X, LocalBounds.GetCenter().Y, LocalBounds.Min.Z);
+        const FVector HalfExtent(
+            FMath::Max(1.f, LocalBounds.GetExtent().X - RestingSideInset),
+            FMath::Max(1.f, LocalBounds.GetExtent().Y - RestingSideInset),
+            GroundContactTolerance);
+
+        TArray<FOverlapResult> Overlaps;
+        FCollisionQueryParams Params(SCENE_QUERY_STAT(FEBuildRestingSupport), false, IgnoreActor);
+        World->OverlapMultiByObjectType(Overlaps, Transform.TransformPosition(BottomCenter), Transform.GetRotation(),
+            FCollisionObjectQueryParams(ECC_FEBuildPiece), FCollisionShape::MakeBox(HalfExtent), Params);
+
+        for (const FOverlapResult& Overlap : Overlaps)
+        {
+            AFEBuildPiece* Support = Cast<AFEBuildPiece>(Overlap.GetActor());
+            const bool bIsPlacedStructure = Support != nullptr && Support->GetState() != EFEBuildPieceState::Preview
+                && !Support->IsActorBeingDestroyed() && CanSupportOthers(Support);
+            if (bIsPlacedStructure)
+            {
+                OutConnected.AddUnique(Support);
+            }
+        }
+        return;
+    }
 
     const float SearchRadius = UFEBuildingSettings::Get()->SnapRadius;
 
@@ -191,6 +231,7 @@ uint8 UFEBuildingSubsystem::PredictSupportDistance(const UFEBuildPieceDefinition
     int32 Best = Unreachable;
     for (const AFEBuildPiece* Neighbor : Connected)
     {
+        if (!CanSupportOthers(Neighbor)) continue; // 가구·방어시설은 받침이 되지 않는다
         if (bBuiltOnly && Neighbor->GetState() != EFEBuildPieceState::Built) continue;
 
         const uint8 NeighborDistance = bBuiltOnly ? Neighbor->GetSupportDistance() : Neighbor->GetDesignSupportDistance();
@@ -205,10 +246,11 @@ bool UFEBuildingSubsystem::IsAnchorAt(const UWorld* World, const UFEBuildPieceDe
 {
     if (World == nullptr || Piece == nullptr || !Piece->bCanPlaceOnGround) return false;
 
-    // 토대(지지 비용 0)는 지금처럼 항상 anchor. 가구는 소켓이 없어 아무것도 받치지 않으므로 anchor 로 둬도 된다 (위층 가구가 무너지지 않게)
-    if (Piece->SupportCost == 0 || Piece->Sockets.IsEmpty()) return true;
+    // 토대(소켓 있고 지지 비용 0)는 항상 anchor. 가구·방어시설(소켓 없음)은 계단처럼 실제로 땅에 닿을 때만 —
+    // 구조물 위에 놓였으면 받침(FindConnectedPieces)에 기대므로 받침이 무너지면 같이 무너진다
+    if (!Piece->Sockets.IsEmpty() && Piece->SupportCost == 0) return true;
 
-    // 소켓으로도 붙는 땅 피스(계단): 바닥면이 지면에 닿아 있을 때만 — 천장에 매단 채 받침을 잃은 계단이 공중에서 anchor 가 되지 않게
+    // 계단·가구·방어시설: 바닥면이 지면에 닿아 있을 때만 — 천장에 매단 계단·구조물 위 가구가 받침을 잃고 공중에서 anchor 가 되지 않게
     const UStaticMesh* StaticMesh = Piece->Mesh.Get();
     if (StaticMesh == nullptr) return false; // Runtime 번들 로드 전 — 보수적으로 anchor 아님
 
@@ -228,6 +270,9 @@ bool UFEBuildingSubsystem::IsAnchorAt(const UWorld* World, const UFEBuildPieceDe
 bool UFEBuildingSubsystem::IsSupported(const UFEBuildPieceDefinition* Piece, uint8 Distance)
 {
     if (Piece == nullptr || Distance == Unreachable) return false;
+    
+    // 소켓 없는 피스는 받침에 닿아 있기만 하면 된다 — 재질 지지 한계는 구조물용 (나무 침대가 돌 2층 위에서 무너지지 않게)
+    if (Piece->Sockets.IsEmpty()) return true;
 
     return Distance <= UFEBuildingSettings::Get()->GetMaxSupportDistance(Piece->Material);
 }
@@ -550,6 +595,7 @@ void UFEBuildingSubsystem::ComputeDistances(const TMap<AFEBuildPiece*, TArray<AF
         AFEBuildPiece* Current = Frontier[BestIndex];
         Frontier.RemoveAtSwap(BestIndex);
         const uint8 CurrentDistance = OutDistance[Current];
+        if (!CanSupportOthers(Current)) continue; // 가구·방어시설에서 받침 쪽으로 거리를 퍼뜨리지 않는다
 
         for (AFEBuildPiece* Neighbor : Adjacency[Current])
         {
