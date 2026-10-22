@@ -16,6 +16,7 @@ class UEnhancedInputLocalPlayerSubsystem;
 class UInputMappingContext;
 class AFEBuildFurnace;
 class AFEBuildStorage;
+class AFEBuildBallista;
 class UFEBuildingViewModel;
 class AFEBuildPiece;
 class UFEBuildPieceDefinition;
@@ -109,6 +110,14 @@ public:
     /** [Client Only] 화로 패널의 불 켜기/끄기 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void ToggleFurnaceLit();
+    
+    /** [Client Only] 탑승 중인 발리스타에서 내린다. GA_Build_BallistaExit(E·우클릭)가 호출한다 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void ExitBallista();
+
+    /** [Client Only] 이 기계의 플레이어가 발리스타에 탔다/내렸다. 발리스타의 OnRep_Operator 가 부른다 (시야·입력·이동 잠금·조준 틱) */
+    void HandleBallistaMounted(AFEBuildBallista* Ballista);
+    void HandleBallistaDismounted(AFEBuildBallista* Ballista);
 
     /** HUD 위젯이 바인딩할 뷰모델. 지연 생성 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
@@ -175,6 +184,14 @@ protected:
     /** [Server RPC] 화로 점화/소화 */
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerSetFurnaceLit(AFEBuildFurnace* Furnace, bool bLit);
+    
+    /** [Server RPC] 발리스타에서 내림. 조작자 본인만 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerExitBallista(AFEBuildBallista* Ballista);
+
+    /** [Server RPC] 조준(발리스타 기준 상대 각도, 도). 다른 플레이어에게 보이는 용도라 Unreliable, 바뀌었을 때만 10Hz 이하 */
+    UFUNCTION(Server, Unreliable, WithValidation)
+    void ServerSetBallistaAim(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch);
 
     /** [Server RPC] 패널을 열 때 소지품 목록 요청 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -335,4 +352,24 @@ private:
     
     /** BuildModeMappingContext 비동기 로드 핸들 */
     TSharedPtr<FStreamableHandle> BuildModeMappingLoadHandle;
+    
+    /** [Client Only] 이 플레이어가 탄 발리스타. 조준 갱신·Tab 탄약 UI·빌드 모드 차단에 쓴다 */
+    UPROPERTY(Transient)
+    TObjectPtr<AFEBuildBallista> MountedBallista;
+
+    /** 발리스타 IMC 를 넣은 입력 서브시스템. 폰이 사라져도 같은 곳에서 빼기 위해 기억한다 (빌드 모드 IMC 와 같은 이유) */
+    TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> BallistaInputOwner;
+
+    /** [Client Only] 매 프레임: 컨트롤 회전 → 발리스타 머리. 각도가 바뀌었으면 10Hz 이하로 서버에 보낸다 */
+    void UpdateBallistaAim();
+
+    int8 LastSentAimYaw = 0;
+    int8 LastSentAimPitch = 0;
+    double LastAimSendTime = -1.0;
+
+    /** Tab 이 탄약 UI 를 열 발리스타: 탑승 중이면 그 발리스타, 아니면(빌드 모드 밖) 조준한 완성 발리스타. 없으면 nullptr */
+    AFEBuildBallista* FindAmmoPanelTarget() const;
+
+    /** 지금 열린 보관함 패널이 발리스타 탄약 위젯이다 (닫을 때 같은 위젯을 닫고, 소지품은 볼트만 보인다) */
+    bool bIsAmmoPanel = false;
 };

@@ -183,6 +183,11 @@ void UFEBuildingViewModel::SetStoragePanelOpen(bool bInOpen)
     UE_MVVM_SET_PROPERTY_VALUE(StoragePanelVisibility, bInOpen ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 }
 
+void UFEBuildingViewModel::SetAmmoPanelOpen(bool bInOpen)
+{
+    UE_MVVM_SET_PROPERTY_VALUE(AmmoPanelVisibility, bInOpen ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+}
+
 void UFEBuildingViewModel::SetStorageTitle(const FText& InTitle)
 {
     UE_MVVM_SET_PROPERTY_VALUE(StorageTitle, InTitle);
@@ -230,6 +235,11 @@ void UFEBuildingViewModel::SelectConstructionTab()
 void UFEBuildingViewModel::SelectFurnitureTab()
 {
     if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Furniture);
+}
+
+void UFEBuildingViewModel::SelectDefenseTab()
+{
+    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Defense);
 }
 
 void UFEBuildingViewModel::SetAimedPiece(const FText& InName, float InHealthPercent, const FText& InRepairCost, const FText& InUpgrade)

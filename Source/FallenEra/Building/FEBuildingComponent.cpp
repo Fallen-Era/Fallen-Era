@@ -29,6 +29,9 @@
 #include "FallenEraCharacter.h"
 #include "Combat/Collision/FECollisionChannels.h"
 #include "InputMappingContext.h"
+#include "FEBuildBallista.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -46,16 +49,23 @@ namespace
         return FText::Join(FText::FromString(TEXT(", ")), Parts);
     }
     
-    /** 구조물은 건설 탭, 그 외(가구·방어시설·이동)는 가구 탭 */
+    /** 구조물은 건설 탭, 방어시설(함정·발리스타)은 방어 탭, 그 외(가구·이동)는 가구 탭 */
     bool MatchesMenuTab(const UFEBuildPieceDefinition& Definition, EFEBuildMenuTab Tab)
     {
-        const bool bIsStructure = Definition.Category == FEBuildingTags::Build_Piece_Structure;
-        return Tab == (bIsStructure ? EFEBuildMenuTab::Construction : EFEBuildMenuTab::Furniture);
+        const EFEBuildMenuTab PieceTab = Definition.Category == FEBuildingTags::Build_Piece_Structure ? EFEBuildMenuTab::Construction
+            : Definition.Category == FEBuildingTags::Build_Piece_Defense ? EFEBuildMenuTab::Defense
+            : EFEBuildMenuTab::Furniture;
+        return Tab == PieceTab;
     }
 
     FText GetMenuTabTitle(EFEBuildMenuTab Tab)
     {
-        return Tab == EFEBuildMenuTab::Construction ? LOCTEXT("TabConstruction", "건설") : LOCTEXT("TabFurniture", "가구");
+        switch (Tab)
+        {
+        case EFEBuildMenuTab::Construction: return LOCTEXT("TabConstruction", "건설");
+        case EFEBuildMenuTab::Defense:      return LOCTEXT("TabDefense", "방어");
+        default:                            return LOCTEXT("TabFurniture", "가구");
+        }
     }
 
     /** 투입 패널 선택지: 재질 미정이면 사슬 전체(나무·돌·철), 정해졌으면 현재 재질 하나.
@@ -122,6 +132,9 @@ namespace
 
     /** [Client] 고스트가 움직이는 동안의 최소 검증 간격. 클릭 순간에는 ConfirmPlacement 가 따로 검증한다 */
     constexpr double PreviewMovingValidateInterval = 0.05;
+    
+    /** [Client] 발리스타 조준을 서버로 보내는 최소 간격 (다른 플레이어에게 보이는 용도, 바뀌었을 때만) */
+    constexpr double BallistaAimSendInterval = 0.1;
 
     /** [Server] 요청 간격 제한. 받을 때마다 NextAllowedTime 을 Interval 씩 누적한다 —
      *  지터로 일찍 온 요청(Interval 의 절반까지)은 받되, 아무리 빨리 보내도 평균 간격은 Interval */
@@ -309,6 +322,7 @@ void UFEBuildingComponent::ToggleBuildMode()
         CancelBuild();
         return;
     }
+    if (MountedBallista != nullptr) return; // 발리스타 조작 중에는 빌드 모드에 들어가지 않는다 (좌클릭·E 는 발리스타 것)
     bIsInBuildMode = true;
     UpdateBuildModeState();
     UE_LOG(LogFEBuilding, Log, TEXT("Build mode on"));
@@ -437,6 +451,17 @@ void UFEBuildingComponent::UpgradePiece()
 
 void UFEBuildingComponent::ToggleBuildMenu()
 {
+    // Tab 이 탄약 UI 를 맡는 경우: 열려 있으면 닫고, 탑승 중이거나(빌드 모드 밖에서) 완성 발리스타를 조준하고 있으면 연다
+    if (bIsAmmoPanel)
+    {
+        CloseStoragePanel();
+        return;
+    }
+    if (AFEBuildBallista* AmmoTarget = FindAmmoPanelTarget())
+    {
+        OpenStoragePanel(AmmoTarget);
+        return;
+    }
     if (bIsMenuOpen)
     {
         CloseBuildMenu();
@@ -588,7 +613,16 @@ void UFEBuildingComponent::OpenStoragePanel(AFEBuildStorage* Storage)
 
     const UFEBuildPieceDefinition* Definition = Storage->GetDefinition();
     GetViewModel()->SetStorageTitle(Definition ? Definition->DisplayName : FText::GetEmpty());
-    GetViewModel()->SetStoragePanelOpen(true);
+    // 발리스타는 전용 탄약 위젯, 그 외는 보관함 패널. 칸 목록(StorageSlots·CarriedSlots)은 같은 것을 쓴다
+    bIsAmmoPanel = Storage->IsA<AFEBuildBallista>();
+    if (bIsAmmoPanel)
+    {
+        GetViewModel()->SetAmmoPanelOpen(true);
+    }
+    else
+    {
+        GetViewModel()->SetStoragePanelOpen(true);
+    }
     
     // 화로면 진행 바 줄을 보이고 점화·진행도 변화를 받는다
     AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(Storage);
@@ -618,6 +652,8 @@ void UFEBuildingComponent::CloseStoragePanel()
     }
     CarriedItems.Reset();
     GetViewModel()->SetStoragePanelOpen(false);
+    GetViewModel()->SetAmmoPanelOpen(false);
+    bIsAmmoPanel = false;
     GetViewModel()->SetStorageSlots(TArray<UObject*>());
     GetViewModel()->SetCarriedSlots(TArray<UObject*>());
     GetViewModel()->SetFurnaceVisible(false);
@@ -673,6 +709,9 @@ void UFEBuildingComponent::RefreshStorageSlots()
     TArray<UObject*> Carried;
     for (const FFEBuildItemCost& Entry : CarriedItems)
     {
+        FText Ignored;
+        if (bIsAmmoPanel && !StorageTarget->AcceptsItem(Entry.ItemTag, Ignored)) continue; // 탄약 위젯은 볼트만 보인다
+        
         for (int32 Left = Entry.Count; Left > 0; Left -= MaxStack)
         {
             UFEItemSlotViewModel* Slot = NewObject<UFEItemSlotViewModel>(GetViewModel());
@@ -704,15 +743,16 @@ void UFEBuildingComponent::ShowNotice(const FText& Text)
 void UFEBuildingComponent::UpdateBuildModeState()
 {
     // 1) State.Building 태그. 빌드 모드 중엔 회전(E)과 상호작용(E)이 같은 키라 상호작용 컴포넌트가 이 태그를 보고 스스로 꺼진다.
-    //    로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
-    UAbilitySystemComponent* ASC = bIsInBuildMode
+    //    발리스타 탑승 중에도 켠다(상호작용 프롬프트 숨김). 로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
+    const bool bWantsTag = bIsInBuildMode || MountedBallista != nullptr;
+    UAbilitySystemComponent* ASC = bWantsTag
         ? UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner())
         : BuildModeTagOwner.Get();
     if (ASC != nullptr)
     {
-        ASC->SetLooseGameplayTagCount(FEBuildingTags::State_Building, bIsInBuildMode ? 1 : 0);
+        ASC->SetLooseGameplayTagCount(FEBuildingTags::State_Building, bWantsTag ? 1 : 0);
     }
-    BuildModeTagOwner = bIsInBuildMode ? ASC : nullptr;
+    BuildModeTagOwner = bWantsTag ? ASC : nullptr;
 
     // 2) 빌드 모드 전용 IMC. 전투 IMC(우선순위 20)보다 높게 넣어 같은 키(좌·우클릭)를 가져온다 → 빌드 모드 중엔 공격이 나가지 않는다.
     //    뺄 때는 넣었던 서브시스템을 쓴다. 폰이 사라지는 EndPlay 에선 컨트롤러를 이미 못 찾을 수 있다.
@@ -928,6 +968,10 @@ void UFEBuildingComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
     {
         UpdatePreview();
     }
+    if (MountedBallista != nullptr)
+    {
+        UpdateBallistaAim();
+    }
 }
 
 void UFEBuildingComponent::BeginPlay()
@@ -951,6 +995,11 @@ void UFEBuildingComponent::BeginPlay()
 
 void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    // 탑승 중 폰이 사라지면 시야·입력·태그를 되돌린다 (서버의 발리스타는 조작자 확인 타이머로 내린다)
+    if (MountedBallista != nullptr)
+    {
+        HandleBallistaDismounted(MountedBallista);
+    }
     // 빌드 모드 중 폰이 사라지면 PlayerState 의 ASC 에 태그가 남아 다음 폰의 상호작용이 막힌다
     bIsInBuildMode = false;
     UpdateBuildModeState();
@@ -1691,6 +1740,142 @@ void UFEBuildingComponent::UpdateAimedPiece()
     }
 
     GetViewModel()->SetAimedPiece(Piece->GetDefinition()->DisplayName, Percent, RepairText, UpgradeText);
+}
+
+void UFEBuildingComponent::ExitBallista()
+{
+    if (MountedBallista != nullptr)
+    {
+        ServerExitBallista(MountedBallista);
+    }
+}
+
+void UFEBuildingComponent::HandleBallistaMounted(AFEBuildBallista* Ballista)
+{
+    APawn* Pawn = Cast<APawn>(GetOwner());
+    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    if (Ballista == nullptr || PlayerController == nullptr || !Pawn->IsLocallyControlled()) return;
+
+    CancelBuild(); // 탑승 전에 열려 있던 빌드 모드·메뉴 정리
+    MountedBallista = Ballista;
+
+    // 이동 잠금. 서버도 같은 처리를 한다 — 소유 클라의 예측이 서버와 어긋나 위치 보정이 생기지 않게
+    if (ACharacter* Character = Cast<ACharacter>(Pawn))
+    {
+        Character->GetCharacterMovement()->DisableMovement();
+    }
+
+    // 시야를 발리스타 카메라로, 조준은 정면에서 시작
+    PlayerController->SetViewTargetWithBlend(Ballista, 0.3f);
+    PlayerController->SetControlRotation(FRotator(0.f, Ballista->GetActorRotation().Yaw, 0.f));
+
+    // 발리스타 입력(좌클릭 발사·E/우클릭 내림). 전투(20)·빌드 모드(30)보다 높은 우선순위로 같은 키를 가져온다 → 개인 무기가 나가지 않는다
+    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer());
+    UInputMappingContext* MappingContext = Ballista->GetMappingContext();
+    if (InputSubsystem != nullptr && MappingContext != nullptr)
+    {
+        InputSubsystem->AddMappingContext(MappingContext, Ballista->GetMappingPriority());
+        BallistaInputOwner = InputSubsystem;
+    }
+
+    UpdateBuildModeState();        // State.Building → 상호작용 프롬프트 끔
+    SetComponentTickEnabled(true); // 조준 추종
+    LastAimSendTime = -1.0;
+    UE_LOG(LogFEBuilding, Log, TEXT("%s mounted %s"), *GetNameSafe(Pawn), *Ballista->GetName());
+}
+
+void UFEBuildingComponent::HandleBallistaDismounted(AFEBuildBallista* Ballista)
+{
+    if (MountedBallista == nullptr) return;
+    MountedBallista = nullptr;
+
+    APawn* Pawn = Cast<APawn>(GetOwner());
+    if (ACharacter* Character = Cast<ACharacter>(Pawn))
+    {
+        Character->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+    }
+    if (APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr)
+    {
+        PlayerController->SetViewTargetWithBlend(Pawn, 0.3f);
+    }
+
+    // 넣었던 서브시스템에서 뺀다. 발리스타가 부서지는 중이어도 EndPlay 동안은 유효하다
+    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = BallistaInputOwner.Get();
+    UInputMappingContext* MappingContext = Ballista ? Ballista->GetMappingContext() : nullptr;
+    if (InputSubsystem != nullptr && MappingContext != nullptr)
+    {
+        InputSubsystem->RemoveMappingContext(MappingContext);
+    }
+    BallistaInputOwner = nullptr;
+
+    if (bIsAmmoPanel && StorageTarget == Ballista)
+    {
+        CloseStoragePanel();
+    }
+    UpdateBuildModeState();
+    SetComponentTickEnabled(bIsInBuildMode);
+    UE_LOG(LogFEBuilding, Log, TEXT("%s dismounted %s"), *GetNameSafe(Pawn), *GetNameSafe(Ballista));
+}
+
+void UFEBuildingComponent::UpdateBallistaAim()
+{
+    const APawn* Pawn = Cast<APawn>(GetOwner());
+    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    if (PlayerController == nullptr || MountedBallista == nullptr) return;
+
+    // 범위로 자른 각도를 머리에 바로 적용하고, 컨트롤 회전도 그 범위로 되돌린다 — 마우스가 한계 밖으로 쌓이면 돌아올 때 멈춘 것처럼 느껴진다
+    const FVector2D Aim = MountedBallista->ApplyLocalAim(PlayerController->GetControlRotation());
+    PlayerController->SetControlRotation(FRotator(Aim.Y, MountedBallista->GetActorRotation().Yaw + Aim.X, 0.f));
+
+    // 다른 플레이어용: 바뀌었을 때만, BallistaAimSendInterval 이하 빈도로
+    const int8 Yaw = static_cast<int8>(FMath::RoundToInt(Aim.X));
+    const int8 Pitch = static_cast<int8>(FMath::RoundToInt(Aim.Y));
+    const double Now = GetWorld()->GetTimeSeconds();
+    const bool bChanged = Yaw != LastSentAimYaw || Pitch != LastSentAimPitch;
+    if (bChanged && (LastAimSendTime < 0.0 || Now - LastAimSendTime >= BallistaAimSendInterval))
+    {
+        LastSentAimYaw = Yaw;
+        LastSentAimPitch = Pitch;
+        LastAimSendTime = Now;
+        ServerSetBallistaAim(MountedBallista, Yaw, Pitch);
+    }
+}
+
+AFEBuildBallista* UFEBuildingComponent::FindAmmoPanelTarget() const
+{
+    if (MountedBallista != nullptr) return MountedBallista;
+    if (bIsInBuildMode) return nullptr; // 빌드 모드의 Tab 은 빌드 메뉴
+
+    AFEBuildBallista* Aimed = Cast<AFEBuildBallista>(FindPieceUnderCrosshair());
+    return Aimed != nullptr && Aimed->GetState() == EFEBuildPieceState::Built ? Aimed : nullptr;
+}
+
+bool UFEBuildingComponent::ServerExitBallista_Validate(AFEBuildBallista* Ballista)
+{
+    return true; // nullptr·남의 발리스타는 Implementation 에서 무시 (킥할 일은 아니다)
+}
+
+void UFEBuildingComponent::ServerExitBallista_Implementation(AFEBuildBallista* Ballista)
+{
+    // 조작자 본인만 내릴 수 있다
+    if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
+    {
+        Ballista->SetOperator(nullptr);
+    }
+}
+
+bool UFEBuildingComponent::ServerSetBallistaAim_Validate(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch)
+{
+    return true;
+}
+
+void UFEBuildingComponent::ServerSetBallistaAim_Implementation(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch)
+{
+    // 조작자만. 범위는 발리스타가 다시 자른다
+    if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
+    {
+        Ballista->SetReplicatedAim(Yaw, Pitch);
+    }
 }
 
 void UFEBuildingComponent::ClientShowNotice_Implementation(const FText& Text)

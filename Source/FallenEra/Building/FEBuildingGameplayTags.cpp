@@ -12,6 +12,7 @@ namespace FEBuildingTags
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Build_Demolish,    "Ability.Input.Build.Demolish",  "X. 조준 피스 철거");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Build_Menu,        "Ability.Input.Build.Menu",      "Tab. 빌드 메뉴 열기/닫기 (빌드 모드 밖에서 누르면 진입)");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Interact,          "Ability.Input.Interact",        "E. 조준/근접 IFEInteractable 과 상호작용. 팀 공용 후보");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Ballista_Exit,     "Ability.Input.Ballista.Exit",   "E·우클릭 (발리스타 탑승 중). 내리기");
     
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Building,                  "State.Building",                "빌드 모드 중 (로컬). 상호작용 등이 이 태그로 스스로 꺼진다");
 
