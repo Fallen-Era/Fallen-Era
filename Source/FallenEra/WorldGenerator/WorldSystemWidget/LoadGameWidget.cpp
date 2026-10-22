@@ -122,8 +122,8 @@ void ULoadGameWidget::UpdateRegistryElements()
 				"WorldInfoFormat",
 				"World Size : {0} x {1}\nWorld Difficulty : {2}"
 			),
-			FText::AsNumber(World.WorldSize.X),
-			FText::AsNumber(World.WorldSize.Y),
+			FText::AsNumber(World.WorldBounds.Max.X * 2),
+			FText::AsNumber(World.WorldBounds.Max.Y * 2),
 			DifficultyText
 		);
 
@@ -169,4 +169,10 @@ void ULoadGameWidget::OnDeleteClicked()
 	WorldRegistrySubsystem->RemoveRegistry(FocusElement->MetaData);
 	
 	UpdateRegistryElements();
+	
+	UWorldRegistryElement* TopRegistry = Cast<UWorldRegistryElement>(VB_ElementList->GetChildAt(0));
+	if (TopRegistry)
+	{
+		SetFocus(TopRegistry);
+	}
 }

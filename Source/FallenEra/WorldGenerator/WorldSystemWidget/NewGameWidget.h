@@ -71,12 +71,20 @@ private:
 	
 	UFUNCTION()
 	void OnRandomizeClicked();
-	
+	static void ValidatePositiveIntegerInput(UEditableText* EditableTextRef, FText& PreviousValidValue, const FText& NewText);
+	static void SnapToHundred(UEditableText* EditableTextRef, FText& PreviousValidValue);
+
 	UFUNCTION()
 	void OnTXTSizeXChanged(const FText& Text);
 	
 	UFUNCTION()
 	void OnTXTSizeYChanged(const FText& Text);
+	
+	UFUNCTION()
+	void OnTXTSizeXCommitted(const FText& Text, ETextCommit::Type CommitMethod);
+	
+	UFUNCTION()
+	void OnTXTSizeYCommitted(const FText& Text, ETextCommit::Type CommitMethod);
 	
 	UFUNCTION()
 	void OnTXTSeedChanged(const FText& Text);

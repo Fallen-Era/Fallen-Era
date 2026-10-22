@@ -125,11 +125,9 @@ void UWorldRegistrySubsystem::PostWorldCreate(UWorld* OpenWorld)
 	Stamp->Layer = HeightLayers[0].Get();
 	Stamp->Transform = FTransform::Identity;
 	
-	const FVector2D HalfWorldSize(
-		Request.WorldSize.X * 0.5f,
-		Request.WorldSize.Y * 0.5f);
+
 	
-	const FBox2D Bounds(-HalfWorldSize, HalfWorldSize);
+	const FBox2D& Bounds = Request.WorldBounds;
 	
 	FString Error;
 	if (!Stamp->SetParameter(TEXT("Bounds"), Bounds, &Error))
@@ -160,8 +158,8 @@ void UWorldRegistrySubsystem::PostWorldCreate(UWorld* OpenWorld)
 	FWorldRegistryData Entry;
 	Entry.WorldId = FGuid::NewGuid();
 	Entry.DisplayName = Request.DisplayName;
-	Entry.WorldSize = Request.WorldSize;
-	Entry.Diffculty = Request.Diffculty;
+	Entry.WorldBounds = Request.WorldBounds;
+	Entry.Diffculty = Request.Difficulty;
 	Entry.ProfileSlotName = FString::Printf(
 		TEXT("World_%s"),
 		*Entry.WorldId.ToString(EGuidFormats::Digits));
@@ -271,7 +269,7 @@ void UWorldRegistrySubsystem::PostWorldLoad(UWorld* OpenWorld)
 	ActiveTracker->SetSlotName(PendingSlotName);
 	ActiveTracker->SetSessionId(FGuid::NewGuid());
 	
-	ActiveTracker->GetRegistryDataRef().WorldSize = Save->Definition.WorldSize;
+	ActiveTracker->GetRegistryDataRef().WorldBounds = Save->Definition.WorldSize;
 
 	UE_LOG(LogTemp, Log, TEXT("%s::%s : World restored : %s, %d stamps"), *GetClass()->GetName(), TEXT(__FUNCTION__),
 		*PendingSlotName,
@@ -392,9 +390,10 @@ void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCrea
 		return;
 	}
 	
-	const FIntPoint WorldSize = Request.WorldSize;
+	const FBox2D WorldSize = Request.WorldBounds;
 	
-	if (WorldSize.X <= 0 || WorldSize.Y <= 0)
+	if (WorldSize.Min.X <= 0 || WorldSize.Min.Y <= 0 ||
+		WorldSize.Max.X <= 0 || WorldSize.Max.Y <= 0)
 	{
 		UE_LOG(LogTemp, Error, TEXT("%s::%s : World size must be positive."), *GetClass()->GetName(), TEXT(__FUNCTION__));
 		return;
@@ -487,7 +486,7 @@ bool UWorldRegistrySubsystem::SaveWorld()
 	
 	
 	Save->Definition.WorldId = MetaData.WorldId;
-	Save->Definition.WorldSize = MetaData.WorldSize;
+	Save->Definition.WorldSize = MetaData.WorldBounds;
 	
 	Save->LayerStack = Stack;
 	
@@ -674,13 +673,16 @@ void UWorldRegistrySubsystem::LoadRegistry()
 
 	for (const FWorldRegistryData& Entry : WorldRegistry->GetWorldRegistryList())
 	{
-		if (Entry.WorldSize.X <= 0 || Entry.WorldSize.Y <= 0 ||
-			static_cast<uint8>(Entry.Diffculty) > static_cast<uint8>(EWorldDiffculty::InTheHell))
+		if (Entry.WorldBounds.Min.X <= 0 || Entry.WorldBounds.Min.Y <= 0 ||
+			Entry.WorldBounds.Max.X <= 0 || Entry.WorldBounds.Max.Y <= 0 ||
+			static_cast<uint8>(Entry.Diffculty) > static_cast<uint8>(EWorldDifficulty::InTheHell))
 		{
 			UE_LOG(LogTemp, Warning,
-				TEXT("%s::%s : Invalid saved metadata for '%s': WorldId=%s, Size=%d x %d, Difficulty=%d, Slot='%s'."),
+				TEXT("%s::%s : Invalid saved metadata for '%s': WorldId=%s, Size= Min(%f x %f) Max(%f x %f), Difficulty=%d, Slot='%s'."),
 				*GetClass()->GetName(), TEXT(__FUNCTION__), *Entry.DisplayName, *Entry.WorldId.ToString(),
-				Entry.WorldSize.X, Entry.WorldSize.Y, static_cast<uint8>(Entry.Diffculty), *Entry.ProfileSlotName);
+				Entry.WorldBounds.Min.X, Entry.WorldBounds.Min.Y, 
+				Entry.WorldBounds.Max.X, Entry.WorldBounds.Max.Y, 
+				static_cast<uint8>(Entry.Diffculty), *Entry.ProfileSlotName);
 		}
 	}
 	

@@ -32,7 +32,8 @@ public class FallenEra : ModuleRules
 			"Slate",
 			"SlateCore",
 			"PhysicsCore",
-			"DeveloperSettings"
+			"DeveloperSettings",
+			"Voronoi",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] 

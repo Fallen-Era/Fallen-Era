@@ -5,29 +5,34 @@
 
 
 USTRUCT(Blueprintable)
-struct FRegionSeed
+struct FRegionSite
 {
 	GENERATED_BODY()
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	FVector Center = FVector::ZeroVector;
+	FVector2D Center = FVector2D::ZeroVector;
 	
 };
 
+USTRUCT(Blueprintable)
+struct FRegionLink
+{
+	GENERATED_BODY()
+	
+	int32 NeighborRegionIndex = INDEX_NONE;
+	int32 EdgeIndex = INDEX_NONE;
+};
 
 USTRUCT(Blueprintable)
 struct FRegionEdge
 {
 	GENERATED_BODY()
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	int	RegionIdx;
-	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	FVector A;
-	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	FVector B;
+	FVector2D A = FVector2D::ZeroVector;
+	FVector2D B = FVector2D::ZeroVector;
+
+	int32 RegionA = INDEX_NONE;
+	int32 RegionB = INDEX_NONE;
 };
 
 /*

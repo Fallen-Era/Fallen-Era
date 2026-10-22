@@ -19,8 +19,19 @@ void UNewGameWidget::NativeConstruct()
 	if (Btn_Randomize) Btn_Randomize->OnClicked.AddDynamic(this, &UNewGameWidget::OnRandomizeClicked);
 
 	
-	if (EDIT_TXT_Size_X) EDIT_TXT_Size_X->OnTextChanged.AddDynamic(this, &UNewGameWidget::OnTXTSizeXChanged);
-	if (EDIT_TXT_Size_Y) EDIT_TXT_Size_Y->OnTextChanged.AddDynamic(this, &UNewGameWidget::OnTXTSizeYChanged);
+	if (EDIT_TXT_Size_X)
+	{
+		EDIT_TXT_Size_X->OnTextChanged.AddDynamic(this, &UNewGameWidget::OnTXTSizeXChanged);
+		EDIT_TXT_Size_X->OnTextCommitted.AddDynamic(this, &UNewGameWidget::OnTXTSizeXCommitted);
+	}
+	
+	if (EDIT_TXT_Size_Y)
+	{
+		EDIT_TXT_Size_Y->OnTextChanged.AddDynamic(this, &UNewGameWidget::OnTXTSizeYChanged);
+		EDIT_TXT_Size_Y->OnTextCommitted.AddDynamic(this, &UNewGameWidget::OnTXTSizeYCommitted);
+	}
+	
+	
 	if (EDIT_TXT_WorldSeed) EDIT_TXT_WorldSeed->OnTextChanged.AddDynamic(this, &UNewGameWidget::OnTXTSeedChanged);
 	
 	
@@ -60,16 +71,31 @@ void UNewGameWidget::OnWorldGenerateClicked()
 	const int32 X = FCString::Atoi(*EDIT_TXT_Size_X->GetText().ToString());
 	const int32 Y = FCString::Atoi(*EDIT_TXT_Size_Y->GetText().ToString());
 	
+	FVector2D Extent = FVector2D(512, 512);
 	/*
 	 * World Size Setting
 	 */
 	if (X <= 0 || Y <= 0)
 	{
-		Request.WorldSize= FIntPoint(1024, 1024);
+		Request.WorldBounds = FBox2D(-Extent, Extent);
 	}
 	else
 	{
-		Request.WorldSize= FIntPoint(X, Y);
+		Extent = FVector2D(X, Y);
+		Extent *= 0.5;
+		Request.WorldBounds = FBox2D(-Extent, Extent);
+	}
+	
+	/*
+	 * World Seed Setting
+	 */
+	FText SeedText = EDIT_TXT_WorldSeed->GetText();
+	
+	
+	// 보류
+	if ()
+	{
+		
 	}
 	
 	UGameplayMessageSubsystem& MessageSubsystem = 
@@ -88,15 +114,15 @@ void UNewGameWidget::OnRandomizeClicked()
 	RandomizeSeed(FMath::Rand());
 }
 
-void UNewGameWidget::OnTXTSizeXChanged(const FText& Text)
+void UNewGameWidget::ValidatePositiveIntegerInput(UEditableText* EditableTextRef, FText& PreviousValidValue, const FText& NewText)
 {
-	const FString Input = Text.ToString();
+	const FString Input = NewText.ToString();
 
 	for (const TCHAR Char : Input)
 	{
 		if (!FChar::IsDigit(Char))
 		{
-			EDIT_TXT_Size_X->SetText(ValidSizeX);
+			EditableTextRef->SetText(PreviousValidValue);
 			return;
 		}
 	}
@@ -105,35 +131,62 @@ void UNewGameWidget::OnTXTSizeXChanged(const FText& Text)
 
 	if (LexTryParseString(Value, *Input) && Value > 0)
 	{
-		ValidSizeX = Text;
+		PreviousValidValue = NewText;
 		return;
 	}
 
-	EDIT_TXT_Size_X->SetText(ValidSizeX);
+	EditableTextRef->SetText(PreviousValidValue);
 }
+
+void UNewGameWidget::SnapToHundred(
+	UEditableText* EditableTextRef,
+	FText& PreviousValidValue)
+{
+	if (!IsValid(EditableTextRef))
+	{
+		return;
+	}
+
+	int32 Value = 0;
+	if (!LexTryParseString(Value, *PreviousValidValue.ToString()) ||
+		Value <= 0)
+	{
+		return;
+	}
+
+	constexpr int32 Step = 100;
+	Value = FMath::Max(Step, (Value / Step) * Step);
+
+	const FString SnappedString = FString::FromInt(Value);
+	PreviousValidValue = FText::FromString(SnappedString);
+
+	if (EditableTextRef->GetText().ToString() != SnappedString)
+	{
+		EditableTextRef->SetText(PreviousValidValue);
+	}
+}
+
+void UNewGameWidget::OnTXTSizeXChanged(const FText& Text)
+{
+	ValidatePositiveIntegerInput(EDIT_TXT_Size_X, ValidSizeX, Text);
+	
+}
+
 
 void UNewGameWidget::OnTXTSizeYChanged(const FText& Text)
 {
-	const FString Input = Text.ToString();
+	ValidatePositiveIntegerInput(EDIT_TXT_Size_Y, ValidSizeY, Text);
+	
+}
 
-	for (const TCHAR Char : Input)
-	{
-		if (!FChar::IsDigit(Char))
-		{
-			EDIT_TXT_Size_Y->SetText(ValidSizeY);
-			return;
-		}
-	}
+void UNewGameWidget::OnTXTSizeXCommitted(const FText& Text, ETextCommit::Type CommitMethod)
+{
+	SnapToHundred(EDIT_TXT_Size_X, ValidSizeX);
+}
 
-	int32 Value = 0;
-
-	if (LexTryParseString(Value, *Input) && Value > 0)
-	{
-		ValidSizeY = Text;
-		return;
-	}
-
-	EDIT_TXT_Size_Y->SetText(ValidSizeY);
+void UNewGameWidget::OnTXTSizeYCommitted(const FText& Text, ETextCommit::Type CommitMethod)
+{
+	SnapToHundred(EDIT_TXT_Size_Y, ValidSizeY);
 }
 
 void UNewGameWidget::OnTXTSeedChanged(const FText& Text)

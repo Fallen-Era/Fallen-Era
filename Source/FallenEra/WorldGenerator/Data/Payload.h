@@ -6,7 +6,7 @@
 #include "Payload.generated.h"
 
 UENUM(Blueprintable)
-enum class EWorldDiffculty : uint8
+enum class EWorldDifficulty : uint8
 {
 	Easy UMETA(DisplayName="Easy"),
 	Normal UMETA(DisplayName="Normal"),
@@ -33,13 +33,13 @@ struct FALLENERA_API FWorldCreateRequest
 	FString DisplayName;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	FIntPoint WorldSize = FIntPoint::ZeroValue;
+	FBox2D WorldBounds;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 WorldSeed;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	EWorldDiffculty Diffculty = EWorldDiffculty::Normal;
+	EWorldDifficulty Difficulty = EWorldDifficulty::Normal;
 	
 };
 
@@ -74,10 +74,10 @@ struct FALLENERA_API FWorldRegistryData
 	FString DisplayName;
 	
 	UPROPERTY(VisibleAnywhere)
-	EWorldDiffculty Diffculty = EWorldDiffculty::Normal;
+	EWorldDifficulty Diffculty = EWorldDifficulty::Normal;
 	
 	UPROPERTY(VisibleAnywhere)
-	FIntPoint WorldSize = FIntPoint(0, 0);
+	FBox2D WorldBounds = FBox2D();
 	
 	UPROPERTY(VisibleAnywhere)
 	FString ProfileSlotName;
@@ -101,10 +101,10 @@ struct FALLENERA_API FWorldDefinitionData
 	int32 WorldSeed = 0;
 	
 	UPROPERTY()
-	FIntPoint WorldSize = FIntPoint::ZeroValue;
+	FBox2D WorldSize = FBox2D();
 	
 	UPROPERTY()
-	EWorldDiffculty Diffculty = EWorldDiffculty::Normal;
+	EWorldDifficulty Diffculty = EWorldDifficulty::Normal;
 	
 };
 
