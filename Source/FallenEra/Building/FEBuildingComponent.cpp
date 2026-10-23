@@ -135,15 +135,6 @@ namespace
     
     /** [Client] 발리스타 조준을 서버로 보내는 최소 간격 (다른 플레이어에게 보이는 용도, 바뀌었을 때만) */
     constexpr double BallistaAimSendInterval = 0.1;
-
-    /** [Server] 요청 간격 제한. 받을 때마다 NextAllowedTime 을 Interval 씩 누적한다 —
-     *  지터로 일찍 온 요청(Interval 의 절반까지)은 받되, 아무리 빨리 보내도 평균 간격은 Interval */
-    bool ConsumeRequestSlot(double& NextAllowedTime, double Now, double Interval)
-    {
-        if (Now < NextAllowedTime - Interval * 0.5) return false;
-        NextAllowedTime = FMath::Max(NextAllowedTime, Now) + Interval;
-        return true;
-    }
     
     UClass* ResolvePieceClass(const UFEBuildPieceDefinition* Piece)
     {
@@ -971,6 +962,7 @@ void UFEBuildingComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
     if (MountedBallista != nullptr)
     {
         UpdateBallistaAim();
+        UpdateBallistaHud();
     }
 }
 
@@ -1674,7 +1666,7 @@ bool UFEBuildingComponent::TrySwingTool(FGameplayTag InputTag)
 bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
 {
     // 속도 제한이 가장 먼저 — 도구 없이 보내는 요청도 거절 로그·안내 RPC 를 간격당 한 번만 만든다
-    if (!ConsumeRequestSlot(NextRepairAllowedTime, GetWorld()->GetTimeSeconds(), UFEBuildingSettings::Get()->RepairInterval))
+    if (!FEBuilding::ConsumeRequestSlot(NextRepairAllowedTime, GetWorld()->GetTimeSeconds(), UFEBuildingSettings::Get()->RepairInterval))
     {
         return false;
     }
@@ -1750,6 +1742,27 @@ void UFEBuildingComponent::ExitBallista()
     }
 }
 
+void UFEBuildingComponent::FireBallista()
+{
+    const APawn* Pawn = Cast<APawn>(GetOwner());
+    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    if (MountedBallista == nullptr || PlayerController == nullptr) return;
+
+    const double Now = GetWorld()->GetTimeSeconds();
+    if (Now < BallistaReadyTime) return; // 장전 중 — HUD 가 이미 "장전 중"을 보여 준다
+
+    if (MountedBallista->GetAmmoCount() <= 0)
+    {
+        ShowNotice(LOCTEXT("BallistaNoAmmo", "탄약이 없습니다 (Tab: 탄약)"));
+        return;
+    }
+
+    // 지금 화면의 조준(정밀값)으로 보낸다. 로컬 장전을 바로 시작 — 서버도 발리스타별로 다시 확인한다
+    const FVector2D Aim = MountedBallista->ApplyLocalAim(PlayerController->GetControlRotation());
+    BallistaReadyTime = Now + MountedBallista->GetReloadTime();
+    ServerFireBallista(MountedBallista, Aim.X, Aim.Y);
+}
+
 void UFEBuildingComponent::HandleBallistaMounted(AFEBuildBallista* Ballista)
 {
     APawn* Pawn = Cast<APawn>(GetOwner());
@@ -1781,6 +1794,7 @@ void UFEBuildingComponent::HandleBallistaMounted(AFEBuildBallista* Ballista)
     UpdateBuildModeState();        // State.Building → 상호작용 프롬프트 끔
     SetComponentTickEnabled(true); // 조준 추종
     LastAimSendTime = -1.0;
+    LastHudAmmo = -1; // 다음 틱에 탄약 HUD 를 무조건 그린다
     UE_LOG(LogFEBuilding, Log, TEXT("%s mounted %s"), *GetNameSafe(Pawn), *Ballista->GetName());
 }
 
@@ -1812,6 +1826,7 @@ void UFEBuildingComponent::HandleBallistaDismounted(AFEBuildBallista* Ballista)
     {
         CloseStoragePanel();
     }
+    GetViewModel()->SetBallistaHud(false, FText::GetEmpty());
     UpdateBuildModeState();
     SetComponentTickEnabled(bIsInBuildMode);
     UE_LOG(LogFEBuilding, Log, TEXT("%s dismounted %s"), *GetNameSafe(Pawn), *GetNameSafe(Ballista));
@@ -1839,6 +1854,23 @@ void UFEBuildingComponent::UpdateBallistaAim()
         LastAimSendTime = Now;
         ServerSetBallistaAim(MountedBallista, Yaw, Pitch);
     }
+}
+
+void UFEBuildingComponent::UpdateBallistaHud()
+{
+    if (MountedBallista == nullptr) return;
+
+    const int32 AmmoCount = MountedBallista->GetAmmoCount();
+    const bool bReloading = GetWorld()->GetTimeSeconds() < BallistaReadyTime;
+    if (AmmoCount == LastHudAmmo && bReloading == bLastHudReloading) return; // 바뀐 게 없으면 뷰모델 알림을 보내지 않는다
+
+    LastHudAmmo = AmmoCount;
+    bLastHudReloading = bReloading;
+    const FText AmmoText = FText::Format(LOCTEXT("BallistaHud", "{0} {1} / {2}"),
+        MountedBallista->GetSlotLabel(0), FText::AsNumber(AmmoCount), FText::AsNumber(MountedBallista->GetMaxStackSize()));
+    GetViewModel()->SetBallistaHud(true, bReloading
+        ? FText::Format(LOCTEXT("BallistaHudReloading", "{0} · 장전 중"), AmmoText)
+        : AmmoText);
 }
 
 AFEBuildBallista* UFEBuildingComponent::FindAmmoPanelTarget() const
@@ -1875,6 +1907,24 @@ void UFEBuildingComponent::ServerSetBallistaAim_Implementation(AFEBuildBallista*
     if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
     {
         Ballista->SetReplicatedAim(Yaw, Pitch);
+    }
+}
+
+bool UFEBuildingComponent::ServerFireBallista_Validate(AFEBuildBallista* Ballista, float Yaw, float Pitch)
+{
+    return FMath::IsFinite(Yaw) && FMath::IsFinite(Pitch); // NaN·무한대는 조작된 패킷. 범위는 발리스타가 자른다
+}
+
+void UFEBuildingComponent::ServerFireBallista_Implementation(AFEBuildBallista* Ballista, float Yaw, float Pitch)
+{
+    // 조작자 본인만
+    if (Ballista == nullptr || Ballista->GetOperator() != GetOwner()) return;
+
+    FText Reason;
+    if (!Ballista->TryFire(Cast<APawn>(GetOwner()), Yaw, Pitch, Reason) && !Reason.IsEmpty())
+    {
+        UE_LOG(LogFEBuilding, Log, TEXT("Fire rejected: %s"), *Reason.ToString());
+        ClientShowNotice(Reason);
     }
 }
 
@@ -2010,7 +2060,7 @@ bool FFEBuildRequestRateLimitTest::RunTest(const FString& Parameters)
     int32 Accepted = 0;
     for (int32 Step = 0; Step < 34; ++Step)
     {
-        Accepted += ConsumeRequestSlot(NextAllowed, Step * 0.3, Interval) ? 1 : 0;
+        Accepted += FEBuilding::ConsumeRequestSlot(NextAllowed, Step * 0.3, Interval) ? 1 : 0;
     }
     TestTrue(FString::Printf(TEXT("spam held to the average interval (accepted %d)"), Accepted), Accepted >= 16 && Accepted <= 18);
 
@@ -2019,7 +2069,7 @@ bool FFEBuildRequestRateLimitTest::RunTest(const FString& Parameters)
     const double Jitter[] = { 0.0, 0.1, -0.1, 0.05, -0.1, 0.1, -0.1 };
     for (int32 Index = 0; Index < UE_ARRAY_COUNT(Jitter); ++Index)
     {
-        TestTrue(FString::Printf(TEXT("click %d accepted"), Index), ConsumeRequestSlot(NextAllowed, Index * Interval + Jitter[Index], Interval));
+        TestTrue(FString::Printf(TEXT("click %d accepted"), Index), FEBuilding::ConsumeRequestSlot(NextAllowed, Index * Interval + Jitter[Index], Interval));
     }
     return true;
 }

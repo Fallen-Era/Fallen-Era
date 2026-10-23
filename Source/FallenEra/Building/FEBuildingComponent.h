@@ -114,6 +114,10 @@ public:
     /** [Client Only] 탑승 중인 발리스타에서 내린다. GA_Build_BallistaExit(E·우클릭)가 호출한다 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void ExitBallista();
+    
+    /** [Client Only] 탑승 중인 발리스타 발사. GA_Build_BallistaFire(좌클릭)가 호출한다. 장전 중이면 무시, 탄약이 없으면 안내 */
+    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
+    void FireBallista();
 
     /** [Client Only] 이 기계의 플레이어가 발리스타에 탔다/내렸다. 발리스타의 OnRep_Operator 가 부른다 (시야·입력·이동 잠금·조준 틱) */
     void HandleBallistaMounted(AFEBuildBallista* Ballista);
@@ -192,6 +196,10 @@ protected:
     /** [Server RPC] 조준(발리스타 기준 상대 각도, 도). 다른 플레이어에게 보이는 용도라 Unreliable, 바뀌었을 때만 10Hz 이하 */
     UFUNCTION(Server, Unreliable, WithValidation)
     void ServerSetBallistaAim(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch);
+    
+    /** [Server RPC] 발사. 조준은 정밀값(float, 발리스타 기준 상대 각도) — 리플리케이트용 int8 은 1° 단위라 멀리서 빗나간다. 조작자 본인만 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerFireBallista(AFEBuildBallista* Ballista, float Yaw, float Pitch);
 
     /** [Server RPC] 패널을 열 때 소지품 목록 요청 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -366,6 +374,15 @@ private:
     int8 LastSentAimYaw = 0;
     int8 LastSentAimPitch = 0;
     double LastAimSendTime = -1.0;
+    
+    /** [Client Only] 이 시각 전에는 발사를 보내지 않는다 (로컬 장전). 서버도 발리스타별로 다시 확인한다 */
+    double BallistaReadyTime = 0.0;
+
+    /** [Client Only] 탑승 중 HUD(탄약 수·장전 중). 값이 바뀔 때만 뷰모델을 갱신한다. LastHudAmmo = -1 이면 다음 호출에서 무조건 갱신 */
+    void UpdateBallistaHud();
+
+    int32 LastHudAmmo = -1;
+    bool bLastHudReloading = false;
 
     /** Tab 이 탄약 UI 를 열 발리스타: 탑승 중이면 그 발리스타, 아니면(빌드 모드 밖) 조준한 완성 발리스타. 없으면 nullptr */
     AFEBuildBallista* FindAmmoPanelTarget() const;

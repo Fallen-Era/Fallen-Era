@@ -8,6 +8,7 @@
 
 class UCameraComponent;
 class UInputMappingContext;
+class AFE_CombatProjectile;
 
 /**
  * 수동 발리스타. 완성 상태에서 E 로 탑승(한 번에 1명) → 이동 잠금·발리스타 카메라·조준(좌우 ±MaxYaw, 상하 MinPitch~MaxPitch).
@@ -39,6 +40,15 @@ public:
     UInputMappingContext* GetMappingContext() const;
 
     int32 GetMappingPriority() const;
+    
+    /** [Server Only] 조작자의 발사 요청. Yaw/Pitch = 발리스타 기준 상대 각도(도, 정밀값).
+     *  탄약·장전·볼트 준비를 확인하고 투사체 풀로 볼트를 쏜다. 실패하면 false — OutReason 이 비어 있지 않으면 플레이어에게 보여 줄 사유 */
+    bool TryFire(APawn* InstigatorPawn, float Yaw, float Pitch, FText& OutReason);
+
+    /** 탄약 칸의 볼트 수. Contents 가 리플리케이트되므로 클라 HUD 에서도 맞다 */
+    int32 GetAmmoCount() const;
+
+    float GetReloadTime() const;
 
     virtual bool AcceptsItem(FGameplayTag ItemTag, FText& OutReason) const override;
     virtual FText GetSlotLabel(int32 SlotIndex) const override;
@@ -86,6 +96,27 @@ protected:
     /** 전투 IMC(20)·빌드 모드 IMC(30)보다 높아야 좌·우클릭과 E 를 가져온다 */
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Ballista")
     int32 MappingPriority = 40;
+    
+    /** 쏘는 볼트 (AFE_CombatProjectile 자식 BP — BP_Ballista_Bolt).
+     *  소프트 참조: BeginPlay 에서 모든 기계가 미리 받는다 (서버는 발사, 클라는 리플리케이트된 볼트를 띄울 때 필요) */
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Ballista")
+    TSoftClassPtr<AFE_CombatProjectile> BoltClass;
+
+    /** 발사 속도 (cm/s) */
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Ballista", meta = (ClampMin = 0))
+    float BoltSpeed = 6000.f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Ballista", meta = (ClampMin = 0))
+    float BoltGravityScale = 0.3f;
+
+    /** 발사 후 다음 발사까지 (초). 발리스타마다 따로 센다 — 조작자가 내렸다 다시 타도 유지 */
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Ballista", meta = (ClampMin = 0.1))
+    float ReloadTime = 2.f;
+
+    /** 볼트가 화면 중앙(카메라 정면)과 만나는 거리 (cm).
+     *  카메라가 총신보다 위에 있어 총신 방향 그대로 쏘면 늘 화면 중앙보다 아래에 맞는다 → 머즐에서 이 거리의 카메라 정면 지점을 향해 쏜다 */
+    UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Ballista", meta = (ClampMin = 100))
+    float AimConvergeDistance = 3000.f;
 
     /** 회전하는 머리(총신). 메시는 BP 에서 지정. 보이기만 한다(콜리전 없음) */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building|Ballista")
@@ -98,6 +129,10 @@ protected:
     /** 탑승하면 조작자가 서는 자리 (받침 뒤쪽, 바닥 높이) */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building|Ballista")
     TObjectPtr<USceneComponent> Seat;
+    
+    /** 볼트가 나오는 곳. Head 에 붙어 같이 돈다 (총신 끝에 둔다) */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building|Ballista")
+    TObjectPtr<USceneComponent> Muzzle;
 
 private:
     UFUNCTION()
@@ -117,4 +152,9 @@ private:
 
     FTimerHandle OperatorCheckTimer;
     TSharedPtr<FStreamableHandle> MappingLoadHandle;
+    
+    TSharedPtr<FStreamableHandle> BoltLoadHandle;
+
+    /** [Server Only] 다음 발사를 받을 수 있는 시각. FEBuilding::ConsumeRequestSlot 으로 ReloadTime 씩 누적 */
+    double NextFireTime = 0.0;
 };

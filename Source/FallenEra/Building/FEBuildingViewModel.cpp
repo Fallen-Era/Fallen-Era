@@ -255,6 +255,15 @@ void UFEBuildingViewModel::SetAimedPiece(const FText& InName, float InHealthPerc
     UE_MVVM_SET_PROPERTY_VALUE(UpgradeVisibility, InUpgrade.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 }
 
+void UFEBuildingViewModel::SetBallistaHud(bool bInVisible, const FText& InText)
+{
+    UE_MVVM_SET_PROPERTY_VALUE(BallistaHudVisibility, bInVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+    if (bInVisible)
+    {
+        UE_MVVM_SET_PROPERTY_VALUE(BallistaHudText, InText);
+    }
+}
+
 void UFEBuildingViewModel::ToggleFurnaceLit()
 {
     if (UFEBuildingComponent* Owner = Component.Get())

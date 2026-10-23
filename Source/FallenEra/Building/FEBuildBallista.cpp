@@ -17,6 +17,9 @@
 #include "InputMappingContext.h"
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
+#include "Combat/GameplayEffect/FEDamageGameplayEffect.h"
+#include "Combat/ObjectPool/FEProjectilePoolSubsystem.h"
+#include "Combat/Projectile/FECombatProjectile.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -41,6 +44,9 @@ AFEBuildBallista::AFEBuildBallista()
 
     Seat = CreateDefaultSubobject<USceneComponent>(TEXT("Seat"));
     Seat->SetupAttachment(GetMesh());
+    
+    Muzzle = CreateDefaultSubobject<USceneComponent>(TEXT("Muzzle"));
+    Muzzle->SetupAttachment(Head); // 총신 끝. 머리와 같이 돈다
 }
 
 void AFEBuildBallista::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -59,6 +65,12 @@ void AFEBuildBallista::BeginPlay()
     if (GetNetMode() != NM_DedicatedServer && !MappingContext.IsNull())
     {
         MappingLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(MappingContext.ToSoftObjectPath());
+    }
+    
+    // 볼트는 모든 기계가 쓴다 — 서버는 발사, 클라는 리플리케이트된 볼트를 띄울 때. 첫 발사에 멈칫하지 않게 미리 받는다
+    if (!BoltClass.IsNull())
+    {
+        BoltLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(BoltClass.ToSoftObjectPath());
     }
 }
 
@@ -144,6 +156,72 @@ UInputMappingContext* AFEBuildBallista::GetMappingContext() const
 int32 AFEBuildBallista::GetMappingPriority() const
 {
     return MappingPriority;
+}
+
+bool AFEBuildBallista::TryFire(APawn* InstigatorPawn, float Yaw, float Pitch, FText& OutReason)
+{
+    if (!HasAuthority() || GetState() != EFEBuildPieceState::Built) return false;
+
+    // 1) 탄약 — 장전보다 먼저 본다 (빈 발리스타 연타가 장전 시간을 잡아먹지 않게)
+    if (GetAmmoCount() <= 0)
+    {
+        OutReason = LOCTEXT("BallistaNoAmmo", "탄약이 없습니다 (Tab: 탄약)");
+        return false;
+    }
+
+    // 2) 장전 — 발리스타마다 센다. 클라가 이미 막으므로 여기 걸리면 지터·조작된 요청 → 안내 없이 로그만
+    if (!FEBuilding::ConsumeRequestSlot(NextFireTime, GetWorld()->GetTimeSeconds(), ReloadTime))
+    {
+        UE_LOG(LogFEBuilding, Verbose, TEXT("%s fire rejected: reloading"), *GetName());
+        return false;
+    }
+
+    // 3) 볼트 클래스·풀. BeginPlay 의 미리 로드가 끝났으면 바로 반환된다
+    UClass* LoadedBoltClass = BoltClass.LoadSynchronous();
+    UFE_ProjectilePoolSubsystem* Pool = GetWorld()->GetSubsystem<UFE_ProjectilePoolSubsystem>();
+    if (LoadedBoltClass == nullptr || Pool == nullptr)
+    {
+        UE_LOG(LogFEBuilding, Warning, TEXT("%s cannot fire: Bolt Class is empty or projectile pool missing"), *GetName());
+        return false;
+    }
+
+    // 4) 조준: 범위로 자르고 다른 화면용 값(int8)을 맞춘 뒤, 머리는 정밀값으로 돌린다 (Muzzle·Camera 가 이 회전을 따른다)
+    const float ClampedYaw = FMath::Clamp(Yaw, -MaxYaw, MaxYaw);
+    const float ClampedPitch = FMath::Clamp(Pitch, MinPitch, MaxPitch);
+    SetReplicatedAim(static_cast<int8>(FMath::RoundToInt(ClampedYaw)), static_cast<int8>(FMath::RoundToInt(ClampedPitch)));
+    SetHeadAim(ClampedYaw, ClampedPitch);
+
+    // 5) 방향: 머즐에서 "카메라 정면 AimConvergeDistance 지점"으로 → 화면 중앙 조준점과 그 거리에서 만난다
+    const FVector MuzzleLocation = Muzzle->GetComponentLocation();
+    const FVector AimPoint = Camera->GetComponentLocation() + Camera->GetForwardVector() * AimConvergeDistance;
+    const FVector Direction = (AimPoint - MuzzleLocation).GetSafeNormal(UE_SMALL_NUMBER, Muzzle->GetForwardVector());
+
+    // 6) 탄약 1 → 풀에서 볼트. 못 받으면 탄약을 되돌린다
+    TakeFromSlot(0, AmmoTag, 1);
+    AFE_CombatProjectile* Bolt = Pool->AcquireProjectile(LoadedBoltClass, FTransform(Direction.Rotation(), MuzzleLocation), this, InstigatorPawn, false);
+    if (Bolt == nullptr)
+    {
+        StoreItems(AmmoTag, 1);
+        UE_LOG(LogFEBuilding, Warning, TEXT("%s cannot fire: projectile pool returned nothing"), *GetName());
+        return false;
+    }
+
+    // DamageSource = 발리스타: 명중하면 발리스타의 CombatComponent 가 발리스타 ASC 의 AttackPower 로 피해를 준다.
+    // WeaponData·AttackData 없음 = 피격 효과·넉백 없음 (필요해지면 HT 형식의 AttackData 를 붙인다)
+    Bolt->InitializeProjectile(this, nullptr, nullptr, UFE_DamageGameplayEffect::StaticClass(), Direction * BoltSpeed, BoltGravityScale);
+
+    UE_LOG(LogFEBuilding, Log, TEXT("%s fired by %s (ammo %d)"), *GetName(), *GetNameSafe(InstigatorPawn), GetAmmoCount());
+    return true;
+}
+
+int32 AFEBuildBallista::GetAmmoCount() const
+{
+    return GetSlotCount(0, AmmoTag);
+}
+
+float AFEBuildBallista::GetReloadTime() const
+{
+    return ReloadTime;
 }
 
 bool AFEBuildBallista::AcceptsItem(FGameplayTag ItemTag, FText& OutReason) const

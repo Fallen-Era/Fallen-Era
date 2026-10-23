@@ -185,6 +185,9 @@ public:
 	
 	/** 망치로 조준한 완성 피스. InName 이 비면 숨김. InHealthPercent 0~1. InUpgrade 가 비면 업그레이드 줄 숨김 */
 	void SetAimedPiece(const FText& InName, float InHealthPercent, const FText& InRepairCost, const FText& InUpgrade);
+	
+	/** 발리스타 탑승 중 HUD (탄약 텍스트 + 조준점). bInVisible 이 false 면 숨김 */
+	void SetBallistaHud(bool bInVisible, const FText& InText);
 
 	/** [Client Only] 화로 "불 켜기/끄기" 버튼 */
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
@@ -245,6 +248,14 @@ public:
 	 *  닫기 버튼은 CloseStoragePanel 을 그대로 쓴다 */
 	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
 	ESlateVisibility AmmoPanelVisibility = ESlateVisibility::Collapsed;
+	
+	/** 발리스타 탑승 중에만 보이는 HUD (탄약 텍스트 + 화면 중앙 조준점) */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	ESlateVisibility BallistaHudVisibility = ESlateVisibility::Collapsed;
+
+	/** "볼트 18 / 20" · 장전 중이면 "볼트 18 / 20 · 장전 중" */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText BallistaHudText;
 
 	/** 보관함 칸 (UFEItemSlotViewModel). 항상 Capacity 개. 빈 칸 포함 */
 	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
