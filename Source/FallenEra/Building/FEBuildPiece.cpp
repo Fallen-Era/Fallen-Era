@@ -438,12 +438,16 @@ FFE_CombatDamageResult AFEBuildPiece::ReceiveCombatDamage_Implementation(const F
         && !FECombatTeams::AreSameTeam(DamageRequest.SourceActor.Get(), this);
     if (!bCanReceive) return Result;
 
-    ApplyStructureDamage(DamageRequest.SourceAttackPower, DamageRequest.SourceActor.Get());
+    // 빗맞음(HitQualityMultiplier < 1)도 피스 피해에 반영 — GAS 를 쓰지 않는 수신자는 자기 계산 뒤에 곱하는 것이 HT 규칙.
+    // 탄약 배율(AmmoDamageMultiplier)은 SourceAttackPower 에 이미 들어 있어 다시 곱하지 않는다
+    const float HealthBefore = Health;
+    ApplyStructureDamage(DamageRequest.SourceAttackPower * DamageRequest.HitQualityMultiplier, DamageRequest.SourceActor.Get());
 
     // 맞은 것으로 처리 → 적 근접 공격의 최대 타격 수를 벽이 소모해 벽 뒤 플레이어는 맞지 않는다.
-    // bImpactCueHandled 는 false 로 두어 HT 쪽이 타격 이펙트를 재생한다.
+    // bImpactCueHandled 는 false 로 두어 HT 쪽이 타격 이펙트를 재생한다
     Result.bHandled = true;
     Result.bDamageApplied = true;
+    Result.AppliedDamage = HealthBefore - Health; // 실제 감소량. HT 디버그(fe.Combat.DebugHitDamage)에 표시된다
     return Result;
 }
 

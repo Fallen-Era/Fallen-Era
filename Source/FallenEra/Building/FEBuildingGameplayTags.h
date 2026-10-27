@@ -63,7 +63,7 @@ namespace FEBuildingTags
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_Rope);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Ammo_Bolt);
     
-    // 수리 도구. 이 태그가 ItemTags 에 있는 무기를 들고 있어야 서버가 수리를 허용한다
-    // ponytail: 아이템 식별이 FPrimaryAssetId 로 바뀌면 아이템 ID 비교로 교체
+    // 망치 아이템 식별 태그 (망치 DA Template > Item Tags, 장비 Test Item Tags 매칭용).
+    // "들고 있는지" 판정은 HT 장착 태그 Equipment.Weapon.Hammer 로 한다 (FEBuildingComponent::IsHoldingRepairTool)
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Tool_Hammer);
 }

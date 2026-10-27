@@ -27,7 +27,6 @@
 #include "Combat/Component/FEEquipmentComponent.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
 #include "Combat/FECombatGameplayTags.h"
-#include "FallenEraCharacter.h"
 #include "Combat/Collision/FECollisionChannels.h"
 #include "InputMappingContext.h"
 #include "FEBuildBallista.h"
@@ -1628,11 +1627,10 @@ void UFEBuildingComponent::ServerUpgradePiece_Implementation(AFEBuildPiece* Piec
 
 bool UFEBuildingComponent::IsHoldingRepairTool() const
 {
-    // ponytail: 아이템 식별이 FPrimaryAssetId 로 바뀌면 태그 대신 아이템 ID 로 비교
-    const AActor* Owner = GetOwner();
-    const UFE_EquipmentComponent* Equipment = Owner ? Owner->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
-    const UFE_WeaponItemData* Weapon = Equipment ? Equipment->GetCurrentWeaponData() : nullptr;
-    return Weapon != nullptr && Weapon->HasItemTag(FEBuildingTags::Item_Tool_Hammer);
+    // 망치를 실제로 장착한 동안 서버가 ASC 에 넣는 태그 (망치 DA Template > Equipped Tags). 클라에도 복제된다.
+    // 장비·무기 데이터 구조를 몰라도 되고, 서버 판정과 클라 HUD 가 같은 값을 본다
+    const UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner());
+    return ASC != nullptr && ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::Equipment_Weapon_Hammer);
 }
 
 UAnimMontage* UFEBuildingComponent::GetToolMontage(FGameplayTag InputTag) const
@@ -1672,7 +1670,7 @@ bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
         return false;
     }
 
-    // GA 는 LocalOnly 라 클라에서만 돈다. 지금 망치를 들고 있는지는 서버가 장비 상태로 다시 확인한다
+    // GA 는 LocalOnly 라 클라에서만 돈다. 지금 망치를 들고 있는지는 서버가 ASC 장착 태그로 다시 확인한다
     if (!IsHoldingRepairTool())
     {
         const FText Reason = LOCTEXT("RepairNoTool", "수리 도구를 들고 있어야 합니다");

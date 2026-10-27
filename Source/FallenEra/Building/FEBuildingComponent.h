@@ -330,7 +330,7 @@ private:
     /** [Client Only] 망치를 들고 있으면 조준한 완성 피스의 체력·수리 비용을 뷰모델에 넣고, 아니면 숨긴다 */
     void UpdateAimedPiece();
 
-    /** 지금 수리 도구(Item.Tool.Hammer)를 들고 있다. 서버 판정과 클라 HUD 가 같이 쓴다 */
+    /** 지금 망치를 장착하고 있다 (ASC 태그 Equipment.Weapon.Hammer). 서버 판정과 클라 HUD 가 같이 쓴다 */
     bool IsHoldingRepairTool() const;
 
     /** 들고 있는 도구에서 InputTag(좌/우클릭)에 해당하는 공격 몽타주 (망치 DA 의 AttackActions). 없으면 nullptr */
