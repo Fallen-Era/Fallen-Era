@@ -1,11 +1,16 @@
 #include "Combat/Ability/FEProjectileAttackAbility.h"
+#include "Combat/Interface/FECombatPresentation.h"
+#include "Combat/Interface/FEDamageable.h"
+#include "Combat/Component/FECombatComponent.h"
 
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/MeshComponent.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/Controller.h"
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/Projectile/FECombatProjectile.h"
 #include "Combat/ObjectPool/FEProjectilePoolSubsystem.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
@@ -24,14 +29,14 @@ void UFE_ProjectileAttackAbility::ActivateAbility(
 	const UFE_ProjectileAttackData* AttackData = Cast<UFE_ProjectileAttackData>(ResolveAttackData(CombatCharacter));
 	if (!CombatCharacter || !WeaponData || !AttackData ||
 		!CanFireProjectile(CombatCharacter, AttackData) ||
-		!CommitAbility(Handle, ActorInfo, ActivationInfo))
+		!CheckCost(Handle, ActorInfo))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
 	}
 
 	CacheAttackContext(WeaponData, AttackData);
-	if (!CacheProjectileClass(AttackData))
+	if (!CacheProjectileClass(AttackData) || !CommitAbilityCooldown(Handle, ActorInfo, ActivationInfo, false) || !CommitWeaponShotCost())
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
@@ -41,8 +46,9 @@ void UFE_ProjectileAttackAbility::ActivateAbility(
 	PlayAttackPresentation(CombatCharacter, WeaponData, AttackData);
 	if (CombatCharacter->HasAuthority())
 	{
-		ExecuteAttack(CombatCharacter, WeaponData, AttackData);
+		if (!SpawnProjectile(CombatCharacter, WeaponData, AttackData, AttackData->InitialSpeed)) { RefundFailedProjectileAmmo(); }
 	}
+	ApplyLocalRecoil(CombatCharacter, AttackData->RecoilSettings);
 
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 }
@@ -81,7 +87,8 @@ bool UFE_ProjectileAttackAbility::CanFireProjectile(
 	const UFE_ProjectileAttackDataBase* AttackData) const
 {
 	const UWorld* World = CombatCharacter ? CombatCharacter->GetWorld() : nullptr;
-	return World && AttackData && World->GetTimeSeconds() >= NextFireTime;
+	return World && AttackData && UFE_CombatComponent::CanActorAttack(const_cast<ACharacter*>(CombatCharacter)) &&
+		World->GetTimeSeconds() >= NextFireTime;
 }
 
 void UFE_ProjectileAttackAbility::RecordProjectileFired(
@@ -101,7 +108,8 @@ bool UFE_ProjectileAttackAbility::SpawnProjectile(
 	float LaunchSpeed) const
 {
 	if (!CombatCharacter || !CombatCharacter->HasAuthority() || !WeaponData || !AttackData ||
-		!CachedProjectileClass || !CombatCharacter->GetWorld())
+		!CachedProjectileClass || !CombatCharacter->GetWorld() ||
+		!UFE_CombatComponent::CanActorAttack(const_cast<ACharacter*>(CombatCharacter)))
 	{
 		return false;
 	}
@@ -141,6 +149,7 @@ bool UFE_ProjectileAttackAbility::SpawnProjectile(
 		GetCachedDamageEffectClass(),
 		LaunchDirection * FMath::Max(0.0f, LaunchSpeed),
 		AttackData->GravityScale);
+	Projectile->SetAmmoDamageMultiplier(ShotAmmo.Instance.ResolveStats().DamageMultiplier);
 	return true;
 }
 
@@ -158,6 +167,11 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 
 	OutLocation = CombatCharacter->GetActorLocation();
 	FRotator LaunchRotation = CombatCharacter->GetActorRotation();
+	FVector CameraTraceStart = FVector::ZeroVector;
+	FVector CameraTraceEnd = FVector::ZeroVector;
+	FVector ResolvedAimPoint = FVector::ZeroVector;
+	bool bHasCameraAimDebugData = false;
+	bool bCameraAimHit = false;
 	const UFE_ChargedProjectileAttackData* ChargedAttackData =
 		Cast<UFE_ChargedProjectileAttackData>(AttackData);
 	const bool bUseFixedThrowOrigin = ChargedAttackData &&
@@ -176,7 +190,7 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 		{
 			// Authoritative projectiles use the replicated world presentation. Local previews
 			// use the first-person weapon when one exists so the arc starts at the visible muzzle.
-			WeaponMesh = LaunchContext == EFE_ProjectileLaunchContext::LocalPreview
+			WeaponMesh = LaunchContext == EFE_ProjectileLaunchContext::LocalPreview && IFE_CombatPresentation::UsesFirstPersonMeshes(CombatCharacter)
 				? Equipment->GetEquippedFirstPersonWeaponMesh()
 				: Equipment->GetEquippedWorldWeaponMesh();
 			if (!WeaponMesh)
@@ -198,25 +212,88 @@ bool UFE_ProjectileAttackAbility::GetProjectileLaunchTransform(
 		}
 	}
 
-	if (AttackData->bUseAimDirection)
+	// Resolve a point on the camera-center ray, then converge on it from the actual
+	// projectile socket. A missed trace still produces a valid far aim point.
+	const bool bUseCameraAim = AttackData->bUseAimDirection || AttackData->IsA<UFE_BowAttackData>();
+	if (bUseCameraAim)
 	{
-		if (const AController* Controller = CombatCharacter->GetController())
+		if (CombatCharacter->GetController())
 		{
-			FVector ViewLocation;
-			FRotator ViewRotation;
-			Controller->GetPlayerViewPoint(ViewLocation, ViewRotation);
-			FVector AimPoint = ViewLocation + ViewRotation.Vector() * FMath::Max(0.0f, AttackData->AimTraceRange);
-			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_ProjectileAim), true, CombatCharacter);
-			FHitResult AimHit;
-			if (CombatCharacter->GetWorld() && CombatCharacter->GetWorld()->LineTraceSingleByChannel(
-				AimHit, ViewLocation, AimPoint, GetAttackTraceChannel(), QueryParams))
+			const FFE_CombatAim Aim = IFE_CombatPresentation::ResolveCombatAim(
+				CombatCharacter, AttackData->AimTraceRange, FECollisionChannels::PlayerHitscanTrace);
+			FVector AimPoint = Aim.AimPoint;
+			CameraTraceStart = Aim.CameraStart;
+			CameraTraceEnd = Aim.CameraEnd;
+			bCameraAimHit = Aim.bHasCameraTarget;
+			bHasCameraAimDebugData = true;
+			if (const UWorld* World = CombatCharacter->GetWorld())
 			{
-				AimPoint = AimHit.ImpactPoint;
+				FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_ProjectileAim), true, CombatCharacter);
+				TArray<FHitResult> AimHits;
+				World->LineTraceMultiByChannel(
+					AimHits,
+					Aim.Origin,
+					AimPoint,
+					FECollisionChannels::PlayerHitscanTrace,
+					QueryParams);
+
+				// The shoulder camera may see around cover; the FP-to-target path must still be clear.
+				for (const FHitResult& Hit : AimHits)
+				{
+					if (Hit.bBlockingHit || (Hit.GetActor() && Hit.GetActor()->GetClass()->ImplementsInterface(UFE_Damageable::StaticClass())))
+					{
+						if (Hit.bStartPenetrating) { return false; }
+						AimPoint = Hit.ImpactPoint;
+						bCameraAimHit = true;
+						break;
+					}
+				}
 			}
-			LaunchRotation = (AimPoint - OutLocation).Rotation();
+			ResolvedAimPoint = AimPoint;
+
+			const FVector SocketToAim = AimPoint - OutLocation;
+			LaunchRotation = SocketToAim.IsNearlyZero()
+				? Aim.Direction.Rotation()
+				: SocketToAim.Rotation();
 		}
 	}
 
 	OutDirection = LaunchRotation.Vector().GetSafeNormal();
+	const FVector UnspreadDirection = OutDirection;
+	if (LaunchContext == EFE_ProjectileLaunchContext::Authority)
+	{
+		const float FinalSpreadAngle = CalculateSpreadAngle(
+			CombatCharacter,
+			AttackData,
+			AttackData->SpreadAngle,
+			AttackData->AccuracySettings);
+		OutDirection = ApplySpreadToDirection(OutDirection, FinalSpreadAngle);
+		CommitSpreadShot(CombatCharacter, AttackData, AttackData->AccuracySettings);
+	}
+
+	if (LaunchContext == EFE_ProjectileLaunchContext::Authority &&
+		AttackData->bDrawDebugAim && bHasCameraAimDebugData)
+	{
+		if (UWorld* World = CombatCharacter->GetWorld())
+		{
+			const float Duration = FMath::Max(0.0f, AttackData->DebugAimDuration);
+			const float Thickness = FMath::Max(0.0f, AttackData->DebugAimThickness);
+			const float DirectionLength = FMath::Max(
+				100.0f, FVector::Distance(OutLocation, ResolvedAimPoint));
+			DrawDebugLine(
+				World, CameraTraceStart, CameraTraceEnd,
+				FColor::Blue, false, Duration, 0, Thickness);
+			DrawDebugLine(
+				World, OutLocation, OutLocation + UnspreadDirection * DirectionLength,
+				FColor::Green, false, Duration, 0, Thickness * 2.0f);
+			DrawDebugLine(
+				World, OutLocation, OutLocation + OutDirection * DirectionLength,
+				FColor::Red, false, Duration, 0, Thickness);
+			DrawDebugPoint(
+				World, ResolvedAimPoint, 12.0f,
+				bCameraAimHit ? FColor::Yellow : FColor::White,
+				false, Duration);
+		}
+	}
 	return !OutDirection.IsNearlyZero();
 }

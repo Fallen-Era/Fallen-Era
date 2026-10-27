@@ -55,11 +55,11 @@ public:
 
 	/** 캐시된 모든 아이템 데이터 반환 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "FallenEra|Item")
-	TArray<const UFEItemBase*> GetAllItemData() const;
+	TArray<UFEItemBase*> GetAllItemData() const;
 
 	/** 특정 GameplayTag를 가진 아이템 목록 검색 (카테고리, 특성 필터링용) */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "FallenEra|Item")
-	TArray<const UFEItemBase*> GetItemsByTag(FGameplayTag MatchingTag) const;
+	TArray<UFEItemBase*> GetItemsByTag(FGameplayTag MatchingTag) const;
 
 	/** 아이템 캐시 수동 재구축 */
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Item")
@@ -68,5 +68,5 @@ public:
 private:
 	/** ItemID -> UFEItemBase* 캐시 사전 */
 	UPROPERTY(Transient)
-	TMap<FName, TObjectPtr<const UFEItemBase>> ItemCache;
+	TMap<FName, TObjectPtr<UFEItemBase>> ItemCache;
 };

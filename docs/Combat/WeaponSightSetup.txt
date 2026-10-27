@@ -1,0 +1,156 @@
+총기 조준 파츠 / ADS 설정
+=======================
+
+1. 총기 DA (UFE_RangedWeaponItemData)
+- Weapon > Attachments > Supports Aiming 체크. 기존 활/수류탄은 체크하지 않는다.
+- Default Attachments: 현재 무기에 장착할 파츠 DA 배열. SlotTag마다 하나만 허용.
+- Default Sight: 조준 파츠가 없는 상태에서 사용하는 기본 조준 DA.
+  조준 설정과 AccuracyBonus를 적용하며 별도 파츠 메쉬는 장착하지 않는다.
+  조준 파츠 장착 시 기본 보정은 제외하고 장착 파츠 보정으로 교체한다.
+  다른 종류의 파츠만 장착한 경우 기본 조준 보정과 해당 파츠 보정을 합산한다.
+  모든 무기에 동일한 기본 보정이 필요하면 같은 Default Sight DA를 공유한다.
+- 공격은 기존 좌클릭 AttackActions 그대로 유지한다.
+- Weapon > Presentation > FirstPerson > First Person Mesh Transform:
+  장착 시 1인칭 팔 메쉬의 기본 Transform. 카메라 기준 상대 위치/회전/크기의 절대값이다.
+  기존 값에 더하는 Offset이 아니며, 무기 SocketOffset과는 별개의 설정이다.
+  새 필드의 기본값은 Location=(0,0,-160), Rotation=(0,-90,0), Scale=(1,1,1).
+  기존 무기 DA도 이 기본값을 사용하므로 원래 팔 위치를 유지하려면 해당 값을 DA에 복사한다.
+- First Person Aim Transform은 제거했다. 조준 목표는 실제 AimSocket에서 자동 계산한다.
+
+2. 조준 파츠 DA (UFE_WeaponSightData)
+- Data Asset 생성 시 FE_WeaponSightData 선택.
+- SlotTag: Equipment.WeaponSlot.Sight (기본값).
+- Mode: IronSights / RedDot / Scope2D.
+- Attachment > Presentation > Mesh / Skeletal Mesh: 장착할 파츠 SM 또는 SKM.
+  둘 다 지정하면 Skeletal Mesh를 사용한다. Default Sight에서는 파츠 메쉬를 생성하지 않는다.
+- Attach Socket Name: 무기 메쉬의 파츠 장착 소켓, 예: OpticSocket.
+  캐릭터의 hand_r 소켓이 아니다. SocketOffset은 파츠 자체 위치 보정.
+- Sight > Alignment > Aim Socket Name: 기본값 AimSocket.
+  장착 파츠가 있으면 파츠 메쉬의 소켓, Default Sight이면 무기 메쉬 자체의 소켓을 사용한다.
+  소켓의 X축은 조준 전방, Z축은 위쪽을 향하도록 설정한다.
+  3D 조준에서 해당 소켓이 없거나 장착 파츠의 메쉬가 없으면 조준 활성화를 거부한다.
+  장착 파츠 설정 오류를 기본 무기 소켓으로 숨기지 않는다. 2D 스코프는 소켓이 없어도 된다.
+- Eye Relief Distance: 카메라 전방 중심선에서 조준 소켓까지의 거리(cm), 기본 12.
+  화면 중앙을 유지하면서 카메라 바로 위에 조준기를 겹쳐 클리핑하는 것을 방지한다.
+- Aim Field Of View: 조준 FOV. Blend In/Out Time: 조준 진입/복귀 보간 시간.
+- Accuracy Bonus: 현재 Accuracy에 더하는 보정. 0.85 + 0.10 = 0.95.
+  기본 조준 DA도 동일하게 지원한다. 무기 장착 중 적용되며 조준 중에만 적용되는 버프는 아니다.
+  GAS Accuracy의 최종 사용 범위는 0~1. 다른 이동/특성 GE와 함께 계산된다.
+
+3. 기계식 / 레드닷 (3D)
+- 카메라를 이동시키지 않고 1인칭 팔 전체를 이동/회전해 AimSocket 기준으로 조준 정렬을 보간한다.
+- 팔의 원래 크기는 유지한다. 무기나 파츠 소켓의 크기로 팔을 확대/축소하지 않는다.
+- 팔/무기/파츠의 애니메이션 평가 이후 로컬 플레이어에서만 소켓 정렬을 Tick으로 갱신한다.
+  목표는 카메라 중앙 + EyeReliefDistance + 의도적인 Sway Offset이다.
+  애니메이션의 임의 소켓 이동은 보정하지만, 별도로 계산한 Sway는 목표에 포함하여 상쇄하지 않는다.
+  Sway를 끄면 이전의 정확한 중앙 정렬 방식으로 동작한다.
+- 릴리즈 시 조준 직전 팔 Transform과 FOV로 보간 복귀한다. 무기 교체/취소는 즉시 복원한다.
+  무기 해제 시에는 장착 전 캐릭터 팔 Transform으로 복원한다.
+- 1인칭 FOV와 월드 FOV를 함께 보간한다. 복귀 완료 후에는 Tick을 중단한다.
+- 다른 사람이 보는 월드 무기와 그림자는 기존 장착 상태를 유지한다.
+- 레드닷의 점/유리는 실제 파츠 Mesh의 머티리얼로 제작한다 (2D ReticleTexture가 아님).
+- 무기만 이동시키지 않으므로 손과 무기가 분리되지 않는다.
+  추가 손 IK가 필요하면 GetAimAlpha / GetWeaponSocketWorldTransform을 사용할 수 있다.
+- 높이/위치가 다른 조준 파츠는 해당 파츠의 AimSocket을 기준으로 자동 보정된다.
+  Default Sight DA도 무기마다 같은 이름의 AimSocket을 올바르게 배치하면 공유할 수 있다.
+
+4. 고배율 (Scope2D)
+- Mode=Scope2D. 팔은 무기의 기본 Transform을 유지한다.
+- Scope Widget Class: FE_WeaponScopeWidget을 부모로 만든 WBP (선택 사항).
+- 비워두면 C++ 기본 전체 화면 원형 마스크 + 십자선이 자동 표시된다.
+- Reticle Texture: 가운데 렌즈 영역의 정사각형 투명 PNG (선택 사항).
+- WBP에서 완전한 UI를 직접 디자인하면 Draw Default Scope를 해제한다.
+  위젯 루트는 화면을 채우도록 구성하고 입력을 가로채지 않도록 유지한다.
+- 조준 전환 중 1인칭 팔/무기와 기존 크로스헤어를 숨긴다.
+  릴리즈/취소 시 FOV, 메쉬 표시, 팔 기본 위치, 크로스헤어를 복원한다.
+- SceneCapture/PiP를 만들지 않으므로 두 번째 월드 렌더링 비용이 없다.
+
+5. 입력 / 어빌리티
+- Supports Aiming을 켠 총기는 EquipmentComponent가 FE_WeaponAimAbility를 자동 부여한다.
+- 기존 CombatRightClickAction 또는 AbilityInputBindings에
+  IA_Combat_RightClick -> Ability.Input.Combat.RightClick 연결.
+  동일 IA를 두 경로로 중복 바인딩하지 않는다. IA는 Hold 트리거 대신 Started/Completed 입력 사용.
+- AS_Player_Default 등의 별도 우클릭 어빌리티는 중복 등록하지 않는다.
+  해당 총기에서는 우클릭 AttackAction 대신 자동 부여된 조준 어빌리티가 사용된다.
+- LocalPredicted: 로컬 조준은 즉시 반응하며 서버에서 활성/종료를 검증한다.
+- Ability.Combat.Aim / State.Combat.Aiming 태그가 사용된다.
+- 다른 클라이언트 AnimBP의 조준 상태는 WeaponAimingComponent.IsAiming/GetAimAlpha로 읽는다.
+  이 값은 소유자를 제외한 클라이언트로 복제된다 (로컬은 예측 상태 사용).
+- 릴리즈는 보간 복귀하며, 무기 변경/파츠 변경/사망/경직 취소는 즉시 조준 연출을 원복한다.
+- 조준 시작 시 진행 중인 Sprint를 해제하고 WalkSpeed로 복귀한다.
+  조준 중 Sprint 입력/서버 요청은 무시한다. 조준 해제 후 Sprint를 다시 누르면 달릴 수 있다.
+  조준 해제만으로 이전 Sprint를 자동 재개하지 않는다.
+
+총기 반동
+- 발사마다 RecoilSettings의 Pitch/Yaw 증가분을 누적하고 감쇠 스프링으로 부드럽게 ControlRotation에 전달한다.
+- 반동 배율은 1 - RecoilControl이며, RecoilControl=1이면 시점 반동이 없다.
+- RecoilSettings > SmoothingTime: 반동 상승을 부드럽게 전달하는 시간 스케일(초). 기본 0.04.
+  전체 재생 길이는 아니며, 값이 클수록 느리고 부드럽게 올라간다. 0이면 기존의 즉시 적용 방식이다.
+- 현재 ControlRotation에 프레임별 증가분만 더하므로, 보간 중 마우스로 반동을 제어해도 입력을 덮어쓰지 않는다.
+  연사 중 다음 반동은 미적용 증가분에 합산하며 기존 스프링 속도를 초기화하지 않는다.
+- 반동 전달이 끝나면 CombatComponent Tick을 중단한다. 원격 플레이어/적은 이 로컬 Tick을 실행하지 않는다.
+  무기 변경/사망/소유 컨트롤러 변경/EndPlay에서는 남은 미적용 반동만 버리며 이미 적용한 시점은 원복하지 않는다.
+- 조준 방향의 자동 복귀는 하지 않는다. 플레이어의 마우스 입력으로 제어한다.
+- RecoveryDuration 및 반동 복귀 타이머는 제거했다. Accuracy/Spread 복구와는 별개다.
+- 팔/무기 몽타주, 조준 해제 시 팔/FOV 복귀, 활 차징 카메라 복귀는 유지한다.
+
+총기 DA의 Weapon > Presentation > Aim > Aim Sway Settings
+- Enabled: 조준 중 시각적 Sway 사용. 끄면 조준 소켓이 정확히 중앙에 고정된다.
+- Look Location/Rotation Strength: 시점 각속도에 따른 위치/회전 지연 강도.
+- Max Look Speed: 매우 빠른 시점 이동이 과도한 Sway를 만들지 않도록 제한하는 각속도.
+- Movement Location/Rotation Amplitude: 걷는 속도에 따른 위치(cm)/회전(도) 흔들림 최대 크기.
+- Movement Frequency: 이동 흔들림 주기(Hz). 정지하면 목표 Offset은 0으로 복귀한다.
+- Smoothing Time: 위치/회전 Sway의 감쇠 스프링 보간 시간 스케일.
+- Aim Multiplier: 조준 중 전체 Sway 배율. 기본 0.15로 작게 남긴다.
+- 설정은 조준 시작 시 캐싱한다. 매 프레임 에셋 로드/Trace/네트워크 전송은 하지 않는다.
+- Sway는 카메라 자체, ControlRotation, Accuracy/Spread, 데미지 판정 방향을 변경하지 않는 시각적 연출이다.
+  따라서 실제 탄환은 기존 시점 기반 조준 경로를 사용하며, 3D 조준기는 중앙 근처에서 소폭 움직인다.
+- GetAimSwayTransform은 의도적인 카메라 로컬 Offset을 반환한다. 같은 Offset을 ABP에서 중복 적용하지 않는다.
+- 2D 스코프에는 이 무기 Sway를 적용하지 않는다. 전체 화면 스코프 전환 완료 후 ADS Tick은 중단한다.
+
+6. 추후 아이템 인스턴스
+- 공유 DA 값을 직접 수정하지 않는다.
+- 서버 인벤토리가 FFE_WeaponAttachmentInstance 배열을 구성한 후
+  EquipmentComponent.SetWeaponAttachments(배열)을 호출한다.
+- Definition은 종류/소켓/외형/조준 방식, Override Accuracy Bonus=true이면
+  AccuracyBonus는 실제 아이템 인스턴스 값이다. false이면 DA 기본값 사용.
+- 반환 true는 비동기 로드 요청 수락을 의미한다. 준비 완료는 AreWeaponAttachmentsReady로 확인.
+- 클라이언트가 임의 보정값을 서버로 보내는 RPC는 제공하지 않는다.
+  서버가 인벤토리 검증 후 이 API를 호출해야 한다.
+- 현재 테스트 인벤토리는 새 무기 선택 시 DA 기본 파츠를 사용한다.
+  무기별 파츠 영구 보관은 추후 실제 무기 인스턴스가 담당한다.
+- 향후 파츠는 FE_WeaponAttachmentData 파생 DA + 별도 SlotTag로 확장 가능.
+  현재는 StaticMesh/SkeletalMesh 외형과 Accuracy 보정을 지원한다.
+
+7. 검증 체크리스트
+- 기계식/레드닷: Sway를 끄면 정확한 중앙 정렬. 켜면 보정 후에도 설정된 작은 Sway가 남는지 확인.
+- 고배율: 전체 화면 UI, 1인칭 무기 숨김, 일반 크로스헤어 숨김/복원.
+- 빠른 릴리즈/재입력, 조준 중 사격, 무기 교체, 파츠 교체, 경직/사망에서 상태 잔류가 없는지.
+- 조준 복귀 완료 후 ADS Tick, 반동 전달 완료 후 CombatComponent Tick이 꺼지는지 확인.
+- 30/60/144FPS에서 반동 총량 유지, 보간 중 마우스 입력 유지, 자동 시점 복귀가 없는지 확인.
+- 2인 PIE: 서로의 파츠 외형과 조준 상태, 정확성 보정 복제 확인.
+- 무기 SocketOffset은 손 기준, 팔 Transform은 카메라 기준임을 확인.
+- 파츠 AttachSocketName은 장착 소켓, AimSocketName은 중앙 정렬 소켓으로 역할이 다르다.
+- 자동화: FallenEra.Combat.Attachments (인스턴스 보정/GAS 제거/장착·조준·복귀·교체 Transform 검증).
+- 수동 PIE 확인과 소켓/머티리얼/WBP 제작은 프로젝트 실제 에셋 설정 후 진행한다.
+
+8. 공격 몽타주와 독립 1인칭 AnimBP
+- 조준 자체는 애니메이션/몽타주를 정지하지 않는다. 3D 정렬은 임의 소켓 이동을 상쇄하지만,
+  목표에 포함한 의도적 Sway는 보존한다. 기존 ABP의 모든 흔들림을 그대로 보존하는 방식은 아니다.
+  2D 스코프는 팔/무기를 숨긴다.
+- 공격 몽타주는 전신 GetMesh에서 재생하며 로컬 플레이어의 FirstPersonMesh에서도 별도로 재생한다.
+- 몽타주의 Skeleton 호환과 Slot 연결(예: UpperBody)을 두 AnimBP에서 확인한다.
+- 현재는 AttackMontage / ChargeMontage / ReleaseMontage를 팔과 전신에 공통으로 사용한다.
+- 원격 플레이어는 전신만 재생한다. 기존 GAS 예측/Multicast의 소유자 중복 재생 방지는 유지한다.
+- 무기 교체/공격 취소 시 두 메쉬의 공격 몽타주를 함께 정지한다.
+- FE AnimNotify SendGameplayEvent는 팔의 복제 연출에서 무시하고 전신에서만 전송해
+  공격 TraceStart/TraceEnd/Reset 이벤트가 두 번 발생하지 않도록 한다.
+
+9. 반동 보간 설계 참고자료
+- PUBG 공개 Gunplay 개발자 글: https://www.pubg.com/en/news/10874
+  급격한 수직 반동과 피크를 완화하는 방향을 설명한다. 내부 보간 공식은 공개되지 않았다.
+- KINEMATION PRAS Recoil Settings: https://kinemation.gitbook.io/pras-documentation/basics/recoil-settings
+  반동 목표 생성과 Pitch/Yaw 보간을 분리하는 공개 구현 사례. PUBG의 구현 자료는 아니다.
+- Unreal 감쇠 스프링: https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Core/FMath/SpringDamper
+  현재 구현은 엔진 FMath::CriticallyDampedSmoothing으로 반동 증가분만 부드럽게 전달한다.
+  자동 복귀는 하지 않으며, 프레임별 미세 증가분은 SetControlRotation의 임계값에 누락되지 않게 모은다.

@@ -1,0 +1,96 @@
+1인칭 / 3인칭 시점 전환
+========================
+
+사용
+- BP_HT_PlayerCharacter에서 V 키를 누르면 1인칭 <-> 3인칭으로 전환한다.
+- /Game/Combat/Input/IA_Combat_TogglePerspective (Boolean)
+- /Game/Combat/Input/IMC_Combat: V -> IA_Combat_TogglePerspective
+- 캐릭터 Combat Input의 CombatTogglePerspectiveAction에 위 IA를 할당한다.
+- BP의 CombatMappingContext에는 IMC_Combat을 할당한다.
+- 다른 플레이어 BP는 같은 두 항목을 할당하면 된다. 기존 AbilityInputBindings에 중복으로 넣지 않는다.
+
+계층
+- Capsule
+  - Mesh: 기존 3인칭 전신, 다른 플레이어에게도 표시
+  - First Person Camera
+    - First Person Mesh: 1인칭 팔과 해당 무기
+  - First Person Legs: 기존 하체 전용 메시
+  - Third Person Spring Arm
+    - Third Person Camera
+- 3인칭 카메라 기본 Arm Length=300cm, Socket Offset Y=50cm.
+- 카메라 높이/거리/어깨 오프셋은 BP의 Third Person Spring Arm에서 조절한다.
+- 카메라가 벽에 닿으면 SpringArm의 Collision Test가 거리를 줄인다.
+- 이동/회전 조작은 기존과 같고, 카메라 사이 즉시 전환한다.
+
+표시와 전투
+- 1인칭에서는 소유자에게 팔/다리/1인칭 무기를 표시하고 전신/월드 무기는 숨긴다.
+- 3인칭에서는 소유자에게 전신/월드 무기/파츠를 표시하고 1인칭 표현은 숨긴다.
+- OnlyOwnerSee/OwnerNoSee를 사용하므로 다른 플레이어에게 보이는 월드 표현은 유지된다.
+- 1인칭에서는 전신/월드 무기/파츠를 WorldSpaceRepresentation으로 두어 그림자 표현을 유지한다.
+  3인칭 전환 시에는 None으로 바꾼다. WorldSpaceRepresentation은 렌더러에서 OwnerNoSee를
+  강제로 적용하므로 OwnerNoSee만 false로 바꾸면 소유자 화면에서 계속 보이지 않는다.
+- 무기/파츠를 비동기로 장착한 뒤에도 현재 시점의 표시 규칙을 다시 적용한다.
+- CombatPresentation의 GetCombatCamera는 조준 연출용 기준 카메라를 반환한다.
+  ADS 준비 중에는 아직 비활성인 1인칭 카메라를 참조해 숨겨진 팔을 미리 정렬한다.
+  실제 출력 카메라와 접근/컷 연출은 캐릭터 CalcCamera에서 선택한다.
+- 화면/조준 연출용 GetCombatCamera와 공격 판정용 GetCombatTraceCamera를 구분한다.
+  플레이어 공격 판정 시작점은 1/3인칭 모두 First Person Camera의 월드 위치이며,
+  비활성 FP 카메라 회전값은 읽지 않는다.
+- ResolveCombatAim은 3인칭 카메라 중앙에서 목표점을 먼저 조회한 뒤 FP 원점에서 목표점 방향으로 보정한다.
+  조준 조회는 피해를 적용하지 않는다. 적 Overlap과 월드 Block을 함께 수집하고, 피해 인터페이스가 없는 단순 Overlap은 제외한다.
+  FP 원점 뒤의 목표점은 무시하고, 미적중이면 카메라 중앙선의 먼 점으로 보정한다.
+  카메라 뒤쪽 거리만큼 조회 길이를 보완하지만 실제 무기 사거리는 항상 FP 원점 기준이다.
+  1인칭은 기존 직진 방향을 유지하며 추가 카메라 목표 조회를 하지 않는다.
+- 히트스캔 피해선 및 근접 중심/범위 판정은 위 공통 시작점을 사용한다.
+  활/즉발 투사체/투척물도 공통 목표점을 사용하되 실제 생성 위치는 기존 소켓/고정 투척 위치를 유지한다.
+- 실제 FP 공격 경로에 벽이 있으면 벽에 막힌다. 투사체는 FP-목표점 경로를 재검사하여 가려진 적 대신 장애물로 조준한다.
+  FP 원점이 벽 안인 경우 투사체 생성을 거절한다. 발사 실패 시 기존 탄약 환불 경로를 사용한다.
+  히트스캔은 보정 후 정확도/산탄 분산을 적용하고 목표점 뒤까지 원래 사거리로 조회하여 관통을 유지한다.
+- 시점 전환은 기존 ADS를 끝내고 이전 카메라 FOV와 1인칭 팔 Transform을 복원한다.
+- 3인칭에서 우클릭 조준하면 임시로 First Person Camera의 1인칭 ADS를 사용한다.
+  기계식/레드닷은 기존 AimSocket 정렬, 2D 스코프는 기존 스코프 UI/FOV를 그대로 사용한다.
+  따라서 3인칭에서 조준하더라도 3D 조준기에는 유효한 1인칭 무기/파츠 AimSocket이 필요하다.
+- 카메라 전환 진행 시간은 조준 파츠 DA의 BlendInTime이다(기본 0.2초).
+  3인칭에서 짧게 접근하며 FOV를 좁힌 다음, 막바지에 1인칭 카메라로 컷 전환한다.
+  카메라가 전신 메시 내부를 지나 1인칭 위치까지 연속 이동하지 않는다.
+  우클릭 해제 또는 취소 시 안전한 3인칭 접근 위치로 컷 복귀하고,
+  남은 접근 오프셋은 BlendOutTime에 맞춰 풀린다(기본 0.15초).
+  Blend 시간을 0으로 지정하면 해당 방향의 전환은 즉시 완료된다.
+- 캐릭터 BP의 FallenEra > Camera > Aim 설정:
+  AimCameraApproachDistance: 컷 전 3인칭 접근 거리(기본 60cm).
+  AimCameraSwitchAlpha: 카메라와 메시를 함께 교체할 진행률(기본 0.85).
+  접근 거리는 FP 원점에서 캡슐 반지름 + 20cm 여유를 남기도록 제한한다.
+  캡슐보다 훨씬 큰 커스텀 메시에는 접근 거리를 더 줄여 조절한다.
+- 접근 연출은 최신 카메라 위치를 따르며, 컷 전에 해제/재입력하면 현재 접근 지점에서 방향을 바꾼다.
+  평소 1인칭이었다면 조준 해제 후에도 1인칭을 유지한다. V 키의 수동 시점 변경은 기존처럼 ADS를 취소한다.
+- ADS 임시 시점과 V 키로 선택한 시점을 분리하므로 무기 교체/재장전/취소 후 1인칭에 고정되지 않는다.
+- 3인칭 -> ADS 카메라 이동 중에는 전신/월드 무기/파츠를 계속 표시한다.
+  막바지 컷 전환 프레임에 활성 카메라와 팔/다리/1인칭 무기를 함께 교체한다.
+  조준 판정과 숨겨진 팔의 AimSocket 정렬은 전환 시작부터 기존 1인칭 ADS 경로를 유지한다.
+  조준을 놓거나 취소하면 3인칭 메시를 즉시 복원하여 복귀 중 팔이 공중에 떠 보이지 않게 한다.
+  UsesFirstPersonView는 조준용 시점, UsesFirstPersonMeshes는 실제 표시 메시 선택용이다.
+  비동기 장비 갱신, 총구 이펙트와 로컬 투사체 미리보기도 실제 표시 메시 기준을 따른다.
+- 활의 1인칭 전용 카메라 Transform/팔 Sway를 3인칭 카메라에 적용하지 않는다.
+- 전환 중 차징 자체는 취소하지 않으며 들고 있는 화살/투척물 미리보기만 현재 표현 메시로 다시 부착한다.
+- 총구 이펙트와 로컬 투사체 미리보기의 소켓도 현재 표시되는 무기를 선택한다.
+
+네트워크 / 성능
+- 소유자는 즉시 전환하고 선택한 bool만 서버에 전달한다. 클라이언트 카메라 Transform은 받지 않는다.
+- 서버에도 시점 선택을 반영한다. 공격 조준 조회는 시점 선택과 무관하게 같은 FP 위치 기준을 사용한다.
+- SpringArm은 3인칭을 사용하는 서버/로컬 캐릭터에만 Tick을 켠다. 비소유 클라이언트에서는 Tick을 끈다.
+- 3인칭에서 1인칭 ADS로 보간하는 동안만 로컬 SpringArm을 추가로 유지하고, 도착하면 끈다.
+  카메라 보간은 기존 CalcCamera에서 처리하며 별도 Actor Tick/전환용 카메라 액터를 추가하지 않는다.
+- ADS 시점은 기존 예측/복제되는 bIsAiming 상태로 적용한다. 카메라 보간용 추가 RPC는 없다.
+- 무기 데이터 재로딩, Ability 재부여, 매 프레임 RPC 없이 상태 변경 시 표시만 갱신한다.
+
+검증
+- FallenEra.Combat.Presentation.PerspectiveSwitch: 카메라/계층/표시/조준 복원/입력 연결 자동 테스트.
+- FallenEra.Combat.Presentation.FirstPersonAttackOrigin: TP에서도 FP 공격 원점 유지,
+  화면 중앙 Overlap 목표 수렴, 히트스캔/근접 실제 타격, 벽 차단, 관통, 미적중/뒤쪽 목표점,
+  근접 사거리 유지, 투사체 조준 수렴 및 비활성 FP 카메라 회전값 미사용 검증.
+- 기존 FirstPersonHierarchy, FirstPersonAttackMontage, Attachments 테스트를 함께 실행한다.
+- PIE에서는 V 왕복 전환, 벽 근처 카메라, 무기 스왑, 조준/차징 중 전환을 확인한다.
+- 리슨서버/클라이언트에서 각자의 화면만 전환되고 상대 전신이 계속 보이는지도 확인한다.
+- 자동 테스트는 네트워크 PIE 화면의 실제 렌더링 품질을 대신하지 않는다.
+
+에셋 백업: Saved/Backups/PerspectiveInput/<작업 시각>/

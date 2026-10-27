@@ -1,0 +1,59 @@
+공격 경직 강도 / 면역 설정 (Enum + GameplayTag)
+====================================================
+
+1. 공격이 주는 경직 강도
+무기 DA -> AttackActions -> AttackReactionData -> StaggerStrength
+  None : 공격 중단, 피격 몽타주, StunDuration을 적용하지 않음.
+  Light: 약한 경직. 기존 공격 에셋의 기본값.
+  Heavy: 강한 경직.
+StunDuration은 강도가 아니라 실제 행동 정지 시간(초)이다.
+None 또는 저항/경직 면역으로 무시된 공격은 StunDuration도 적용하지 않는다.
+데미지, Impact Cue, 출혈/감염 판정은 그대로 진행한다.
+
+2. 현재 수행 중인 공격의 저항
+적 AISettings DA -> AISettings -> AttackMontages -> 각 항목 -> IgnoreStaggerUpTo
+플레이어 무기 DA -> AttackActions -> 각 항목 -> IgnoreStaggerUpTo
+  None : 모든 Light / Heavy 경직을 받음.
+  Light: Light까지 무시하고 Heavy에 취소됨.
+  Heavy: Light / Heavy를 모두 무시함.
+동일 강도까지 무시한다(들어온 강도 > 저항 강도일 때만 경직).
+적 공격 기본값 Light, 플레이어 공격 기본값 None.
+저항은 Ability 활성 중에만 적용된다. 콤보가 바뀌면 현재 공격 데이터로 갱신된다.
+정상 종료, 취소, 적 공격의 Notify/타임아웃 종료 시 자동 해제된다.
+
+3. 캐릭터 전체 면역 태그
+  State.Immune.HitReaction : 피격 몽타주만 생략. 공격 취소/스턴 자체는 면역 아님.
+  State.Immune.Stun        : 공격 취소, 스턴, 공격을 끊는 피격 몽타주 모두 생략.
+  State.Immune.Knockback   : 넉백만 생략. 기존 KnockbackResistance와 별도로 처리.
+모든 피격 반응을 무시하려면 위 세 태그를 부여한다.
+경직 저항과 넉백은 독립적이다. Light를 버티는 공격도 넉백은 받을 수 있다.
+피격 몽타주가 없거나 StunDuration이 0이어도 저항을 넘는 공격은 취소된다.
+State.Immune.Stun을 이미 받은 스턴 도중 추가하는 것은 기존 State.Stunned의 치료가 아니다.
+
+4. 에디터에서 면역 부여
+GameplayEffect BP를 만든다(예: GE_Zombie_ReactionImmunity).
+  Duration Policy: Infinite(상시) 또는 Has Duration(일시적 버프).
+  Components -> Target Tags Gameplay Effect Component -> Granted Tags에 면역 태그 추가.
+  Damage 실행 계산/Health Modifier/Gameplay Effect Immunity Component는 넣지 않는다.
+적의 DefaultAbilitySets -> GrantedEffects에 이 GE를 등록한다.
+일시적 버프는 서버 ASC에 적용하고, 치료/해제 시 ActiveGameplayEffectHandle로 제거한다.
+Instant GE는 지속적인 면역 태그 부여에 쓰지 않는다.
+
+5. 처리 흐름 / 멀티플레이
+서버 Damage GE 적용 -> HP/사망 판단 -> 살아 있다면 CombatComponent의 반응 결정
+  들어온 강도 <= 현재 공격 저항 또는 Stun 면역 -> 공격/Trace 유지
+  저항을 초과 -> 공격 Ability 취소(Trace Task 종료, 저항 해제)
+               -> 공격/차징 연출 정리 -> StunDuration 적용 -> 피격 몽타주 Multicast
+넉백은 위 경직 판단과 별도로 계산한다.
+사망 처리는 모든 저항/면역보다 우선하여 공격 종료, 사망 연출, 콜리전 해제를 수행한다.
+보호 상태는 서버에서만 보관하며 틱/추가 RPC로 복제하지 않는다.
+GetIgnoredStaggerStrength는 서버 디버깅용으로 사용한다(클라이언트 값은 복제하지 않음).
+
+6. PIE 점검
+서버 + 클라이언트에서 동일한 좀비를 상대로 테스트한다.
+  - 공격 중 Light 피격: 몽타주/Trace 유지, HP는 감소.
+  - 공격 중 Heavy 피격: Trace 종료, 피격 몽타주, 설정한 시간 동안 AI 행동 정지.
+  - 공격 종료 후 Light 피격: 더는 공격 저항이 없으므로 피격 반응 적용.
+  - HitReaction 면역만: 피격 몽타주 없음, Heavy 공격 취소/스턴은 적용.
+  - Stun 면역: 공격 유지, 넉백은 별도 적용.
+  - 모든 반응 면역: HP 감소/Impact는 유지, 사망 시 공격 종료 및 사망 연출.

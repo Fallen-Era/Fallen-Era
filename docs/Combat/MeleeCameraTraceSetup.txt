@@ -1,0 +1,87 @@
+플레이어 근접 공격: 중앙 정타 + 박스 간접 타격
+================================================
+
+판정 순서
+1. 카메라 중앙에서 TraceRange까지 PlayerMeleeTrace로 LineTraceSingle.
+   적이면 정타, 월드 오브젝트이면 단일 월드 타격 대상입니다.
+2. 중앙 충돌 거리와 관계없이 설정된 전체 범위로 Box Multi Sweep.
+   적은 Overlap으로 통과하고, 벽/블록은 Block으로 Sweep 진행을 막습니다.
+3. 중앙 적은 정타 x1, 박스에서만 잡힌 적은 IndirectDamageMultiplier를 적용합니다.
+   중앙이 빗나가도 박스 적은 간접 타격됩니다.
+4. 같은 액터의 중앙/박스 중복 및 여러 Physics Body 중복을 제거합니다.
+   한 공격 내 최초 접촉의 부위와 정타/간접 배율을 보존합니다.
+   나중에 중앙으로 조준해도 추가 정타나 배율 승격이 발생하지 않습니다.
+5. 블록/일반 월드 오브젝트는 중앙 결과 하나만 타격합니다.
+   박스가 반환한 벽/블록 Hit는 차단에만 사용하고 피해를 주지 않습니다.
+   Voxel 셀별 선택은 현재 액터 단위이며 별도 CellId 처리는 없습니다.
+
+Collision 설정 (에디터 재시작 필요)
+                       PlayerMeleeTrace     PlayerMeleeAreaTrace
+Enemy Mesh             Block                Overlap
+Enemy Capsule          Ignore               Ignore
+벽/블록/지형           Block                Block
+Player/CharacterMesh   Ignore               Ignore
+Trigger/투사체/건설Ghost Ignore              Ignore
+
+- 중앙: ECC_GameTraceChannel7 / 범위: ECC_GameTraceChannel8.
+- EnemyMesh, EnemyCapsule, BuildPiece 등 프로젝트 프로필은 ini에 반영되어 있습니다.
+- 기존 Custom Collision BP는 새 응답을 직접 확인하세요.
+  특히 벽의 PlayerMeleeAreaTrace가 이전 Ignore로 저장되어 있으면 Block으로 수정하세요.
+- 적 Mesh는 Query Collision과 유효한 PhysicsAsset이 필요합니다.
+- 범위 참가 여부는 PlayerMeleeAreaTrace의 Overlap으로 구분하며 구체적인 캐릭터/ASC 타입에 의존하지 않습니다.
+- 총기 PlayerHitscanTrace와 적 AI EnemyTrace / 소켓 Sphere Sweep은 변경하지 않습니다.
+
+무기 설정: Template.AttackActions 내 MeleeAttackData
+- Melee|Trace / TraceRange: 카메라에서 박스 앞면까지 최대 전방 거리(cm), 기본 200.
+- TraceHalfExtent: 반크기. X=전후 두께, Y=화면 가로, Z=화면 세로.
+  (10,20,60) = 두께 20 / 폭 40 / 높이 120cm.
+  (10,60,20) = 두께 20 / 폭 120 / 높이 40cm.
+- 박스는 카메라 회전을 따르며 카메라 앞부터 사거리까지 Sweep합니다.
+  X를 줄여도 전체 Sweep 경로가 줄어드는 것은 아닙니다.
+- Melee|Damage / IndirectDamageMultiplier: 간접 타격 배율, 기본 0.4 (40% 피해).
+  0~1 범위이며 정타 및 중앙 월드 타격에는 적용하지 않습니다.
+- MaxHitCount: 한 공격에서 타격할 고유 적 수. 기본 1.
+  여러 적을 치려면 2 이상으로 설정하세요. 월드 타격 하나는 별도 제한입니다.
+- 한 번의 공격은 Notify 시점에 한 번만 판정합니다. 구간 Tick/동일 적 반복 피해는 없습니다.
+  기존 bAllowMultipleHits / RepeatedHitInterval 설정은 제거되었습니다.
+- Melee|Trace|Debug / Debug Trace: 사정거리 표시 On/Off (기본 Off).
+  중앙선, 중앙 충돌점(노랑), 설정된 전체 공격 범위 Box를 표시합니다.
+  초록은 감지 대상 없음, 빨강은 감지 대상 있음입니다.
+  벽에서 실제 판정이 중단되어도 박스는 설정된 최대 사정거리를 표시합니다.
+- DebugTraceDuration=0은 한 프레임. 서버 판정이므로 리슨서버 창에서 확인합니다.
+
+피해 전달
+- 최종 피해 = 기존 공식(공격력 변동 -> 방어력 감소 -> 부위 배율) * HitQualityMultiplier.
+- 정타/기존 공격은 1.0, 근접 박스 간접 타격만 무기의 IndirectDamageMultiplier.
+- Attribute의 AttackPower나 공유 DA 값을 임시 수정하지 않습니다.
+- GAS: 대상별 GE Spec의 SetByCaller.Damage.HitQualityMultiplier를
+  UFE_DamageExecutionCalculation에서 읽습니다. 기존 기본 Damage GE 및 그 자식은 이 경로를 사용합니다.
+  별도 커스텀 Execution/Modifier만 쓰는 GE는 해당 SetByCaller를 직접 처리해야 합니다.
+- 비ASC Damageable: FFE_CombatDamageRequest.HitQualityMultiplier를 전달합니다.
+  수신 객체는 자기 방어력/부위 공식의 결과에 이 값을 곱해야 합니다. 임의의 로컬 HP 구현을 자동 변경하지 않습니다.
+- fe.Combat.DebugHitDamage 1: 기존 부위/피해 정보에 Quality 배율을 표시합니다.
+- 간접 타격은 피해량만 줄입니다. 피격 반응/넉백/경직/상태 부여 규칙은 기존 설정을 유지합니다.
+- 배율 0은 HP 피해를 막지만 피격 반응 자체를 끄는 설정은 아닙니다.
+
+유지되는 흐름과 절충
+- AttackStartEventTag -> 해당 Gameplay Event를 보내는 단일 AnimNotify 시점에 한 번 판정.
+  같은 공격의 중복 Notify와 빗나간 후 후속 Notify는 재판정하지 않습니다.
+  태그가 비어 있으면 공격 시작 시 한 번 판정하며, 태그를 설정하고 Notify가 없으면 타격하지 않습니다.
+- AttackEndEventTag -> 선택적 기존 종료 이벤트 호환용. 늦게 도착한 타격 Notify를 차단합니다.
+  더 이상 구간 끝 Notify를 넣을 필요는 없습니다.
+- AttackResetEventTag -> 다음 공격 허용. 입력 홀드 시 다음 공격도 자기 Notify에서 한 번 판정합니다.
+- 서버만 계산. 후보별 추가 차폐 LineTrace나 새 클라이언트 RPC는 없습니다.
+- 판정 1회당 중앙 LineTrace 1회 + Box Sweep 1회 (유효한 범위 기준).
+- 적은 다른 적을 가리지 않습니다. 뒤쪽 적도 박스 범위 내이면 간접 타격 가능합니다.
+- 벽 일부에 박스가 걸리면 전체 Sweep이 멈추므로 옆의 열린 공간의 적도 누락될 수 있습니다.
+- 시작 박스가 이미 벽에 관통 중이면 범위 피해를 생략하고 독립적으로 검증된 중앙 결과만 유지합니다.
+- BoneName/PhysicalMaterial을 기존 부위 배율/Impact Cue에 전달합니다.
+  재질이 비어 있으면 해당 Physics Body의 Simple PhysicalMaterial로 보완합니다.
+
+검증
+- FallenEra.Combat.Melee.CameraVolume: 크기/회전/사거리/밀착 적/옆 적/뒤 적/
+  중앙 중복 제거/벽 Block/초기 관통/충돌 프로필/PhysicalMaterial.
+- FallenEra.Combat.Melee.HitQuality: 실제 Ability -> CombatComponent -> 비ASC Damageable,
+  정타 x1/간접 x0.4/밀착 시 옆 적 유지/최초 배율 유지/중복 타격 방지/벽/별도 월드 제한.
+- FallenEra.Combat.Damage.HitRegions 및 Variance: 실제 GE 실행의 정타/간접/방어력/부위 배율.
+- PIE 추가 확인: Custom Collision 응답, 문틀/코너, 사운드, 빠른 클릭/홀드, 서버/클라이언트.

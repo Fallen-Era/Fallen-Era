@@ -2,9 +2,9 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Combat/Damage/FEHitRegionDamage.h"
 #include "FECombatProjectile.generated.h"
 
-class UCapsuleComponent;
 class UShapeComponent;
 class UStaticMeshComponent;
 class UProjectileMovementComponent;
@@ -13,8 +13,8 @@ class UFE_WeaponItemData;
 class UFE_WeaponAttackData;
 class UFE_ProjectilePoolSubsystem;
 
-/** Server-authoritative projectile that routes impact damage through CombatComponent. */
-UCLASS(Blueprintable)
+/** Server-authoritative projectile base. Concrete subclasses must provide the active collision shape. */
+UCLASS(Abstract, Blueprintable)
 class FALLENERA_API AFE_CombatProjectile : public AActor
 {
 	GENERATED_BODY()
@@ -33,6 +33,8 @@ public:
 
 	/** Makes a locally spawned actor safe to use as an attached charge preview. */
 	void ConfigureAsLocalPreview();
+	/** Server-local immutable shot value; never re-read current equipment when this projectile hits. */
+	void SetAmmoDamageMultiplier(float Value) { AmmoDamageMultiplier = FMath::IsFinite(Value) ? FMath::Max(0.0f, Value) : 1.0f; }
 
 	/** Deactivates this instance and returns it to the bounded world pool. */
 	void ReturnToPool();
@@ -52,7 +54,8 @@ protected:
 	virtual void ProcessProjectileHit(AActor* OtherActor, const FHitResult& Hit);
 
 	/** Applies this projectile's configured damage GE and reaction to one target. */
-	bool ApplyProjectileDamage(AActor* TargetActor, const FHitResult& Hit);
+	bool ApplyProjectileDamage(AActor* TargetActor, const FHitResult& Hit,
+		EFE_DamageHitType HitType = EFE_DamageHitType::Direct);
 	virtual void OnActivatedFromPool();
 	virtual void OnReturnedToPool();
 
@@ -113,6 +116,7 @@ private:
 	TSubclassOf<UGameplayEffect> DamageEffectClass;
 
 	bool bHasImpacted = false;
+	float AmmoDamageMultiplier = 1.0f;
 	bool bIsLocalPreview = false;
 	bool bIsInPool = false;
 };

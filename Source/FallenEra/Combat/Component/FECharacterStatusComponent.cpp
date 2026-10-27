@@ -9,7 +9,7 @@
 #include "Combat/Interface/FEConditionSource.h"
 #include "GameFramework/GameStateBase.h"
 #include "Net/UnrealNetwork.h"
-#include "TimerManager.h"
+#include "Combat/GameplayEffect/FEConditionLifetimeGameplayEffect.h"
 
 UFE_CharacterStatusComponent::UFE_CharacterStatusComponent()
 {
@@ -61,18 +61,13 @@ bool UFE_CharacterStatusComponent::ApplyCondition(FGameplayTag ConditionTag)
 	AActor* OwnerActor = GetOwner();
 	const FFE_CharacterConditionDefinition* Definition = FindConditionDefinition(ConditionTag);
 	if (!OwnerActor || !OwnerActor->HasAuthority() || !Definition ||
-		!ConditionTag.IsValid() ||
+		!ConditionTag.IsValid() || bEndingPlay ||
 		(HasCondition(ConditionTag) && !Definition->bRefreshDurationOnReapply))
 	{
 		return false;
 	}
 
-	if (HasCondition(ConditionTag))
-	{
-		RemoveCondition(ConditionTag);
-	}
-	StartCondition(*Definition);
-	return true;
+	return StartCondition(*Definition);
 }
 
 bool UFE_CharacterStatusComponent::RemoveCondition(FGameplayTag ConditionTag)
@@ -84,30 +79,8 @@ bool UFE_CharacterStatusComponent::RemoveCondition(FGameplayTag ConditionTag)
 		return false;
 	}
 
-	if (UWorld* World = GetWorld())
-	{
-		World->GetTimerManager().ClearTimer(Runtime->TickTimer);
-		World->GetTimerManager().ClearTimer(Runtime->ExpirationTimer);
-	}
-
-	if (UAbilitySystemComponent* AbilitySystem = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(OwnerActor))
-	{
-		if (Runtime->AppliedEffectHandle.IsValid())
-		{
-			AbilitySystem->RemoveActiveGameplayEffect(Runtime->AppliedEffectHandle);
-		}
-		AbilitySystem->RemoveLooseGameplayTag(
-			ConditionTag, 1, EGameplayTagReplicationState::TagAndCountToAll);
-	}
-
-	ActiveConditionRuntime.Remove(ConditionTag);
-	ActiveConditions.RemoveAll(
-		[ConditionTag](const FFE_ActiveCharacterCondition& ActiveCondition)
-		{
-			return ActiveCondition.ConditionTag == ConditionTag;
-		});
-	NotifyConditionsChanged();
-	return true;
+	UAbilitySystemComponent* ASC = Runtime->AbilitySystem.Get();
+	return ASC && ASC->RemoveActiveGameplayEffect(Runtime->LifetimeEffectHandle);
 }
 
 void UFE_CharacterStatusComponent::RemoveAllConditions()
@@ -174,83 +147,124 @@ const FFE_CharacterConditionDefinition* UFE_CharacterStatusComponent::FindCondit
 		});
 }
 
-void UFE_CharacterStatusComponent::StartCondition(const FFE_CharacterConditionDefinition& Definition)
+bool UFE_CharacterStatusComponent::StartCondition(const FFE_CharacterConditionDefinition& Definition)
 {
-	AActor* OwnerActor = GetOwner();
-	if (!OwnerActor)
+	UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner());
+	if (!ASC || ASC->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead)) { return false; }
+	FGameplayEffectSpecHandle Spec = ASC->MakeOutgoingSpec(
+		UFE_ConditionLifetimeGameplayEffect::StaticClass(), 1.0f, ASC->MakeEffectContext());
+	if (!Spec.IsValid()) { return false; }
+	Spec.Data->SetDuration(Definition.Duration > 0.0f ? Definition.Duration : UGameplayEffect::INFINITE_DURATION, true);
+	Spec.Data->Period = Definition.TickInterval > 0.0f && Definition.HealthLossPerTick > 0.0f ? Definition.TickInterval : 0.0f;
+	Spec.Data->SetSetByCallerMagnitude(FallenEraCombatGameplayTags::SetByCaller_Condition_HealthLoss,
+		Spec.Data->Period > 0.0f ? -Definition.HealthLossPerTick : 0.0f);
+	Spec.Data->DynamicGrantedTags.AddTag(Definition.ConditionTag);
+	Spec.Data->AddDynamicAssetTag(Definition.ConditionTag);
+	const FActiveGameplayEffectHandle LifetimeHandle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+	if (!LifetimeHandle.IsValid()) { return false; } // Immunity must not leave tags, UI or timers behind.
+
+	FActiveGameplayEffectHandle ExtraHandle;
+	if (Definition.AppliedEffectClass)
 	{
+		FGameplayEffectSpecHandle ExtraSpec = ASC->MakeOutgoingSpec(
+			Definition.AppliedEffectClass, 1.0f, ASC->MakeEffectContext());
+		if (ExtraSpec.IsValid())
+		{
+			ExtraSpec.Data->AddDynamicAssetTag(Definition.ConditionTag);
+			if (ExtraSpec.Data->Def->DurationPolicy != EGameplayEffectDurationType::Instant)
+			{
+				// Only the lifetime effect expires; extensions/cleansing also govern these modifiers.
+				ExtraSpec.Data->SetDuration(UGameplayEffect::INFINITE_DURATION, true);
+			}
+			ExtraHandle = ASC->ApplyGameplayEffectSpecToSelf(*ExtraSpec.Data.Get());
+		}
+		if (!ExtraHandle.WasSuccessfullyApplied())
+		{
+			ASC->RemoveActiveGameplayEffect(LifetimeHandle);
+			return false;
+		}
+	}
+
+	if (ASC->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead))
+	{
+		ASC->RemoveActiveGameplayEffect(ExtraHandle);
+		ASC->RemoveActiveGameplayEffect(LifetimeHandle);
+		return false;
+	}
+	// Replace the previous instance only after the replacement passed all GAS application checks.
+	RemoveCondition(Definition.ConditionTag);
+	FActiveConditionRuntime& Runtime = ActiveConditionRuntime.Add(Definition.ConditionTag);
+	Runtime.LifetimeEffectHandle = LifetimeHandle;
+	Runtime.AppliedEffectHandle = ExtraHandle;
+	Runtime.AbilitySystem = ASC;
+	if (auto* Removed = ASC->OnGameplayEffectRemoved_InfoDelegate(LifetimeHandle))
+	{
+		Removed->AddUObject(this, &ThisClass::HandleConditionEffectRemoved, Definition.ConditionTag, true);
+	}
+	if (auto* Removed = ASC->OnGameplayEffectRemoved_InfoDelegate(ExtraHandle))
+	{
+		Removed->AddUObject(this, &ThisClass::HandleConditionEffectRemoved, Definition.ConditionTag, false);
+	}
+	if (auto* TimeChanged = ASC->OnGameplayEffectTimeChangeDelegate(LifetimeHandle))
+	{
+		TimeChanged->AddUObject(this, &ThisClass::HandleConditionTimeChanged, Definition.ConditionTag);
+	}
+	FFE_ActiveCharacterCondition& Active = ActiveConditions.AddDefaulted_GetRef();
+	Active.ConditionTag = Definition.ConditionTag;
+	Active.EndServerWorldTime = Definition.Duration > 0.0f ? GetServerWorldTime() + Spec.Data->GetDuration() : 0.0;
+	NotifyConditionsChanged();
+	return true;
+}
+
+void UFE_CharacterStatusComponent::HandleConditionEffectRemoved(
+	const FGameplayEffectRemovalInfo& Info, FGameplayTag Tag, bool bLifetimeEffect)
+{
+	const FActiveConditionRuntime* Runtime = ActiveConditionRuntime.Find(Tag);
+	if (!Runtime) { return; }
+	if (!bLifetimeEffect)
+	{
+		// Natural extra-effect expiry is not cleansing; the lifetime GE decides natural expiration.
+		if (Info.bPrematureRemoval) { RemoveCondition(Tag); }
 		return;
 	}
-
-	FActiveConditionRuntime& Runtime = ActiveConditionRuntime.Add(Definition.ConditionTag);
-	FFE_ActiveCharacterCondition& ActiveCondition = ActiveConditions.AddDefaulted_GetRef();
-	ActiveCondition.ConditionTag = Definition.ConditionTag;
-	ActiveCondition.EndServerWorldTime = Definition.Duration > 0.0f
-		? GetServerWorldTime() + Definition.Duration
-		: 0.0;
-
-	if (UAbilitySystemComponent* AbilitySystem = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(OwnerActor))
+	const FActiveConditionRuntime RemovedRuntime = *Runtime;
+	ActiveConditionRuntime.Remove(Tag); // Remove before nested GAS removal delegates can re-enter.
+	ActiveConditions.RemoveAll([Tag](const FFE_ActiveCharacterCondition& Active) { return Active.ConditionTag == Tag; });
+	if (UAbilitySystemComponent* ASC = RemovedRuntime.AbilitySystem.Get())
 	{
-		AbilitySystem->AddLooseGameplayTag(
-			Definition.ConditionTag, 1, EGameplayTagReplicationState::TagAndCountToAll);
-		if (Definition.AppliedEffectClass)
-		{
-			const FGameplayEffectContextHandle Context = AbilitySystem->MakeEffectContext();
-			const FGameplayEffectSpecHandle Spec = AbilitySystem->MakeOutgoingSpec(
-				Definition.AppliedEffectClass, 1.0f, Context);
-			if (Spec.IsValid())
-			{
-				Runtime.AppliedEffectHandle = AbilitySystem->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
-			}
-		}
+		ASC->RemoveActiveGameplayEffect(RemovedRuntime.AppliedEffectHandle);
 	}
-
-	if (UWorld* World = GetWorld())
-	{
-		FTimerManager& TimerManager = World->GetTimerManager();
-		if (Definition.TickInterval > 0.0f && Definition.HealthLossPerTick > 0.0f)
-		{
-			FTimerDelegate TickDelegate;
-			TickDelegate.BindUObject(this, &UFE_CharacterStatusComponent::HandleConditionTick, Definition.ConditionTag);
-			TimerManager.SetTimer(Runtime.TickTimer, TickDelegate, Definition.TickInterval, true);
-		}
-		if (Definition.Duration > 0.0f)
-		{
-			FTimerDelegate ExpirationDelegate;
-			ExpirationDelegate.BindUObject(this, &UFE_CharacterStatusComponent::HandleConditionExpired, Definition.ConditionTag);
-			TimerManager.SetTimer(Runtime.ExpirationTimer, ExpirationDelegate, Definition.Duration, false);
-		}
-	}
-
 	NotifyConditionsChanged();
-}
-
-void UFE_CharacterStatusComponent::HandleConditionTick(FGameplayTag ConditionTag)
-{
-	if (const FFE_CharacterConditionDefinition* Definition = FindConditionDefinition(ConditionTag))
+	const FFE_CharacterConditionDefinition* Definition = FindConditionDefinition(Tag);
+	if (!bEndingPlay && !Info.bPrematureRemoval && Definition &&
+		Definition->ExpirationBehavior == EFE_ConditionExpirationBehavior::KillOwner)
 	{
-		ApplyFixedHealthLoss(Definition->HealthLossPerTick);
-	}
-}
-
-void UFE_CharacterStatusComponent::HandleConditionExpired(FGameplayTag ConditionTag)
-{
-	const FFE_CharacterConditionDefinition* Definition = FindConditionDefinition(ConditionTag);
-	const bool bKillOwner = Definition &&
-		Definition->ExpirationBehavior == EFE_ConditionExpirationBehavior::KillOwner;
-	RemoveCondition(ConditionTag);
-
-	if (bKillOwner)
-	{
-		AActor* OwnerActor = GetOwner();
-		UAbilitySystemComponent* AbilitySystem = OwnerActor
-			? UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(OwnerActor)
-			: nullptr;
-		if (AbilitySystem && !AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead))
+		if (UAbilitySystemComponent* ASC = RemovedRuntime.AbilitySystem.Get())
 		{
-			ApplyFixedHealthLoss(AbilitySystem->GetNumericAttribute(UFallenEraAttributeSet::GetHealthAttribute()));
+			ApplyFixedHealthLoss(ASC->GetNumericAttribute(UFallenEraAttributeSet::GetHealthAttribute()));
 		}
 	}
+}
+
+void UFE_CharacterStatusComponent::HandleConditionTimeChanged(
+	FActiveGameplayEffectHandle Handle, float StartTime, float Duration, FGameplayTag Tag)
+{
+	FFE_ActiveCharacterCondition* Active = ActiveConditions.FindByPredicate(
+		[Tag](const FFE_ActiveCharacterCondition& Condition) { return Condition.ConditionTag == Tag; });
+	if (Active)
+	{
+		Active->EndServerWorldTime = Duration > 0.0f && GetWorld()
+			? GetServerWorldTime() + FMath::Max(0.0f, StartTime + Duration - GetWorld()->GetTimeSeconds()) : 0.0;
+		NotifyConditionsChanged();
+	}
+}
+
+void UFE_CharacterStatusComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	bEndingPlay = true;
+	RemoveAllConditions(); // PlayerState's ASC can outlive this pawn.
+	ActiveConditionRuntime.Reset();
+	Super::EndPlay(EndPlayReason);
 }
 
 void UFE_CharacterStatusComponent::ApplyFixedHealthLoss(float HealthLoss)

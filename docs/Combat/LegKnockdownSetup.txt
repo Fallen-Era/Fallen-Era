@@ -1,0 +1,130 @@
+다리 피격 레그돌 / 생존 시 복구
+================================
+
+1. 동작
+- 서버에서 실제 HP가 감소한 Direct 피격만 검사한다.
+- 대상의 기존 HitZoneMappingData에서 Legs로 판정된 본이면 전신 레그돌로 전환한다.
+- Area(수류탄 등), 피해량 0, 이미 사망한 대상은 쓰러짐을 시작하지 않는다.
+- 쓰러지는 즉시 공격 GA/Trace/몽타주를 취소하고 이동을 정지한다.
+- State.Combat.KnockedDown은 쓰러짐부터 기상 완료까지 유지한다.
+- 같은 구간의 추가 피격은 HP에 계속 적용하지만 타이머/Impulse를 재시작하지 않는다.
+- DownDuration이 지나면 기상을 요청한다. 실제 전환은 다음 PrePhysics에서 안전한 기상 위치를 검사한 뒤 실행한다.
+- 물리를 끄기 직전에 마지막 자세를 한 번 캡처하고 기상 몽타주로 짧게 블렌딩한다.
+- 기상 완료 후 이동/공격을 다시 허용한다. AI 타겟 기억은 지우지 않으며 다음 결정 주기에 추적한다.
+- 도중에 사망하면 복구 타이머를 취소하고 기존 사망 처리로 넘긴다. 다시 살아나거나 추적하지 않는다.
+
+2. 에디터 설정
+- 사용 중인 AISettings DataAsset > AISettings > Reaction > Leg Knockdown에서 설정한다.
+- Enabled: 기본 true. false이면 기존 다리 부분 물리 피격 방식으로 돌아간다.
+- Down Duration: 기본 3초.
+- Impulse Strength: 기본 100cm/s의 속도 변화. 한 번만 적용한다.
+- Pelvis Bone: 기본 pelvis. Physics Asset에서 실제 Physics Body가 있는 본을 사용한다.
+- 적 Mesh의 Physics Asset Override에 PA_FE_Enemy를 사용한다.
+  현재 BP_ArmoredEnemy / BP_HeavyZombie에는 연결되어 있다. 공용 PA_Mannequin은 수정하지 않는다.
+  새 스켈레톤도 최상위 root에 충돌 없는 Kinematic Body가 필요하다. pelvis는 root와 달라야 한다.
+  루트 바디가 없거나 Kinematic이 아니면 쓰러짐을 시작하지 않고 기존 부분 피격 경로를 사용한다.
+  루트는 좌표 고정용이며 골반을 잡아당기는 제약을 추가하지 않는다.
+- HitZoneMappingData에서 thigh_l/r 등의 상위 다리를 Legs로 매핑한다. 기존 자식 상속 규칙을 그대로 쓴다.
+- Get Up Face Up Montage / Get Up Face Down Montage: 적 스켈레톤과 호환되는 전신 기상 몽타주를 할당한다.
+  AnimBP에서 해당 몽타주의 Slot이 최종 출력에 연결되어 있어야 한다.
+  현재 Setting1/Heavy 프리셋에는 AM_Getup_Back / AM_GetUp_Front가 할당되어 있다.
+  DA_Zombie_Setting2는 미지정 상태이므로 필요하면 동일하게 두 몽타주를 지정한다.
+  두 몽타주를 비워도 Fallback Get Up Duration(기본 0.5초) 후 정상 이동으로 복귀한다.
+  단, 미지정 상태는 기상 연출 없이 서 있는 포즈로 전환되는 기능 확인용 대체 동작이다.
+- Pelvis Front Axis: pelvis 본의 앞면을 향하는 로컬 축. 기본 Y. 스켈레톤에 따라 변경한다.
+- Pelvis Up Axis: 서 있는 스켈레톤에서 골반->머리 방향의 pelvis 로컬 축. Mannequin 기본 X.
+  실제 쓰러진 골반의 이 축을 수평 투영하고, 앞/뒤 기상 및 원래 Mesh 상대 회전을 반영해 기상 방향을 정한다.
+  추적 대상 방향이나 쓰러지기 전 Actor Yaw로 강제 기상하지 않는다.
+- Get Up Yaw Offset: 기본 0도. 다른 전방 축으로 제작된 기상 애니메이션의 추가 방향 보정.
+- Get Up Pose Blend Duration: 기본 0.2초. 마지막 레그돌 자세에서 기상 동작으로 넘어가는 시간.
+  0이면 스냅샷 전환을 사용하지 않는다. 기상 몽타주가 없는 경우에도 스냅샷을 사용하지 않는다.
+- 기상 몽타주는 In-Place를 권장한다. Root Motion 이동까지 사용하는 기상 연출은 별도 정렬이 필요하다.
+- AM_Getup_Back / AM_GetUp_Front에 임시 적용했던 0.3초 Cubic Blend Out은 제거하고 원래 0초 설정을 복원했다.
+  Blend In은 ALS처럼 0초다. 기상 클립은 즉시 준비하고, 별도 스냅샷 블렌드만 사용한다.
+  현재 클립은 낮은 웅크린 자세로 끝나므로 서 있는 이동 자세와 불일치한다. 이 자세 차이는 아직 해결하지 않았다.
+  근본 해결은 서 있는 자세까지 완결되는 기상 클립 또는 실제 웅크림->서기 전환을 연결하는 것이다.
+- ABP_HT_EnemyCharacter의 최종 출력에 FE_RagdollRecoveryBlend를 연결했다.
+  A: 기존 Control Rig/Slot을 포함한 최종 애니메이션 캐시(FE_NormalCombatPose), B: FE_RagdollStates,
+  Alpha: FEEnemyAnimInstance.RagdollPoseAlpha. 1에서 0으로 SmoothStep 보간한다.
+  스냅샷을 Slot의 기본 포즈로 유지하지 않으므로 몽타주 종료 때 누운 자세가 다시 나타나지 않는다.
+- FE_RagdollStates는 ALS의 In Ragdoll -> Blend Out Pose 구조를 사용한다.
+  In Ragdoll: 기존 포즈 캐시(실제 자세는 전신 물리로 결정), Blend Out Pose: FE_RagdollPose 스냅샷.
+  bIsRagdoll이 false가 되면 Blend Out Pose로 즉시 전환하고, 새 레그돌에서는 반대로 전환한다.
+  State Machine의 Skip First Update Transition은 반드시 false로 설정한다.
+  ALS 전용 Flail/이동 상태/Overlay 의존성은 복사하지 않았다. 기존 이동/공격/피격/Control Rig는 유지한다.
+- 별도 적 AnimBP를 만들 경우 UFE_EnemyAnimInstance를 부모로 사용하고 같은 최종 블렌드를 연결한다.
+  기존 AnimGraph/Slot/Control Rig는 보존하며, Snapshot 노드의 Mode는 Named Snapshot을 사용한다.
+  Blend 노드의 Always Update Children을 켜서 Alpha가 1인 첫 프레임에도 기상 몽타주를 갱신한다.
+- 몽타주 첫 자세/리타깃 결과와 실제 쓰러진 방향의 차이가 크면 회전/자세 보간이 보일 수 있다.
+  스냅샷은 리타깃 또는 Root Motion 정렬 오류를 자동으로 해결하는 기능은 아니다.
+
+3. 충돌과 복구
+- 캡슐 충돌/이동은 임시 해제하고 Mesh의 기존 피격 Trace 응답은 유지한다.
+- Mesh에는 WorldStatic/WorldDynamic/BuildPiece 지지 충돌을 추가하여 바닥을 통과하지 않게 한다.
+- 시작 전 Mesh 상대 Transform/충돌 응답/URO/애니메이션 갱신 설정을 보관해 복구한다.
+- ALS처럼 메시 부착을 유지하고 pelvis 이하만 시뮬레이션한다. Kinematic root는 물리화하지 않는다.
+- 기상 스냅샷의 root는 기준 자세 좌표계로 유지한다. 캡슐 위치/방향 정렬 차이는 root 직속 자식에
+  한 번만 반영하여 실제 피격 자세의 월드 위치를 보존한다. 루트 회전 보간으로 골반이 솟는 경로를 제거한다.
+- 기상 중 URO를 잠시 해제하고 자세를 갱신하며, 완료/사망 시 원래 갱신 설정으로 복구한다.
+- 서버는 실제 Montage Ended(Blend Out 포함)를 받은 후에만 이동/공격 제한을 해제한다.
+  몽타주가 없거나 재생에 실패한 경우에만 Fallback Get Up Duration 타이머를 사용한다.
+- 타겟을 바라보는 회전도 이 제한을 따르며, UpdateCombat 진입 시에도 같은 상태를 검사한다.
+  골반 방향으로 기상 자세를 맞추는 시작 정렬과 타겟을 향한 AI 회전은 별개다.
+- 정상 기상 완료 시 시작 Recovery Transform을 다시 적용하지 않는다. 현재 위치/방향과 속도 정리를 유지한다.
+  기상 단계를 놓친 클라이언트가 있을 경우에만 복제된 최종 복구 Transform으로 정렬한다.
+- 타이머/OnRep는 요청만 저장한다. FEKnockdownComponent의 PrePhysics Tick에서 전환을 완료하고,
+  Mesh의 Tick Prerequisite가 이 컴포넌트를 기다리므로 같은 프레임의 정상 메시 평가에서 스냅샷이 반영된다.
+  TickAnimation(0) / RefreshBoneTransforms를 강제로 추가 호출하지 않는다.
+- 메시 분리/재부착은 사용하지 않는다. 복구 시 캡슐 이동을 평가 후 타이머에서 실행하지 않는다.
+- pelvis 주변 바닥을 검사하고 9개 위치 중 캡슐이 들어갈 수 있는 위치를 선택한다.
+- NavData가 있으면 내비게이션 투영도 확인한다. 바닥/공간/내비게이션이 없으면 0.25초 후 재시도한다.
+- 부분 피격 플러그인은 쓰러짐 동안 정리/억제한다. 전신 레그돌과 같은 바디를 동시에 제어하지 않는다.
+
+4. 면역
+- 기존 State.Immune.Stun/HitReaction은 유지된다. 새 쓰러짐은 경직과 별개의 행동 상태다.
+- State.Immune.PhysicalReaction은 부분 물리와 다리 레그돌 진입을 모두 막는다.
+- 일반 경직 면역이 있어도 다리 피격으로 쓰러뜨리는 현재 요구사항을 따른다.
+
+5. 네트워크와 비용
+- 쓰러짐/기상/복구 상태와 복구 Transform은 서버에서 결정하여 컴포넌트 상태로 복제한다.
+- 프레임마다 모든 본의 물리 포즈를 네트워크에 보내지 않는다. 클라이언트 시뮬레이션 포즈는 차이가 있을 수 있다.
+- 스냅샷은 각 화면의 로컬 물리 포즈에서 복구 시 한 번만 생성한다. Dedicated Server는 생략한다.
+- AnimBP에는 본 배열 대신 이름으로 캐시된 포즈를 전달한다. 평상시 Alpha는 0이며 추가 컴포넌트 Tick은 없다.
+- 기상 구간을 늦게 수신한 클라이언트는 서버 경과 시간에 맞춰 몽타주를 재생한다.
+  이미 블렌딩 시간이 지난 경우 오래된 스냅샷으로 다시 전환하지 않는다.
+- 서버도 활성 레그돌 동안은 물리를 계산해야 한다. 기존 장식용 부분 물리보다 CPU 비용이 크다.
+- 서버 캡슐 위치는 쓰러진 동안만 0.1초 간격으로 pelvis XY와 바닥 높이에 맞춘다.
+  1회 바닥 쿼리를 사용하고 TeleportPhysics 없이 이동하므로 시뮬레이션 중인 바디는 같이 순간이동하지 않는다.
+  9개 후보/내비게이션/공간 검사는 기상 시에만 한다. 평상시 컴포넌트 Tick은 꺼져 있다.
+- 전환 요청이 생길 때만 0.1초 Tick 대기를 해제해 다음 PrePhysics에서 처리한다.
+  클라이언트도 동일한 전환 경로를 사용하며, 전환 완료 후 불필요한 컴포넌트 Tick은 다시 끈다.
+- 기상 몽타주는 AI 프리로드 경로에 포함한다. 피격 때 LoadSynchronous를 호출하지 않는다.
+- 다수 적이 동시에 쓰러지는 최악 상황은 PIE/패키지의 Chaos/Animation/Network 프로파일링이 필요하다.
+
+6. 추후 누적 피해 전환
+- CombatComponent의 Direct 피격 진입점에서 누적 다리 피해 임계값을 검사한 뒤
+  UFE_KnockdownComponent::TryStartFromHit를 호출하도록 변경하면 된다.
+- 레그돌/기상/AI 정지/사망 취소 코드를 공격 Ability별로 복제하지 않는다.
+
+참고: https://dev.epicgames.com/documentation/unreal-engine/animation-pose-snapshot-in-unreal-engine?lang=en-US
+
+7. 검증 / 원본 백업
+- FallenEra.Combat.Reaction.KnockdownSnapshotGraph: 저장된 실제 AnimBP의 연결/이름 확인(기본 읽기 전용).
+- FallenEra.Combat.Reaction.KnockdownSnapshotPose: 루트 고정/자식 월드 자세 보존, 블렌드, 실제 기상/사망 정리 검증.
+- FallenEra.Combat.Reaction.KnockdownNormalTickRecovery: 실제 AnimBP/Chaos/타이머로 쓰러지고 일어나는 동안,
+  수동 TickAnimation/RefreshBoneTransforms 없이 첫 프레임의 연속성과 이후 0.2초 골반 높이 급등 여부를 확인한다.
+  레그돌 중 root 비시뮬레이션/메시 부착 유지도 검사한다.
+- FallenEra.Combat.Reaction.KnockdownReplicatedTransition: Simulated Proxy의 OnRep가 즉시 물리를 바꾸지 않고,
+  정상 Tick으로 레그돌/기상/완료를 적용하고 URO/스냅샷/컴포넌트 Tick을 정리하는지 확인한다.
+  실제 네트워크 PIE를 대신하는 테스트는 아니며, Listen Server + Client 시각 검증은 별도로 필요하다.
+- FallenEra.Combat.Reaction.KnockdownRecoveryFacing: 골반 기준 기상 방향과 기상 완료 시 재텔레포트 방지 검증.
+- NormalTickRecovery는 실제 AI 타겟을 설정하고 몽타주 종료 전 회전/이동/공격 제한 및 종료 후 타겟 방향 회전을 검사한다.
+- KnockdownScaledRecovery는 동일한 정상 Tick/Chaos 검증을 1.5배 메시에서도 실행한다.
+- 기존 레그돌/복구/사망/부분 물리 테스트도 함께 실행한다.
+- AnimBP 수정 전 원본은 Saved/Backups/KnockdownSnapshot/<작업시각>/에 보관한다.
+- 그래프 구성 도구는 명시적인 -FEConfigureKnockdownSnapshot 실행에만 에셋을 저장한다.
+  일반 게임 실행/자동화 테스트는 에셋을 수정하지 않는다.
+- FallenEra.Combat.Reaction.KnockdownPhysicsAsset: 전용 Physics Asset, 두 적 BP의 Override, 몽타주 Blend In 검증.
+  명시적인 -FEConfigureKnockdownPhysics 실행에만 전용 에셋 생성/연결/저장을 수행한다.
+  저장 전 현재 BP/몽타주/기존 전용 Physics Asset을 Saved/Backups/KnockdownPhysics/<시각>/에 복사한다.
+- ALS 원본의 핵심 루트/골반 물리 범위를 반영했지만 ALS 전체 Overlay/웅크림 애니메이션 시스템은 이식하지 않았다.

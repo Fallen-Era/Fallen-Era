@@ -17,6 +17,10 @@
 	],
 	"Plugins": [
 		{
+			"Name": "ProcHitReact",
+			"Enabled": true
+		},
+		{
 			"Name": "ModelingToolsEditorMode",
 			"Enabled": true,
 			"TargetAllowList": [
@@ -36,9 +40,8 @@
 			"Enabled": true
 		},
 		{
-			"Name": "VoxelPluginInstaller",
-			"Enabled": true,
-			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/dcb8f76613ce49cda4e70fb602513ce4"
+			"Name": "Voxel",
+			"Enabled": true
 		},
 		{
 			"Name": "AsyncMessageSystem",
