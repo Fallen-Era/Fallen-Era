@@ -27,4 +27,6 @@ private:
 	TArray<FGameplayAbilitySpecHandle> InputHeldSpecHandles;
 	/** Presses received while the mapped ability was still active. */
 	TArray<FGameplayAbilitySpecHandle> PendingReactivationSpecHandles;
+	/** Opt-in blocked presses; retained through replication/cost readiness until success or release. */
+	TArray<FGameplayAbilitySpecHandle> BlockedInputRetrySpecHandles;
 };

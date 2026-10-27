@@ -15,4 +15,20 @@ UFE_WeaponOffenseGameplayEffect::UFE_WeaponOffenseGameplayEffect()
 	OffenseMagnitude.DataTag = FallenEraCombatGameplayTags::SetByCaller_AttackPower;
 	AttackPowerModifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(OffenseMagnitude);
 	Modifiers.Add(AttackPowerModifier);
+
+	FGameplayModifierInfo AccuracyModifier;
+	AccuracyModifier.Attribute = UFallenEraAttributeSet::GetAccuracyAttribute();
+	AccuracyModifier.ModifierOp = EGameplayModOp::Additive;
+	FSetByCallerFloat AccuracyMagnitude;
+	AccuracyMagnitude.DataTag = FallenEraCombatGameplayTags::SetByCaller_Accuracy;
+	AccuracyModifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(AccuracyMagnitude);
+	Modifiers.Add(AccuracyModifier);
+
+	FGameplayModifierInfo RecoilControlModifier;
+	RecoilControlModifier.Attribute = UFallenEraAttributeSet::GetRecoilControlAttribute();
+	RecoilControlModifier.ModifierOp = EGameplayModOp::Additive;
+	FSetByCallerFloat RecoilMagnitude;
+	RecoilMagnitude.DataTag = FallenEraCombatGameplayTags::SetByCaller_RecoilControl;
+	RecoilControlModifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(RecoilMagnitude);
+	Modifiers.Add(RecoilControlModifier);
 }

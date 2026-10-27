@@ -1,0 +1,118 @@
+PR #29 통합 리뷰 수정 기록
+========================
+기준: 4f88265 / 13-feat-Enemy_AI_System
+작성일: 2026-10-27
+
+작업 범위
+---------
+코드 리뷰1, 코드 리뷰2, PR29코드리뷰3을 모두 읽고 원인이 같은 지적을 통합했다.
+원래 FallenEraProject의 미커밋 변경은 유지하고 PR29ReviewFixes 작업 트리에서 수정했다.
+약/강공격, 절단, 새 사망 레그돌, 다리 누적 피해 등 보류한 신규 기능은 포함하지 않는다.
+활 발사 시 캐릭터가 밀리는 현상은 앞선 분석만 있으며 이 패치의 수정 사항이 아니다.
+
+반영한 수정
+-----------
+1. 장비 인스턴스 복원 순서
+   RestoreWeaponInstance -> 탄약 준비 -> GAS/외형/부착물/GA 적용 -> 상태 발행 순으로 정리.
+   InitializeWeaponAmmo가 전체 인스턴스를 뒤늦게 덮어쓰던 책임을 분리했다.
+   재장착 시 생성된 공격력, 정확도, 비용, 부착물, 식별자, 잔탄이 유지된다.
+
+2. 근접 스태미너 비용의 소유자 동기화
+   기존 COND_OwnerOnly AmmoState에 StaminaCost를 함께 발행한다.
+   서버는 실제 CurrentWeaponInstance를, 소유 클라이언트는 해당 무기의 복제 비용을 읽는다.
+   전체 인스턴스/부착물 배열을 복제하거나 클라이언트가 비용을 지정하게 만들지 않았다.
+
+3. 재장전 표현 복제
+   일회성 Unreliable Multicast 대신 ReloadState를 복제한다.
+   무기 태그, 시작 서버 시간, 지속 시간, 두 몽타주의 소프트 경로, 리비전을 포함한다.
+   늦은 관련성 진입 및 비동기 로딩 후 경과 시간 * 몽타주 RateScale 위치에서 재생한다.
+   캐릭터 본체/로컬 팔/3인칭 무기/1인칭 무기를 함께 처리한다.
+   이미 종료된 몽타주는 다시 시작하지 않고 취소/종료/EndPlay에서 대기 로드와 표현을 정리한다.
+   탄약 이동은 기존 서버 GA와 몽타주 길이 기준 완료 경로를 그대로 사용한다.
+   무기 교체와 사망의 공통 표현 중단도 재장전 몽타주를 정리한다.
+
+4. 연사 경로의 복사/탐색 비용
+   식별자는 GetWeaponInstanceId로 직접 조회한다.
+   매 발 전체 인스턴스를 테스트 저장소에 복사하지 않고 장비 변경 시 저장한다.
+   GetAmmoState/GetWeaponInstanceData는 native const reference를 반환한다.
+   GetCompatibleAmmo의 native 출력 배열 overload를 추가하고 기존 BP 노드는 유지한다.
+   FText가 포함된다는 리뷰 설명은 현재 구조체와 다르며, 반환 배열은 NRVO/move가 가능하다.
+   실제 반복 경로를 우선 수정했으며 모든 값 반환을 무조건 결함으로 간주하지 않았다.
+   공격 GA의 장비/전투/조준 컴포넌트는 약참조로 캐싱하고 아바타가 바뀌면 재탐색한다.
+
+5. 달리기 검증과 조준 경계
+   ServerSetSprinting에 WithValidation 추가. 잘못된 소유자는 검증에서 거절한다.
+   사망/기절/넉다운/조준/스태미너 부족 같은 정상적인 상태 변화는 Implementation에서 거절한다.
+   입력 전송 중 상태가 바뀌었다는 이유로 정상 클라이언트를 disconnect시키지 않는다.
+   Ability.Combat.Aim은 Ability 분류 태그이므로 상태 검사는 State.Combat.Aiming을 쓴다.
+   GA 없이 조준 컴포넌트를 직접 호출하는 BP도 조준 상태 태그를 제공하고 자기 기여분만 회수한다.
+   이동 컴포넌트는 조준 구체 클래스 대신 ASC 태그를 조회하고 스태미너 컴포넌트를 캐싱한다.
+
+6. AI 감속
+   MovementSpeedMultiplier Attribute를 추가했다(초기값 1, 최솟값 0).
+   기존 State.Slowed loose-tag 계약은 유지한다.
+   태그가 있으면 컨트롤러가 소유하는 Infinite GE 하나가 배율 0.5를 적용한다.
+   마지막 태그 기여분이 없어지면 자기 GE만 제거한다. 여러 철조망이 중첩되어도 중복 감속하지 않는다.
+   Attribute 변경 델리게이트에서 즉시 MaxWalkSpeed를 갱신한다. 판단 주기를 기다리지 않는다.
+   최종 이동속도 = 현재 Patrol/Chase 기본 속도 * GAS MovementSpeedMultiplier.
+   다른 파트: AttributeSet에 새 필드가 추가됐지만 피해 계산식과 구조물 Health/Defense 경로는 바꾸지 않았다.
+
+7. 막힌 경로의 구조물 탐지
+   현재 경로의 다음 지점 방향을 사용하고 부분 경로 종료 시 마지막 구간 방향을 보존한다.
+   경로 정보가 없을 때만 추적 목표 방향으로 보완한다.
+   캡슐 중심 한 줄 대신 제한된 캡슐 스윕으로 낮은 장애물을 검출한다.
+   기존 재시도 간격/서버 전용 검사/EnemyTrace/팀/Damageable/사거리 검사는 유지한다.
+   실제 피해는 기존 공격 GA Notify에서만 발생한다.
+
+8. 빌드 및 연동
+   WorldRegistrySubsystem 공개 헤더가 사용하는 GameplayMessageRuntime을 Public dependency로 복구했다.
+   Build.cs의 PublicIncludePaths는 변경하지 않았다.
+   건설 휘두르기 호출은 공개 CombatComponent API로 연결하고 원격 소유자의 예측 중복을 방지한다.
+   UE UHT가 지원하지 않는 UObject 배열/캐시 요소의 const 한정을 제거했다.
+   실제 포함된 Voxel 서브모듈을 프로젝트 플러그인으로 지정하고 존재하지 않는 Installer 참조를 교체했다.
+
+9. 기본값 및 가독성
+   히트스캔/투사체 디버그 드로잉의 C++ 기본값을 false로 변경했다.
+   FSAIStartupEffect를 FFE_AIStartupEffect로 변경하고 기존 에셋용 StructRedirect를 추가했다.
+   스폰 예열의 0/1/2 단계는 EFE_EnemyAssetLoadStage로 바꿨다.
+
+검증 중 확인한 기존 연결/테스트 문제
+---------------------------------
+- PR의 IMC_Combat에는 마우스 매핑 세 개만 저장되어 있었다.
+  이미 PR에 있는 IA_Combat_Reload(R), IA_Combat_Sprint(LeftShift),
+  IA_Combat_TogglePerspective(V)를 연결했다. 신규 공격 기능은 추가하지 않았다.
+- TemplateMigration 테스트는 이미 별도로 편집한 Instance 공격력을 Template과 같다고 단정했다.
+  실제 에셋은 유효성/참조 보존을 검사하고, 정확한 구버전 이전과 직렬화 보존은 기존 합성 테스트에서 검사한다.
+- Attribute 복제 테스트는 새 MovementSpeedMultiplier까지 대상과 개수를 갱신했다.
+
+기계적으로 적용하지 않은 제안
+-----------------------------
+- FSavedMove 기반 달리기 전면 교체: 측정과 독립 회귀 검증이 필요한 별도 이동 예측 작업이다.
+  이번 수정은 기존 RPC를 유지하면서 권한/상태 검증을 보완한다.
+- 레그돌/기상 중 AlwaysTickPoseAndRefreshBones 일괄 해제:
+  현재 서버 추적/복구가 갱신된 pelvis socket과 물리 포즈 스냅샷에 의존한다.
+  단순 가시성 조건으로 끄면 호스트 화면 밖에서 물리/기상 정합성이 깨질 수 있어 유지했다.
+  CPU 프로파일 없이 10~20마리라는 수치만으로 병목이나 개선 폭을 단정하지 않는다.
+- 설정의 모든 하드 참조 전환, 장비 컴포넌트 전면 분할, 전체 프로젝트 타입 이름 변경:
+  직렬화/에셋 마이그레이션과 다른 파트의 호출 경계가 바뀌는 별도 리팩토링이다.
+  이번에는 초기화 책임 분리, 실제 연사 경로, 재장전 소프트 로드 경계만 수정했다.
+- BuildPiece의 새 근접 채널 Block은 현재 벽 차단 계약과 일치한다.
+  다른 브랜치의 BuildTrap 프로필은 이 기준 커밋에 없어 임의로 생성하지 않았다.
+- PR 설명 갱신/PR 분할/서드파티 재배포 라이선스 확인은 코드 변경으로 해결되는 항목이 아니다.
+  ProcHitReact 라이선스가 허용한다고 이 문서에서 판단하지 않았다.
+
+검증
+----
+- Win64 Development Editor 빌드 성공.
+- FallenEra.Combat 전체 자동화: 83개 완료, 실패 0. 기존 경고가 있는 24개 포함.
+- 새 회귀: 인스턴스 재장착, 소유자 비용, 달리기 거절, 즉시 GAS 감속,
+  재장전 중간 복원/취소, 낮은 장애물, 목표 직선과 다른 부분 경로 방향.
+- 실제 네트워크 패킷 손실/중간 접속을 넣은 2인 PIE와 인게임 시각 검증은 별도 확인이 필요하다.
+- 원래 작업 폴더의 보류 코드/에셋은 수정하지 않았으며 커밋/Push는 수행하지 않았다.
+
+전달
+----
+- 수정 작업 트리: C:/Users/gyxor/.IB_UnrealProject/FallenEra/PR29ReviewFixes
+- 패치: Saved/PR29ReviewFixes.patch (신규 소스와 IMC 바이너리 포함).
+- 원래 브랜치에서 변경 전체를 안전하게 보관하고 깨끗한 4f88265 기준으로 패치를 적용해야 한다.
+  보류 작업이 섞인 원래 폴더에 이 작업 트리의 파일 전체를 덮어쓰지 않는다.

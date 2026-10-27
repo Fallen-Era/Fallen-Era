@@ -8,6 +8,7 @@ class UFE_EquipmentComponent;
 class UFE_CrossHairWidget;
 class UOverlay;
 class UFE_WeaponItemData;
+class UFE_WeaponAimingComponent;
 
 /** HUD host that replaces the active weapon-specific crosshair widget. */
 UCLASS(Blueprintable)
@@ -34,6 +35,7 @@ private:
 	void BindToEquipment(UFE_EquipmentComponent* Equipment);
 	void UnbindFromEquipment();
 	void OnWeaponChanged(const UFE_WeaponItemData* WeaponData);
+	void OnAimAlphaChanged(float Alpha);
 
 	TWeakObjectPtr<UFE_EquipmentComponent> BoundEquipment;
 	TWeakObjectPtr<const UFE_WeaponItemData> CachedWeaponData;
@@ -42,4 +44,7 @@ private:
 	TObjectPtr<UFE_CrossHairWidget> ActiveCrosshairWidget;
 
 	FDelegateHandle WeaponChangedHandle;
+	TWeakObjectPtr<UFE_WeaponAimingComponent> BoundAiming;
+	FDelegateHandle AimChangedHandle;
+	ESlateVisibility NonAimingVisibility = ESlateVisibility::SelfHitTestInvisible;
 };

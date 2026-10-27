@@ -1,10 +1,11 @@
 #include "Combat/Ability/FEHitscanAttackAbility.h"
+#include "Combat/Component/FECombatComponent.h"
 
 #include "Abilities/Tasks/AbilityTask_WaitDelay.h"
 #include "Abilities/Tasks/AbilityTask_WaitInputRelease.h"
-#include "Components/SkeletalMeshComponent.h"
+#include "Combat/Interface/FECombatPresentation.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/World.h"
-#include "GameFramework/PlayerController.h"
 #include "GameFramework/Character.h"
 #include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
@@ -66,7 +67,8 @@ bool UFE_HitscanAttackAbility::FireOnce()
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	const UFE_WeaponItemData* WeaponData = GetCachedWeaponData();
 	const UFE_HitscanAttackData* AttackData = Cast<UFE_HitscanAttackData>(GetCachedAttackData());
-	if (!CombatCharacter || !WeaponData || !AttackData || !CombatCharacter->GetWorld())
+	if (!CombatCharacter || !WeaponData || !AttackData || !CombatCharacter->GetWorld() ||
+		!UFE_CombatComponent::CanActorAttack(const_cast<ACharacter*>(CombatCharacter)))
 	{
 		return false;
 	}
@@ -78,9 +80,8 @@ bool UFE_HitscanAttackAbility::FireOnce()
 		return true;
 	}
 
-	// Cost belongs to a shot, not to the lifetime of an automatic-fire ability.
-	// A future ammo Cost GameplayEffect will therefore consume one round here.
-	if (!CommitAbilityCost(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo))
+	// One cartridge per shot, regardless of the number of pellets or penetrated actors.
+	if (!CommitWeaponShotCost())
 	{
 		return false;
 	}
@@ -89,61 +90,67 @@ bool UFE_HitscanAttackAbility::FireOnce()
 	PlayAttackPresentation(CombatCharacter, WeaponData, AttackData);
 	if (!CombatCharacter->HasAuthority())
 	{
+		ApplyLocalRecoil(CombatCharacter, AttackData->RecoilSettings);
 		return true;
-	}
-
-	FVector ViewStart = CombatCharacter->GetActorLocation();
-	FRotator ViewRotation = CombatCharacter->GetActorRotation();
-	if (const AController* Controller = CombatCharacter->GetController())
-	{
-		Controller->GetPlayerViewPoint(ViewStart, ViewRotation);
-	}
-
-	FVector TraceStart = ViewStart;
-	bool bTraceFromMuzzle = false;
-	if (const USkeletalMeshComponent* Mesh = CombatCharacter->GetMesh(); Mesh && Mesh->DoesSocketExist(AttackData->MuzzleSocketName))
-	{
-		TraceStart = Mesh->GetSocketLocation(AttackData->MuzzleSocketName);
-		bTraceFromMuzzle = true;
 	}
 
 	const int32 PelletCount = FMath::Max(1, AttackData->PelletCount);
 	const int32 MaxTargetsPerPellet = FMath::Max(1, AttackData->PenetrationCount + 1);
 	const float TraceRange = FMath::Max(0.0f, AttackData->TraceRange);
+	const FFE_CombatAim Aim = IFE_CombatPresentation::ResolveCombatAim(CombatCharacter, TraceRange, GetAttackTraceChannel());
+	const FVector TraceStart = Aim.Origin;
+	const float FinalSpreadAngle = CalculateSpreadAngle(
+		CombatCharacter,
+		AttackData,
+		AttackData->SpreadAngle,
+		AttackData->AccuracySettings);
 
 	for (int32 PelletIndex = 0; PelletIndex < PelletCount; ++PelletIndex)
 	{
 		// De-duplicate one actor within a pellet's penetration path, but allow
 		// separate pellets to contribute damage to the same target.
 		TSet<AActor*> DamagedActors;
-		FVector AimDirection = ViewRotation.Vector();
-		if (AttackData->SpreadAngle > 0.0f)
-		{
-			// Use a fresh random sample for every pellet. The previous fixed-seed stream
-			// repeated the exact same spread pattern on every shot.
-			AimDirection = FMath::VRandCone(AimDirection, FMath::DegreesToRadians(AttackData->SpreadAngle));
-		}
+		// Every pellet gets an independent, uniform cone sample. Intrinsic shotgun
+		// spread stays active even when the Accuracy attribute is 1.
+		const FVector AimDirection = ApplySpreadToDirection(Aim.Direction, FinalSpreadAngle);
 
 		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_PlayerHitscanAttack), true, CombatCharacter);
 		QueryParams.bReturnPhysicalMaterial = true;
 		const ECollisionChannel HitscanTraceChannel = GetAttackTraceChannel();
 
-		FVector AimPoint = ViewStart + AimDirection * TraceRange;
-		if (bTraceFromMuzzle)
-		{
-			FHitResult CameraHit;
-			if (CombatCharacter->GetWorld()->LineTraceSingleByChannel(
-				CameraHit, ViewStart, AimPoint, HitscanTraceChannel, QueryParams))
-			{
-				AimPoint = CameraHit.ImpactPoint;
-			}
-		}
-
-		const FVector ShotDirection = (AimPoint - TraceStart).GetSafeNormal(SMALL_NUMBER, AimDirection);
-		const FVector End = TraceStart + ShotDirection * TraceRange;
+		const FVector End = TraceStart + AimDirection * TraceRange;
 		TArray<FHitResult> Hits;
 		CombatCharacter->GetWorld()->LineTraceMultiByChannel(
 			Hits, TraceStart, End, HitscanTraceChannel, QueryParams);
+
+#if ENABLE_DRAW_DEBUG
+		if (AttackData->bDrawDebugTrace)
+		{
+			const FHitResult* BlockingHit = Hits.FindByPredicate(
+				[](const FHitResult& Hit) { return Hit.bBlockingHit; });
+			const FVector DebugEnd = BlockingHit ? BlockingHit->ImpactPoint : End;
+			const bool bHitAnything = !Hits.IsEmpty();
+			DrawDebugLine(
+				CombatCharacter->GetWorld(),
+				TraceStart,
+				DebugEnd,
+				bHitAnything ? FColor::Red : FColor::Green,
+				false,
+				FMath::Max(0.0f, AttackData->DebugTraceDuration),
+				0,
+				FMath::Max(0.0f, AttackData->DebugTraceThickness));
+			for (const FHitResult& DebugHit : Hits)
+			{
+				DrawDebugPoint(
+					CombatCharacter->GetWorld(),
+					DebugHit.ImpactPoint,
+					8.0f,
+					FColor::Yellow,
+					false,
+					FMath::Max(0.0f, AttackData->DebugTraceDuration));
+			}
+		}
+#endif
 
 		int32 AppliedTargetCount = 0;
 		for (const FHitResult& Hit : Hits)
@@ -171,7 +178,10 @@ bool UFE_HitscanAttackAbility::FireOnce()
 			}
 		}
 	}
-	return true;
+	CommitSpreadShot(CombatCharacter, AttackData, AttackData->AccuracySettings);
+	ApplyLocalRecoil(CombatCharacter, AttackData->RecoilSettings);
+	// End after the last actual shot; base EndAbility requests the server reload.
+	return HasLoadedWeaponAmmo();
 }
 
 void UFE_HitscanAttackAbility::ScheduleNextShot()

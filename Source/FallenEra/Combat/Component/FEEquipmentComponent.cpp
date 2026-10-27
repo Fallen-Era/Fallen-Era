@@ -1,6 +1,9 @@
 #include "Combat/Component/FEEquipmentComponent.h"
 
 #include "Combat/FECombatGameplayTags.h"
+#include "Combat/Ability/FEWeaponAimAbility.h"
+#include "Combat/Ability/FEWeaponReloadAbility.h"
+#include "Combat/Ability/FEAmmoSelectionAbility.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Animation/AnimInstance.h"
@@ -28,6 +31,8 @@ UFE_EquipmentComponent::UFE_EquipmentComponent()
 void UFE_EquipmentComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	InitializeAmmoInventory();
+	PreloadAmmoSelectionUI();
 	if (bPreloadWeaponAssetsOnBeginPlay)
 	{
 		PreloadWeaponAssets();
@@ -39,13 +44,21 @@ void UFE_EquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(UFE_EquipmentComponent, CurrentItemTagIndex);
+	DOREPLIFETIME(UFE_EquipmentComponent, WeaponAttachmentLoadout);
 	DOREPLIFETIME(UFE_EquipmentComponent, EquippedArmor);
 	DOREPLIFETIME(UFE_EquipmentComponent, bInitialArmorApplied);
+	DOREPLIFETIME_CONDITION(UFE_EquipmentComponent, AmmoState, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(UFE_EquipmentComponent, AmmoInventory, COND_OwnerOnly);
 }
 
 void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	bArmorEndingPlay = true;
+	InterruptWeaponActions();
+	if (AmmoLoadHandle) { AmmoLoadHandle->CancelHandle(); AmmoLoadHandle.Reset(); }
+	if (AmmoUIHandle) { AmmoUIHandle->CancelHandle(); AmmoUIHandle.Reset(); }
+	ClearWeaponAttachments();
+	if (WarmWeaponLoadHandle) { WarmWeaponLoadHandle->CancelHandle(); WarmWeaponLoadHandle.Reset(); }
 	if (ArmorLoadHandle)
 	{
 		ArmorLoadHandle->CancelHandle();
@@ -63,13 +76,19 @@ void UFE_EquipmentComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 	ClearArmorEffects();
 	// PlayerState-owned ASCs may outlive the equipped character.
+	ClearEquippedWeaponTags();
 	ClearEquippedWeaponOffense();
 	ClearWeaponAbilities();
+	RestoreFirstPersonMeshTransform();
 	Super::EndPlay(EndPlayReason);
 }
 
 void UFE_EquipmentComponent::RefreshEquipment()
 {
+	if (UFE_CombatComponent* Combat = GetOwner()->FindComponentByClass<UFE_CombatComponent>())
+	{
+		Combat->RefreshAbilitySystem();
+	}
 	EquipCurrentWeapon();
 	RefreshArmorEquipment();
 }
@@ -103,6 +122,7 @@ void UFE_EquipmentComponent::PreloadWeaponAssets()
 
 void UFE_EquipmentComponent::CycleWeapon()
 {
+	if (!CanChangeEquipment() || TestItemTags.IsEmpty()) { return; }
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
 		InterruptWeaponActions();
@@ -116,8 +136,18 @@ void UFE_EquipmentComponent::CycleWeapon()
 	}
 
 	CurrentItemTagIndex = (CurrentItemTagIndex + 1 + TestItemTags.Num()) % TestItemTags.Num();
+	LastEquipmentChangeTime = GetWorld()->GetTimeSeconds();
 	EquipCurrentWeapon();
 }
+
+bool UFE_EquipmentComponent::CanChangeEquipment() const
+{
+	return !bArmorEndingPlay && GetWorld() && UFE_CombatComponent::CanActorAttack(GetOwner()) &&
+		GetWorld()->GetTimeSeconds() - LastEquipmentChangeTime >= EquipmentChangeInterval;
+}
+
+bool UFE_EquipmentComponent::ServerCycleWeapon_Validate() { return true; }
+bool UFE_EquipmentComponent::ServerUnequipWeapon_Validate() { return true; }
 
 void UFE_EquipmentComponent::ServerCycleWeapon_Implementation()
 {
@@ -126,23 +156,25 @@ void UFE_EquipmentComponent::ServerCycleWeapon_Implementation()
 
 void UFE_EquipmentComponent::EquipWeaponByItemTag(FGameplayTag ItemTag)
 {
-	if (!GetOwner() || !GetOwner()->HasAuthority() || !ItemTag.IsValid())
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !ItemTag.IsValid() || !CanChangeEquipment())
 	{
 		return;
 	}
 
 	const int32 FoundIndex = TestItemTags.IndexOfByKey(ItemTag);
-	if (FoundIndex == INDEX_NONE)
+	if (FoundIndex == INDEX_NONE || FoundIndex == CurrentItemTagIndex)
 	{
 		return;
 	}
 
 	CurrentItemTagIndex = FoundIndex;
+	LastEquipmentChangeTime = GetWorld()->GetTimeSeconds();
 	EquipCurrentWeapon();
 }
 
 void UFE_EquipmentComponent::UnequipWeapon()
 {
+	if (!CanChangeEquipment() || CurrentItemTagIndex == INDEX_NONE) { return; }
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
 		InterruptWeaponActions();
@@ -151,6 +183,7 @@ void UFE_EquipmentComponent::UnequipWeapon()
 	}
 
 	CurrentItemTagIndex = INDEX_NONE;
+	LastEquipmentChangeTime = GetWorld()->GetTimeSeconds();
 	EquipCurrentWeapon();
 }
 
@@ -176,34 +209,47 @@ void UFE_EquipmentComponent::OnRep_CurrentItemTagIndex()
 
 void UFE_EquipmentComponent::EquipCurrentWeapon()
 {
+	SaveLoadedWeaponAmmo();
 	InterruptWeaponActions();
+	CancelWeaponReload();
+	AmmoInstanceItemTag = FGameplayTag();
 	if (WeaponLoadHandle)
 	{
 		WeaponLoadHandle->CancelHandle();
 		WeaponLoadHandle.Reset();
 	}
+	ClearEquippedWeaponTags();
 	ClearEquippedWeaponOffense();
 	ClearWeaponAbilities();
 	CurrentWeaponData = nullptr;
+	PublishAmmoState();
+	ClearWeaponAttachments();
 	PendingWeaponData = nullptr;
 	ClearWeaponVisuals();
 
 	const FGameplayTag CurrentTag = GetCurrentItemTag();
 	if (!CurrentTag.IsValid())
 	{
+		CurrentWeaponInstance = FFE_WeaponInstanceData();
+		WeaponInstanceTemplate = nullptr;
 		WeaponChangedDelegate.Broadcast(nullptr);
 		return;
 	}
 
+	PendingWeaponData = FindWeaponDataForTag(CurrentTag);
 	TArray<FSoftObjectPath> UnloadedWeaponDataPaths;
-	for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
+	if (const auto* KnownAsset = WeaponAssetByTag.Find(CurrentTag))
+	{
+		if (!KnownAsset->IsValid()) { UnloadedWeaponDataPaths.Add(KnownAsset->ToSoftObjectPath()); }
+	}
+	else for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
 	{
 		if (!WeaponDataAsset.IsNull() && !WeaponDataAsset.IsValid())
 		{
 			UnloadedWeaponDataPaths.AddUnique(WeaponDataAsset.ToSoftObjectPath());
 		}
 	}
-	if (!UnloadedWeaponDataPaths.IsEmpty())
+	if (!PendingWeaponData && !UnloadedWeaponDataPaths.IsEmpty())
 	{
 		WeaponChangedDelegate.Broadcast(nullptr);
 		RequestWeaponLoad(UnloadedWeaponDataPaths, true);
@@ -241,6 +287,8 @@ void UFE_EquipmentComponent::InterruptWeaponActions()
 	{
 		FGameplayTagContainer AttackAbilityTags;
 		AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Attack);
+		AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim);
+		AttackAbilityTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Reload);
 		AbilitySystem->CancelAbilities(&AttackAbilityTags);
 		if (UFallenEraAbilitySystemComponent* FallenEraAbilitySystem =
 			Cast<UFallenEraAbilitySystemComponent>(AbilitySystem))
@@ -266,14 +314,13 @@ void UFE_EquipmentComponent::FinishLoadingWeaponDataAssets()
 
 void UFE_EquipmentComponent::FinishLoadingWeaponDependencies()
 {
-	WeaponLoadHandle.Reset();
 	UFE_WeaponItemData* LoadedWeaponData = PendingWeaponData;
 	if (bArmorEndingPlay)
 	{
 		return;
 	}
 	if (!LoadedWeaponData ||
-		!(LoadedWeaponData->HasItemTag(GetCurrentItemTag()) || LoadedWeaponData->WeaponTags.HasTagExact(GetCurrentItemTag())))
+		!(LoadedWeaponData->HasItemTag(GetCurrentItemTag()) || LoadedWeaponData->Template.WeaponTags.HasTagExact(GetCurrentItemTag())))
 	{
 		EquipCurrentWeapon();
 		return;
@@ -288,33 +335,118 @@ void UFE_EquipmentComponent::FinishPreloadingWeaponDataAssets()
 		return;
 	}
 
-	// Re-request the data assets together with every dependency in one retained handle.
-	// This keeps the full weapon working set resident after the initial load callback returns.
-	TArray<FSoftObjectPath> PreloadPaths;
-	for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
+	// Cache paths, not UObject pointers: catalog montages can be collected once this initial scan finishes.
+	for (const auto& Tag : TestItemTags)
 	{
-		if (WeaponDataAsset.IsNull())
+		if (!WeaponAssetByTag.Contains(Tag))
 		{
-			continue;
+			if (UFE_WeaponItemData* Data = FindWeaponDataForTag(Tag)) { WeaponAssetByTag.Add(Tag, Data); }
 		}
-		PreloadPaths.AddUnique(WeaponDataAsset.ToSoftObjectPath());
-		GatherWeaponDependencyPaths(WeaponDataAsset.Get(), PreloadPaths, true);
 	}
-
-	WeaponPreloadHandle = PreloadPaths.IsEmpty()
+	TArray<FSoftObjectPath> PreloadPaths;
+	if (!TestItemTags.IsEmpty())
+	{
+		for (int32 Offset = 0; Offset < 2; ++Offset)
+		{
+			const int32 Index = (FMath::Max(0, CurrentItemTagIndex) + Offset) % TestItemTags.Num();
+			if (const auto* Asset = WeaponAssetByTag.Find(TestItemTags[Index]))
+			{
+				PreloadPaths.AddUnique(Asset->ToSoftObjectPath());
+			}
+		}
+	}
+	if (WarmWeaponLoadHandle) { WarmWeaponLoadHandle->CancelHandle(); }
+	WarmWeaponLoadHandle = PreloadPaths.IsEmpty()
 		? nullptr
-		: UAssetManager::GetStreamableManager().RequestAsyncLoad(PreloadPaths);
+		: UAssetManager::GetStreamableManager().RequestAsyncLoad(PreloadPaths,
+			FStreamableDelegate::CreateUObject(this, &ThisClass::FinishWarmingWeaponDataAssets));
+	WeaponPreloadHandle.Reset();
+}
+
+void UFE_EquipmentComponent::FinishWarmingWeaponDataAssets()
+{
+	if (bArmorEndingPlay || TestItemTags.IsEmpty()) { return; }
+	TArray<FSoftObjectPath> Paths;
+	for (int32 Offset = 0; Offset < 2; ++Offset)
+	{
+		const int32 Index = (FMath::Max(0, CurrentItemTagIndex) + Offset) % TestItemTags.Num();
+		if (const auto* Asset = WeaponAssetByTag.Find(TestItemTags[Index]))
+		{
+			Paths.AddUnique(Asset->ToSoftObjectPath());
+			GatherWeaponDependencyPaths(Asset->Get(), Paths, true);
+		}
+	}
+	WarmWeaponLoadHandle = Paths.IsEmpty() ? nullptr : UAssetManager::GetStreamableManager().RequestAsyncLoad(Paths);
+}
+
+void UFE_EquipmentComponent::RestoreWeaponInstance(UFE_WeaponItemData* WeaponData)
+{
+	const FGameplayTag ItemTag = GetCurrentItemTag();
+	if (GetOwner()->HasAuthority() && AmmoInstanceItemTag != ItemTag)
+	{
+		if (const FFE_WeaponInstanceData* Saved = TestLoadedAmmoByItemTag.Find(ItemTag))
+		{
+			CurrentWeaponInstance = *Saved;
+			WeaponInstanceTemplate = WeaponData;
+		}
+		AmmoInstanceItemTag = ItemTag;
+	}
+	if (WeaponInstanceTemplate.Get() != WeaponData)
+	{
+		CurrentWeaponInstance = WeaponData->Instance;
+		if (!CurrentWeaponInstance.InstanceId.IsValid()) { CurrentWeaponInstance.InstanceId = FGuid::NewGuid(); }
+		WeaponInstanceTemplate = WeaponData;
+		if (GetOwner()->HasAuthority()) { WeaponAttachmentLoadout.WeaponTag = FGameplayTag(); }
+	}
 }
 
 void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 {
+	RestoreWeaponInstance(WeaponData);
+	if (!CurrentWeaponInstance.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Invalid equipment instance seed on %s"), *GetNameSafe(WeaponData));
+		WeaponChangedDelegate.Broadcast(nullptr);
+		return;
+	}
 	CurrentWeaponData = WeaponData;
 	PendingWeaponData = nullptr;
+	InitializeWeaponAmmo();
 
+	ApplyEquippedWeaponTags();
 	ApplyEquippedWeaponOffense();
 	ApplyWeaponVisuals();
+	InitializeWeaponAttachments();
 	CacheWeaponAbilities();
+	PublishAmmoState();
+	if (GetOwner()->HasAuthority() && CurrentWeaponInstance.LoadedAmmo == 0 && CanReloadWeapon())
+	{
+		const bool bChargedOnly = !WeaponData->Template.AttackActions.IsEmpty() &&
+			WeaponData->Template.AttackActions.ContainsByPredicate([](const TObjectPtr<UFE_WeaponAttackData>& Attack) { return Attack && Attack->IsA<UFE_ChargedProjectileAttackData>(); });
+		if (bChargedOnly) { CompleteAmmoAttack(WeaponData, true, true); }
+		else { RequestReload(); }
+	}
 	WeaponChangedDelegate.Broadcast(CurrentWeaponData);
+	if (bPreloadWeaponAssetsOnBeginPlay) { FinishPreloadingWeaponDataAssets(); }
+}
+
+bool UFE_EquipmentComponent::SetWeaponInstanceData(const FFE_WeaponInstanceData& NewInstance)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !CurrentWeaponData || !NewInstance.IsValid()) { return false; }
+	if (CurrentWeaponData->Template.AmmoSettings.bUsesAmmo && NewInstance.LoadedAmmo > CurrentWeaponData->Template.AmmoSettings.MagazineCapacity) { return false; }
+	if (NewInstance.LoadedAmmoData.AmmoType.IsValid() && NewInstance.LoadedAmmoData.AmmoType != CurrentWeaponData->Template.AmmoSettings.AmmoType) { return false; }
+	InterruptWeaponActions();
+	CurrentWeaponInstance = NewInstance;
+	if (!CurrentWeaponInstance.InstanceId.IsValid()) { CurrentWeaponInstance.InstanceId = FGuid::NewGuid(); }
+	WeaponInstanceTemplate = CurrentWeaponData;
+	InitializeWeaponAmmo();
+	ClearEquippedWeaponOffense();
+	ApplyEquippedWeaponOffense();
+	WeaponAttachmentLoadout.WeaponTag = FGameplayTag();
+	InitializeWeaponAttachments();
+	SaveLoadedWeaponAmmo();
+	PublishAmmoState();
+	return true;
 }
 
 void UFE_EquipmentComponent::RequestWeaponLoad(
@@ -347,29 +479,31 @@ void UFE_EquipmentComponent::GatherWeaponDependencyPaths(
 			OutPaths.AddUnique(Path);
 		}
 	};
-	if (!WeaponData->SkeletalMesh.IsNull())
+	if (!WeaponData->Template.SkeletalMesh.IsNull())
 	{
-		AddPath(WeaponData->SkeletalMesh.ToSoftObjectPath(), WeaponData->SkeletalMesh.IsValid());
+		AddPath(WeaponData->Template.SkeletalMesh.ToSoftObjectPath(), WeaponData->Template.SkeletalMesh.IsValid());
 	}
 	else
 	{
-		AddPath(WeaponData->Mesh.ToSoftObjectPath(), WeaponData->Mesh.IsValid());
+		AddPath(WeaponData->Template.Mesh.ToSoftObjectPath(), WeaponData->Template.Mesh.IsValid());
 	}
-	AddPath(WeaponData->WeaponAnimLayerClass.ToSoftObjectPath(), WeaponData->WeaponAnimLayerClass.IsValid());
-	AddPath(WeaponData->WeaponMeshAnimInstanceClass.ToSoftObjectPath(), WeaponData->WeaponMeshAnimInstanceClass.IsValid());
-	AddPath(WeaponData->CrosshairWidgetClass.ToSoftObjectPath(), WeaponData->CrosshairWidgetClass.IsValid());
-	AddPath(WeaponData->AttackSound.ToSoftObjectPath(), WeaponData->AttackSound.IsValid());
-	AddPath(WeaponData->DefaultDamageEffect.ToSoftObjectPath(), WeaponData->DefaultDamageEffect.IsValid());
+	AddPath(WeaponData->Template.WeaponAnimLayerClass.ToSoftObjectPath(), WeaponData->Template.WeaponAnimLayerClass.IsValid());
+	AddPath(WeaponData->Template.WeaponMeshAnimInstanceClass.ToSoftObjectPath(), WeaponData->Template.WeaponMeshAnimInstanceClass.IsValid());
+	AddPath(WeaponData->Template.CrosshairWidgetClass.ToSoftObjectPath(), WeaponData->Template.CrosshairWidgetClass.IsValid());
+	AddPath(WeaponData->Template.AttackSound.ToSoftObjectPath(), WeaponData->Template.AttackSound.IsValid());
+	AddPath(WeaponData->Template.DefaultDamageEffect.ToSoftObjectPath(), WeaponData->Template.DefaultDamageEffect.IsValid());
+	AddPath(WeaponData->Template.AmmoSettings.ReloadMontage.ToSoftObjectPath(), WeaponData->Template.AmmoSettings.ReloadMontage.IsValid());
+	AddPath(WeaponData->Template.AmmoSettings.WeaponReloadMontage.ToSoftObjectPath(), WeaponData->Template.AmmoSettings.WeaponReloadMontage.IsValid());
 	if (const UFE_RangedWeaponItemData* RangedWeaponData = Cast<UFE_RangedWeaponItemData>(WeaponData))
 	{
 		AddPath(
-			RangedWeaponData->MuzzleNiagaraSystem.ToSoftObjectPath(),
-			RangedWeaponData->MuzzleNiagaraSystem.IsValid());
+			RangedWeaponData->Template.MuzzleNiagaraSystem.ToSoftObjectPath(),
+			RangedWeaponData->Template.MuzzleNiagaraSystem.IsValid());
 		AddPath(
-			RangedWeaponData->MuzzleParticleSystem.ToSoftObjectPath(),
-			RangedWeaponData->MuzzleParticleSystem.IsValid());
+			RangedWeaponData->Template.MuzzleParticleSystem.ToSoftObjectPath(),
+			RangedWeaponData->Template.MuzzleParticleSystem.IsValid());
 	}
-	for (const UFE_WeaponAttackData* AttackData : WeaponData->AttackActions)
+	for (const UFE_WeaponAttackData* AttackData : WeaponData->Template.AttackActions)
 	{
 		if (!AttackData)
 		{
@@ -404,12 +538,8 @@ void UFE_EquipmentComponent::ApplyEquippedWeaponOffense()
 	}
 	WeaponAbilitySystem = AbilitySystem;
 
-	const float WeaponOffense = CurrentWeaponData->WeaponStat.Offense;
-
-	if (WeaponOffense <= 0.0f)
-	{
-		return;
-	}
+	const FFE_WeaponStat& WeaponStats = CurrentWeaponInstance.ResolveStats();
+	const float WeaponOffense = FMath::Max(WeaponStats.Offense, 0.0f);
 
 	const FGameplayEffectContextHandle EffectContext = AbilitySystem->MakeEffectContext();
 	const FGameplayEffectSpecHandle EffectSpec = AbilitySystem->MakeOutgoingSpec(
@@ -420,6 +550,14 @@ void UFE_EquipmentComponent::ApplyEquippedWeaponOffense()
 	}
 
 	EffectSpec.Data->SetSetByCallerMagnitude(FallenEraCombatGameplayTags::SetByCaller_AttackPower, WeaponOffense);
+	// Attribute defaults are 1. Add only the equipped weapon's deviation so later
+	// attachment/aim/trait GameplayEffects can continue to stack additively.
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Accuracy,
+		FMath::Clamp(WeaponStats.Accuracy, 0.0f, 1.0f) - 1.0f);
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_RecoilControl,
+		FMath::Clamp(WeaponStats.RecoilControl, 0.0f, 1.0f) - 1.0f);
 	EquippedWeaponOffenseEffectHandle = AbilitySystem->ApplyGameplayEffectSpecToSelf(*EffectSpec.Data.Get());
 }
 
@@ -436,8 +574,39 @@ void UFE_EquipmentComponent::ClearEquippedWeaponOffense()
 	EquippedWeaponOffenseEffectHandle = FActiveGameplayEffectHandle();
 }
 
+void UFE_EquipmentComponent::ApplyEquippedWeaponTags()
+{
+	ClearEquippedWeaponTags();
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !CurrentWeaponData || CurrentWeaponData->Template.EquippedTags.IsEmpty())
+	{
+		return;
+	}
+	if (UAbilitySystemComponent* AbilitySystem = UFE_CombatComponent::FindAbilitySystemComponent(GetOwner()))
+	{
+		EquippedTagsAbilitySystem = AbilitySystem;
+		AppliedEquippedTags = CurrentWeaponData->Template.EquippedTags;
+		// [Server Only] Clients receive these counts from the ASC; OnRep equipment must not add them again.
+		AbilitySystem->AddLooseGameplayTags(AppliedEquippedTags, 1, EGameplayTagReplicationState::TagAndCountToAll);
+	}
+}
+
+void UFE_EquipmentComponent::ClearEquippedWeaponTags()
+{
+	if (GetOwner() && GetOwner()->HasAuthority())
+	{
+		if (UAbilitySystemComponent* AbilitySystem = EquippedTagsAbilitySystem.Get())
+		{
+			// Remove only our contribution, not tags granted by other equipment/effects.
+			AbilitySystem->RemoveLooseGameplayTags(AppliedEquippedTags, 1, EGameplayTagReplicationState::TagAndCountToAll);
+		}
+	}
+	AppliedEquippedTags.Reset();
+	EquippedTagsAbilitySystem.Reset();
+}
+
 void UFE_EquipmentComponent::ClearWeaponVisuals()
 {
+	RestoreFirstPersonMeshTransform();
 	auto ClearMesh = [](UMeshComponent* MeshComponent)
 	{
 		if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(MeshComponent))
@@ -453,6 +622,14 @@ void UFE_EquipmentComponent::ClearWeaponVisuals()
 	ClearMesh(EquippedWorldWeaponMesh);
 	ClearMesh(EquippedFirstPersonWeaponMesh);
 	UpdateWeaponAnimLayers(nullptr);
+}
+
+void UFE_EquipmentComponent::RestoreFirstPersonMeshTransform()
+{
+	if (DefaultFirstPersonMesh.IsValid())
+	{
+		DefaultFirstPersonMesh->SetRelativeTransform(UnequippedFirstPersonMeshTransform);
+	}
 }
 
 void UFE_EquipmentComponent::EnsureWeaponMeshComponents(bool bUseSkeletalMesh)
@@ -536,6 +713,32 @@ void UFE_EquipmentComponent::EnsureWeaponMeshComponents(bool bUseSkeletalMesh)
 		EquippedFirstPersonWeaponMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
 		EquippedFirstPersonWeaponMesh->MarkRenderStateDirty();
 	}
+	RefreshPerspectivePresentation();
+}
+
+void UFE_EquipmentComponent::RefreshPerspectivePresentation()
+{
+	const bool bFirstPerson = IFE_CombatPresentation::UsesFirstPersonMeshes(GetOwner());
+	const bool bHasFirstPersonMesh = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner()) != nullptr;
+	const auto UpdateBranch = [bFirstPerson, bHasFirstPersonMesh](UMeshComponent* Root, bool bFirstPersonBranch)
+	{
+		if (!Root) { return; }
+		TArray<USceneComponent*> Components;
+		Root->GetChildrenComponents(true, Components);
+		Components.Add(Root);
+		for (USceneComponent* Component : Components)
+		{
+			if (UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(Component))
+			{
+				Primitive->SetFirstPersonPrimitiveType(bFirstPersonBranch ? EFirstPersonPrimitiveType::FirstPerson :
+					(bHasFirstPersonMesh && bFirstPerson ? EFirstPersonPrimitiveType::WorldSpaceRepresentation : EFirstPersonPrimitiveType::None));
+				Primitive->SetOnlyOwnerSee(bFirstPersonBranch);
+				Primitive->SetOwnerNoSee(bFirstPersonBranch ? !bFirstPerson : (bHasFirstPersonMesh && bFirstPerson));
+			}
+		}
+	};
+	UpdateBranch(EquippedWorldWeaponMesh, false);
+	UpdateBranch(EquippedFirstPersonWeaponMesh, true);
 }
 
 void UFE_EquipmentComponent::ApplyWeaponVisuals()
@@ -547,8 +750,19 @@ void UFE_EquipmentComponent::ApplyWeaponVisuals()
 	}
 
 	const ACharacter* CombatCharacter = Cast<ACharacter>(GetOwner());
-	const bool bUseSkeletalMesh = !CurrentWeaponData->SkeletalMesh.IsNull();
+	const bool bUseSkeletalMesh = !CurrentWeaponData->Template.SkeletalMesh.IsNull();
 	EnsureWeaponMeshComponents(bUseSkeletalMesh);
+	if (USkeletalMeshComponent* Arms = IFE_CombatPresentation::FindFirstPersonMesh(GetOwner()))
+	{
+		// Capture once per component, never from an equipped/aiming pose on a later swap.
+		if (DefaultFirstPersonMesh.Get() != Arms)
+		{
+			RestoreFirstPersonMeshTransform();
+			DefaultFirstPersonMesh = Arms;
+			UnequippedFirstPersonMeshTransform = Arms->GetRelativeTransform();
+		}
+		Arms->SetRelativeTransform(CurrentWeaponData->Template.FirstPersonMeshTransform);
+	}
 
 	auto ApplyMeshAsset = [this, bUseSkeletalMesh](UMeshComponent* MeshComponent)
 	{
@@ -556,21 +770,21 @@ void UFE_EquipmentComponent::ApplyWeaponVisuals()
 		{
 			if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(MeshComponent))
 			{
-				SkeletalMeshComponent->SetSkeletalMeshAsset(CurrentWeaponData->SkeletalMesh.Get());
-				SkeletalMeshComponent->SetAnimInstanceClass(CurrentWeaponData->WeaponMeshAnimInstanceClass.Get());
+				SkeletalMeshComponent->SetSkeletalMeshAsset(CurrentWeaponData->Template.SkeletalMesh.Get());
+				SkeletalMeshComponent->SetAnimInstanceClass(CurrentWeaponData->Template.WeaponMeshAnimInstanceClass.Get());
 			}
 		}
 		else if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(MeshComponent))
 		{
-			StaticMeshComponent->SetStaticMesh(CurrentWeaponData->Mesh.Get());
+			StaticMeshComponent->SetStaticMesh(CurrentWeaponData->Template.Mesh.Get());
 		}
 	};
 	if (EquippedWorldWeaponMesh && CombatCharacter)
 	{
 		EquippedWorldWeaponMesh->AttachToComponent(
 			CombatCharacter->GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-			CurrentWeaponData->AttachSocketName);
-		EquippedWorldWeaponMesh->SetRelativeTransform(CurrentWeaponData->SocketOffset);
+			CurrentWeaponData->Template.AttachSocketName);
+		EquippedWorldWeaponMesh->SetRelativeTransform(CurrentWeaponData->Template.SocketOffset);
 		ApplyMeshAsset(EquippedWorldWeaponMesh);
 	}
 
@@ -578,12 +792,12 @@ void UFE_EquipmentComponent::ApplyWeaponVisuals()
 	{
 		EquippedFirstPersonWeaponMesh->AttachToComponent(
 			IFE_CombatPresentation::FindFirstPersonMesh(CombatCharacter), FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-			CurrentWeaponData->AttachSocketName);
-		EquippedFirstPersonWeaponMesh->SetRelativeTransform(CurrentWeaponData->SocketOffset);
+			CurrentWeaponData->Template.AttachSocketName);
+		EquippedFirstPersonWeaponMesh->SetRelativeTransform(CurrentWeaponData->Template.SocketOffset);
 		ApplyMeshAsset(EquippedFirstPersonWeaponMesh);
 	}
 
-	UpdateWeaponAnimLayers(CurrentWeaponData->WeaponAnimLayerClass.Get());
+	UpdateWeaponAnimLayers(CurrentWeaponData->Template.WeaponAnimLayerClass.Get());
 }
 
 void UFE_EquipmentComponent::UpdateWeaponAnimLayers(TSubclassOf<UAnimInstance> NewAnimLayerClass)
@@ -635,7 +849,24 @@ void UFE_EquipmentComponent::CacheWeaponAbilities()
 	WeaponAbilitySystem = AbilitySystem;
 
 	TSet<FGameplayTag> GrantedInputTags;
-	for (const UFE_WeaponAttackData* AttackAction : CurrentWeaponData->AttackActions)
+	if (CurrentWeaponData->Template.AmmoSettings.bUsesAmmo)
+	{
+		FGameplayAbilitySpec ReloadSpec(UFE_WeaponReloadAbility::StaticClass(), 1, INDEX_NONE, CurrentWeaponData);
+		GrantedWeaponAbilityHandles.Add(AbilitySystem->GiveAbility(ReloadSpec));
+		FGameplayAbilitySpec SelectionSpec(UFE_AmmoSelectionAbility::StaticClass(), 1, INDEX_NONE, CurrentWeaponData);
+		SelectionSpec.GetDynamicSpecSourceTags().AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_Reload);
+		GrantedWeaponAbilityHandles.Add(AbilitySystem->GiveAbility(SelectionSpec));
+		GrantedInputTags.Add(FallenEraCombatGameplayTags::Ability_Input_Combat_Reload);
+	}
+	if (const UFE_RangedWeaponItemData* Ranged = Cast<UFE_RangedWeaponItemData>(CurrentWeaponData);
+		Ranged && Ranged->Template.bSupportsAiming)
+	{
+		FGameplayAbilitySpec AimSpec(UFE_WeaponAimAbility::StaticClass(), 1, INDEX_NONE, CurrentWeaponData);
+		AimSpec.GetDynamicSpecSourceTags().AddTag(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
+		GrantedWeaponAbilityHandles.Add(AbilitySystem->GiveAbility(AimSpec));
+		GrantedInputTags.Add(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick);
+	}
+	for (const UFE_WeaponAttackData* AttackAction : CurrentWeaponData->Template.AttackActions)
 	{
 		if (!AttackAction || (AttackAction->InputTag.IsValid() && GrantedInputTags.Contains(AttackAction->InputTag)))
 		{
@@ -682,7 +913,7 @@ UFE_WeaponItemData* UFE_EquipmentComponent::FindWeaponDataForTag(FGameplayTag It
 	for (const TSoftObjectPtr<UFE_WeaponItemData>& WeaponDataAsset : WeaponDataAssets)
 	{
 		UFE_WeaponItemData* WeaponData = WeaponDataAsset.Get();
-		if (WeaponData && (WeaponData->HasItemTag(ItemTag) || WeaponData->WeaponTags.HasTagExact(ItemTag)))
+		if (WeaponData && (WeaponData->HasItemTag(ItemTag) || WeaponData->Template.WeaponTags.HasTagExact(ItemTag)))
 		{
 			return WeaponData;
 		}

@@ -1,19 +1,29 @@
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
+#include "Combat/Component/FEProceduralHitReactionComponent.h"
+#include "Combat/Component/FEKnockdownComponent.h"
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
 #include "Combat/FECombatGameplayTags.h"
+#include "Combat/Damage/FEHitZoneMappingData.h"
+#include "Combat/Damage/FEHitZoneMultiplierData.h"
 #include "Combat/Animation/FEBowAnimInstance.h"
 #include "AbilitySystemInterface.h"
+#include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
+#include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
+#include "GameFramework/GameStateBase.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/PlayerController.h"
 #include "Combat/Interface/FECombatPresentation.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -34,18 +44,184 @@
 #include "Perception/AISense_Hearing.h"
 #include "Sound/SoundBase.h"
 #include "TimerManager.h"
+#include "Engine/Engine.h"
+#include "HAL/IConsoleManager.h"
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+static TAutoConsoleVariable<int32> CVarFEHitDamageDebug(
+	TEXT("fe.Combat.DebugHitDamage"), 0,
+	TEXT("Show server-confirmed bone, region multiplier and actual HP loss to the attacking player. 0=off, 1=on."),
+	ECVF_Cheat);
+#endif
 
 UFE_CombatComponent::UFE_CombatComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
+	PrimaryComponentTick.TickGroup = TG_PrePhysics;
 	SetIsReplicatedByDefault(true);
 	DamageEffectClass = UFE_DamageGameplayEffect::StaticClass();
 }
 
+void UFE_CombatComponent::BeginPlay()
+{
+	Super::BeginPlay();
+	if (!bCombatConfigurationPending) { RefreshHitZoneData(); }
+	RefreshAbilitySystem();
+	if (UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>())
+	{
+		WeaponChangedHandle = Equipment->OnWeaponChanged().AddUObject(this, &ThisClass::HandleWeaponChanged);
+	}
+	if (bCombatConfigurationPending) { return; }
+	TArray<FSoftObjectPath> Paths;
+	if (!DamageEffectClass.IsNull()) { Paths.Add(DamageEffectClass.ToSoftObjectPath()); }
+	if (!DeathMontage.IsNull()) { Paths.Add(DeathMontage.ToSoftObjectPath()); }
+	if (!Paths.IsEmpty())
+	{
+		CombatAssetLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+			Paths, FStreamableDelegate::CreateUObject(this, &ThisClass::FinishLoadingCombatAssets));
+	}
+	FinishLoadingCombatAssets();
+}
+
+void UFE_CombatComponent::FinishLoadingCombatAssets()
+{
+	if (bCombatConfigurationPending) { return; }
+	CachedDamageEffectClass = DamageEffectClass.IsNull()
+		? UFE_DamageGameplayEffect::StaticClass() : DamageEffectClass.Get();
+	if (bDeathCollisionDisabled && !bDeathMontagePlayed && DeathMontage.IsValid())
+	{
+		PlayDeathMontage(DeathMontage.Get());
+	}
+}
+
+void UFE_CombatComponent::SetPreloadedCombatConfiguration(
+	TSoftClassPtr<UGameplayEffect> NewDamageEffect, TSoftObjectPtr<UAnimMontage> NewDeathMontage,
+	TSoftObjectPtr<UFE_HitZoneMappingData> NewHitZoneMapping,
+	TSoftObjectPtr<UFE_HitZoneMultiplierData> NewHitZoneMultipliers)
+{
+	if (CombatAssetLoadHandle) { CombatAssetLoadHandle->CancelHandle(); CombatAssetLoadHandle.Reset(); }
+	DamageEffectClass = NewDamageEffect;
+	DeathMontage = NewDeathMontage;
+	HitZoneMappingData = NewHitZoneMapping;
+	HitZoneMultiplierData = NewHitZoneMultipliers;
+	bCombatConfigurationPending = false;
+	RefreshHitZoneData();
+	FinishLoadingCombatAssets();
+}
+
+void UFE_CombatComponent::RefreshAbilitySystem()
+{
+	UAbilitySystemComponent* ASC = FindAbilitySystemComponent(GetOwner());
+	if (BoundAbilitySystem.Get() == ASC && DeathTagHandle.IsValid()) { return; }
+	if (UAbilitySystemComponent* Previous = BoundAbilitySystem.Get())
+	{
+		Previous->RegisterGameplayTagEvent(FallenEraGameplayTags::State_Dead).Remove(DeathTagHandle);
+	}
+	BoundAbilitySystem = ASC;
+	DeathTagHandle.Reset();
+	if (ASC)
+	{
+		DeathTagHandle = ASC->RegisterGameplayTagEvent(FallenEraGameplayTags::State_Dead)
+			.AddUObject(this, &ThisClass::HandleDeathTagChanged);
+		HandleDeathTagChanged(FallenEraGameplayTags::State_Dead, ASC->GetTagCount(FallenEraGameplayTags::State_Dead));
+	}
+}
+
+bool UFE_CombatComponent::CanActorAttack(AActor* Actor)
+{
+	if (!IsActorAlive(Actor)) { return false; }
+	if (const UFE_KnockdownComponent* Knockdown = Actor->FindComponentByClass<UFE_KnockdownComponent>();
+		Knockdown && Knockdown->IsKnockedDown()) { return false; }
+	const UAbilitySystemComponent* ASC = FindAbilitySystemComponent(Actor);
+	return !ASC || (!ASC->HasMatchingGameplayTag(FallenEraGameplayTags::State_Stunned) &&
+		!ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_KnockedDown));
+}
+
+bool UFE_CombatComponent::IsActorAlive(AActor* Actor)
+{
+	if (!IsValid(Actor)) { return false; }
+	const UAbilitySystemComponent* ASC = FindAbilitySystemComponent(Actor);
+	return !ASC || !ASC->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead);
+}
+
+void UFE_CombatComponent::CancelAttackActions()
+{
+	StopLocalWeaponRecoil();
+	if (UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>())
+	{
+		Aiming->EndAim();
+	}
+	if (UAbilitySystemComponent* ASC = FindAbilitySystemComponent(GetOwner()))
+	{
+		FGameplayTagContainer AttackTags(FallenEraCombatGameplayTags::Ability_Combat_Attack);
+		AttackTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim);
+		AttackTags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Reload);
+		ASC->CancelAbilities(&AttackTags);
+		if (UFallenEraAbilitySystemComponent* FEASC = Cast<UFallenEraAbilitySystemComponent>(ASC))
+		{
+			FEASC->ClearAbilityInput();
+		}
+	}
+	StopChargeProjectilePresentation(false);
+	StopWeaponActionPresentationLocal();
+}
+
+void UFE_CombatComponent::HandleDeathTagChanged(FGameplayTag Tag, int32 NewCount)
+{
+	if (NewCount <= 0) { return; }
+	CancelAttackActions();
+	if (GetOwner()->HasAuthority()) { HandleDeath(); }
+}
+
+float UFE_CombatComponent::GetPresentationServerTime() const
+{
+	const UWorld* World = GetWorld();
+	const AGameStateBase* GameState = World ? World->GetGameState() : nullptr;
+	return GameState ? GameState->GetServerWorldTimeSeconds() : (World ? World->GetTimeSeconds() : 0.0f);
+}
+
+float UFE_CombatComponent::GetBowChargeAlpha() const
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const FFE_ChargePresentationState& State = Pawn && Pawn->IsLocallyControlled() ? LocalChargeState : ChargeState;
+	return State.bBow && State.StartServerTime >= 0.0f
+		? FMath::Clamp((GetPresentationServerTime() - State.StartServerTime) / FMath::Max(0.01f, State.FullChargeSeconds), 0.0f, 1.0f)
+		: 0.0f;
+}
+
+bool UFE_CombatComponent::IsBowCharging() const
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const auto& State = Pawn && Pawn->IsLocallyControlled() ? LocalChargeState : ChargeState;
+	return State.bBow && State.StartServerTime >= 0.0f && !bDeathCollisionDisabled;
+}
+
 void UFE_CombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	StopLocalWeaponRecoil();
+	ClearStunState();
+	AttackStaggerProtections.Reset();
+	if (UAbilitySystemComponent* ASC = BoundAbilitySystem.Get())
+	{
+		ASC->RegisterGameplayTagEvent(FallenEraGameplayTags::State_Dead).Remove(DeathTagHandle);
+	}
+	if (UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>())
+	{
+		Equipment->OnWeaponChanged().Remove(WeaponChangedHandle);
+	}
+	if (CombatAssetLoadHandle) { CombatAssetLoadHandle->CancelHandle(); CombatAssetLoadHandle.Reset(); }
+	if (ChargeAssetLoadHandle) { ChargeAssetLoadHandle->CancelHandle(); ChargeAssetLoadHandle.Reset(); }
+	if (ReloadAssetLoadHandle) { ReloadAssetLoadHandle->CancelHandle(); ReloadAssetLoadHandle.Reset(); }
+	StopReloadPresentationLocal();
+	if (HitZoneLoadHandle) { HitZoneLoadHandle->CancelHandle(); HitZoneLoadHandle.Reset(); }
+	CachedHitZoneMappingData = nullptr;
+	CachedHitZoneMultiplierData = nullptr;
+	HitZoneMeshComponent.Reset();
+	StopChargeProjectilePresentationLocal();
 	if (UWorld* World = GetWorld())
 	{
+		World->GetTimerManager().ClearTimer(StunTimerHandle);
 		World->GetTimerManager().ClearTimer(CameraTransitionTimer);
 	}
 	if (UCameraComponent* Camera = ChargeCamera.Get(); Camera && bOriginalCameraTransformCached)
@@ -61,7 +237,9 @@ void UFE_CombatComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(UFE_CombatComponent, bDeathCollisionDisabled);
-	DOREPLIFETIME(UFE_CombatComponent, BowChargeAlpha);
+	DOREPLIFETIME(UFE_CombatComponent, DeathStartServerTime);
+	DOREPLIFETIME(UFE_CombatComponent, ChargeState);
+	DOREPLIFETIME(UFE_CombatComponent, ReloadState);
 }
 
 UAbilitySystemComponent* UFE_CombatComponent::FindAbilitySystemComponent(AActor* Actor)
@@ -79,640 +257,19 @@ UAbilitySystemComponent* UFE_CombatComponent::FindAbilitySystemComponent(AActor*
 	return Actor->FindComponentByClass<UAbilitySystemComponent>();
 }
 
-void UFE_CombatComponent::PlayAttackMontage(UAnimMontage* Montage, bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn || !Montage)
-	{
-		return;
-	}
-	if (Pawn->HasAuthority())
-	{
-		MulticastPlayAttackMontage(Montage, bPredictedByOwner);
-	}
-	else if (bPredictedByOwner && Pawn->IsLocallyControlled())
-	{
-		PlayAttackMontageLocal(Montage);
-	}
-}
-
-void UFE_CombatComponent::MulticastPlayAttackMontage_Implementation(UAnimMontage* Montage, bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (Pawn && !Pawn->HasAuthority() && Pawn->IsLocallyControlled() && bPredictedByOwner)
-	{
-		return;
-	}
-	PlayAttackMontageLocal(Montage);
-}
-
-void UFE_CombatComponent::PlayAttackMontageLocal(UAnimMontage* Montage)
-{
-	const ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if (!Character || !Montage)
-	{
-		return;
-	}
-	ActiveAttackMontage = Montage;
-	if (USkeletalMeshComponent* Mesh = Character->GetMesh())
-	{
-		if (UAnimInstance* Anim = Mesh->GetAnimInstance())
-		{
-			Anim->Montage_Play(Montage);
-		}
-	}
-	// if (Character->IsLocallyControlled())
-	// {
-	// 	USkeletalMeshComponent* FirstPersonMesh = IFE_CombatPresentation::FindFirstPersonMesh(Character);
-	// 	if (FirstPersonMesh && FirstPersonMesh != Character->GetMesh())
-	// 	{
-	// 		if (UAnimInstance* Anim = FirstPersonMesh->GetAnimInstance())
-	// 		{
-	// 			Anim->Montage_Play(Montage);
-	// 		}
-	// 	}
-	// }
-}
-
-void UFE_CombatComponent::PlayWeaponMeshMontage(UAnimMontage* Montage, bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn || !Montage)
-	{
-		return;
-	}
-	if (Pawn->HasAuthority())
-	{
-		MulticastPlayWeaponMeshMontage(Montage, bPredictedByOwner);
-	}
-	else if (bPredictedByOwner && Pawn->IsLocallyControlled())
-	{
-		MulticastPlayWeaponMeshMontage_Implementation(Montage, false);
-	}
-}
-
-void UFE_CombatComponent::MulticastPlayWeaponMeshMontage_Implementation(
-	UAnimMontage* Montage,
-	bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn || !Montage || (!Pawn->HasAuthority() && Pawn->IsLocallyControlled() && bPredictedByOwner))
-	{
-		return;
-	}
-
-	ActiveWeaponMeshMontage = Montage;
-	const UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
-	auto PlayOnMesh = [Montage](UMeshComponent* Mesh)
-	{
-		if (USkeletalMeshComponent* SkeletalMesh = Cast<USkeletalMeshComponent>(Mesh))
-		{
-			if (UAnimInstance* AnimInstance = SkeletalMesh->GetAnimInstance())
-			{
-				AnimInstance->Montage_Play(Montage);
-			}
-		}
-	};
-	if (Equipment)
-	{
-		PlayOnMesh(Equipment->GetEquippedWorldWeaponMesh());
-		PlayOnMesh(Equipment->GetEquippedFirstPersonWeaponMesh());
-	}
-}
-
-void UFE_CombatComponent::SetBowChargeAlpha(float NewChargeAlpha)
-{
-	const float ClampedAlpha = FMath::Clamp(NewChargeAlpha, 0.0f, 1.0f);
-	if (FMath::IsNearlyEqual(BowChargeAlpha, ClampedAlpha))
-	{
-		return;
-	}
-	BowChargeAlpha = ClampedAlpha;
-	ApplyBowChargeAlphaLocal();
-	BowChargeChangedDelegate.Broadcast(BowChargeAlpha);
-}
-
-void UFE_CombatComponent::OnRep_BowChargeAlpha()
-{
-	ApplyBowChargeAlphaLocal();
-	BowChargeChangedDelegate.Broadcast(BowChargeAlpha);
-}
-
-void UFE_CombatComponent::ApplyBowChargeAlphaLocal()
-{
-	const UFE_EquipmentComponent* Equipment = GetOwner()
-		? GetOwner()->FindComponentByClass<UFE_EquipmentComponent>()
-		: nullptr;
-	auto ApplyToMesh = [this](UMeshComponent* Mesh)
-	{
-		if (USkeletalMeshComponent* SkeletalMesh = Cast<USkeletalMeshComponent>(Mesh))
-		{
-			if (UFEBowAnimInstance* BowAnim = Cast<UFEBowAnimInstance>(SkeletalMesh->GetAnimInstance()))
-			{
-				BowAnim->SetChargeAlpha(BowChargeAlpha);
-			}
-		}
-	};
-	if (Equipment)
-	{
-		ApplyToMesh(Equipment->GetEquippedWorldWeaponMesh());
-		ApplyToMesh(Equipment->GetEquippedFirstPersonWeaponMesh());
-	}
-}
-
-void UFE_CombatComponent::StartChargeCameraPresentation(
-	const FTransform& TargetRelativeTransform,
-	float BlendInDuration,
-	float BlendOutDuration)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn || !Pawn->IsLocallyControlled())
-	{
-		return;
-	}
-
-	UCameraComponent* Camera = IFE_CombatPresentation::FindCombatCamera(Pawn);
-	if (!Camera)
-	{
-		return;
-	}
-	ChargeCamera = Camera;
-	if (!bOriginalCameraTransformCached)
-	{
-		OriginalCameraRelativeTransform = Camera->GetRelativeTransform();
-		bOriginalCameraTransformCached = true;
-	}
-	CameraBlendOutDuration = FMath::Max(0.0f, BlendOutDuration);
-	bChargeCameraPresentationActive = true;
-	StartCameraTransition(TargetRelativeTransform, BlendInDuration, false);
-}
-
-void UFE_CombatComponent::StopChargeCameraPresentation()
-{
-	if (!bChargeCameraPresentationActive || !bOriginalCameraTransformCached)
-	{
-		return;
-	}
-	bChargeCameraPresentationActive = false;
-	StartCameraTransition(OriginalCameraRelativeTransform, CameraBlendOutDuration, true);
-}
-
-void UFE_CombatComponent::StartCameraTransition(
-	const FTransform& TargetTransform,
-	float Duration,
-	bool bReturning)
-{
-	UCameraComponent* Camera = ChargeCamera.Get();
-	UWorld* World = GetWorld();
-	if (!Camera || !World)
-	{
-		bChargeCameraPresentationActive = false;
-		bOriginalCameraTransformCached = false;
-		ChargeCamera.Reset();
-		return;
-	}
-
-	World->GetTimerManager().ClearTimer(CameraTransitionTimer);
-	CameraTransitionStartTransform = Camera->GetRelativeTransform();
-	CameraTransitionTargetTransform = TargetTransform;
-	CameraTransitionStartTime = World->GetTimeSeconds();
-	CameraTransitionDuration = FMath::Max(0.0f, Duration);
-	bCameraTransitionReturning = bReturning;
-	if (CameraTransitionDuration <= KINDA_SMALL_NUMBER)
-	{
-		Camera->SetRelativeTransform(CameraTransitionTargetTransform);
-		if (bCameraTransitionReturning)
-		{
-			bOriginalCameraTransformCached = false;
-			ChargeCamera.Reset();
-		}
-		return;
-	}
-
-	World->GetTimerManager().SetTimer(
-		CameraTransitionTimer,
-		this,
-		&UFE_CombatComponent::HandleCameraTransition,
-		1.0f / 60.0f,
-		true);
-}
-
-void UFE_CombatComponent::HandleCameraTransition()
-{
-	UCameraComponent* Camera = ChargeCamera.Get();
-	UWorld* World = GetWorld();
-	if (!Camera || !World)
-	{
-		if (World)
-		{
-			World->GetTimerManager().ClearTimer(CameraTransitionTimer);
-		}
-		bOriginalCameraTransformCached = false;
-		ChargeCamera.Reset();
-		return;
-	}
-
-	const float LinearAlpha = FMath::Clamp(
-		(World->GetTimeSeconds() - CameraTransitionStartTime) /
-		FMath::Max(CameraTransitionDuration, KINDA_SMALL_NUMBER),
-		0.0f,
-		1.0f);
-	FTransform BlendedTransform;
-	BlendedTransform.Blend(
-		CameraTransitionStartTransform,
-		CameraTransitionTargetTransform,
-		FMath::SmoothStep(0.0f, 1.0f, LinearAlpha));
-	Camera->SetRelativeTransform(BlendedTransform);
-
-	if (LinearAlpha >= 1.0f)
-	{
-		Camera->SetRelativeTransform(CameraTransitionTargetTransform);
-		World->GetTimerManager().ClearTimer(CameraTransitionTimer);
-		if (bCameraTransitionReturning)
-		{
-			bOriginalCameraTransformCached = false;
-			ChargeCamera.Reset();
-		}
-	}
-}
-
-void UFE_CombatComponent::StopWeaponActionPresentation(bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn)
-	{
-		return;
-	}
-	if (Pawn->HasAuthority())
-	{
-		MulticastStopWeaponActionPresentation(bPredictedByOwner);
-	}
-	else
-	{
-		StopWeaponActionPresentationLocal();
-	}
-}
-
-void UFE_CombatComponent::MulticastStopWeaponActionPresentation_Implementation(bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (Pawn && !Pawn->HasAuthority() && Pawn->IsLocallyControlled() && bPredictedByOwner)
-	{
-		return;
-	}
-	StopWeaponActionPresentationLocal();
-}
-
-void UFE_CombatComponent::StopWeaponActionPresentationLocal()
-{
-	const ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if (Character && ActiveAttackMontage)
-	{
-		auto StopMontage = [this](USkeletalMeshComponent* Mesh)
-		{
-			if (UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr)
-			{
-				AnimInstance->Montage_Stop(0.1f, ActiveAttackMontage);
-			}
-		};
-		StopMontage(Character->GetMesh());
-		USkeletalMeshComponent* FirstPersonMesh = IFE_CombatPresentation::FindFirstPersonMesh(Character);
-		if (FirstPersonMesh != Character->GetMesh())
-		{
-			StopMontage(FirstPersonMesh);
-		}
-	}
-	ActiveAttackMontage = nullptr;
-	if (ActiveWeaponMeshMontage)
-	{
-		const UFE_EquipmentComponent* Equipment = GetOwner()->FindComponentByClass<UFE_EquipmentComponent>();
-		auto StopWeaponMontage = [this](UMeshComponent* Mesh)
-		{
-			if (USkeletalMeshComponent* SkeletalMesh = Cast<USkeletalMeshComponent>(Mesh))
-			{
-				if (UAnimInstance* AnimInstance = SkeletalMesh->GetAnimInstance())
-				{
-					AnimInstance->Montage_Stop(0.1f, ActiveWeaponMeshMontage);
-				}
-			}
-		};
-		if (Equipment)
-		{
-			StopWeaponMontage(Equipment->GetEquippedWorldWeaponMesh());
-			StopWeaponMontage(Equipment->GetEquippedFirstPersonWeaponMesh());
-		}
-	}
-	ActiveWeaponMeshMontage = nullptr;
-	SetBowChargeAlpha(0.0f);
-	StopChargeProjectilePresentationLocal();
-	StopChargeCameraPresentation();
-}
-
-void UFE_CombatComponent::PlayWeaponAttackEffects(
-	USoundBase* AttackSound,
-	float SoundVolume,
-	float SoundPitch,
-	float NoiseLoudness,
-	float NoiseMaxRange,
-	UNiagaraSystem* MuzzleSystem,
-	UParticleSystem* MuzzleParticleSystem,
-	FName MuzzleSocketName,
-	FVector MuzzleScale,
-	bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn)
-	{
-		return;
-	}
-
-	const bool bHasPresentation = AttackSound || MuzzleSystem || MuzzleParticleSystem;
-	if (Pawn->HasAuthority())
-	{
-		if (AttackSound && NoiseLoudness > 0.0f)
-		{
-			ReportCombatNoise(NoiseLoudness, NoiseMaxRange, TEXT("WeaponAttack"));
-		}
-		if (bHasPresentation)
-		{
-			MulticastPlayWeaponAttackEffects(
-				AttackSound, SoundVolume, SoundPitch, MuzzleSystem, MuzzleParticleSystem,
-				MuzzleSocketName, MuzzleScale, bPredictedByOwner);
-		}
-	}
-	else if (bHasPresentation && bPredictedByOwner && Pawn->IsLocallyControlled())
-	{
-		PlayWeaponAttackEffectsLocal(
-			AttackSound, SoundVolume, SoundPitch, MuzzleSystem, MuzzleParticleSystem,
-			MuzzleSocketName, MuzzleScale);
-	}
-}
-
-void UFE_CombatComponent::ReportCombatNoise(float Loudness, float MaxRange, FName NoiseTag)
-{
-	AActor* NoiseInstigator = GetOwner();
-	if (!NoiseInstigator || !NoiseInstigator->HasAuthority() || Loudness <= 0.0f)
-	{
-		return;
-	}
-
-	UAISense_Hearing::ReportNoiseEvent(
-		NoiseInstigator,
-		NoiseInstigator->GetActorLocation(),
-		Loudness,
-		NoiseInstigator,
-		FMath::Max(0.0f, MaxRange),
-		NoiseTag);
-}
-
-void UFE_CombatComponent::MulticastPlayWeaponAttackEffects_Implementation(
-	USoundBase* AttackSound,
-	float SoundVolume,
-	float SoundPitch,
-	UNiagaraSystem* MuzzleSystem,
-	UParticleSystem* MuzzleParticleSystem,
-	FName MuzzleSocketName,
-	FVector MuzzleScale,
-	bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (Pawn && !Pawn->HasAuthority() && Pawn->IsLocallyControlled() && bPredictedByOwner)
-	{
-		return;
-	}
-
-	PlayWeaponAttackEffectsLocal(
-		AttackSound, SoundVolume, SoundPitch, MuzzleSystem, MuzzleParticleSystem,
-		MuzzleSocketName, MuzzleScale);
-}
-
-void UFE_CombatComponent::PlayWeaponAttackEffectsLocal(
-	USoundBase* AttackSound,
-	float SoundVolume,
-	float SoundPitch,
-	UNiagaraSystem* MuzzleSystem,
-	UParticleSystem* MuzzleParticleSystem,
-	FName MuzzleSocketName,
-	const FVector& MuzzleScale)
-{
-	ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if (!Character || !Character->GetWorld() || GetNetMode() == NM_DedicatedServer)
-	{
-		return;
-	}
-
-	UMeshComponent* WeaponMesh = nullptr;
-	if (const UFE_EquipmentComponent* Equipment = Character->FindComponentByClass<UFE_EquipmentComponent>())
-	{
-		WeaponMesh = Character->IsLocallyControlled()
-			? Equipment->GetEquippedFirstPersonWeaponMesh()
-			: Equipment->GetEquippedWorldWeaponMesh();
-		if (!WeaponMesh)
-		{
-			WeaponMesh = Equipment->GetEquippedWorldWeaponMesh();
-		}
-	}
-
-	FTransform EffectTransform = WeaponMesh ? WeaponMesh->GetComponentTransform() : Character->GetActorTransform();
-	if (WeaponMesh && !MuzzleSocketName.IsNone() && WeaponMesh->DoesSocketExist(MuzzleSocketName))
-	{
-		EffectTransform = WeaponMesh->GetSocketTransform(MuzzleSocketName, RTS_World);
-	}
-
-	if (AttackSound)
-	{
-		UGameplayStatics::PlaySoundAtLocation(
-			Character,
-			AttackSound,
-			EffectTransform.GetLocation(),
-			FMath::Max(0.0f, SoundVolume),
-			FMath::Max(0.0f, SoundPitch));
-	}
-
-	if (MuzzleSystem)
-	{
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-			Character,
-			MuzzleSystem,
-			EffectTransform.GetLocation(),
-			EffectTransform.Rotator(),
-			MuzzleScale,
-			true,
-			true,
-			ENCPoolMethod::AutoRelease,
-			true);
-	}
-	else if (MuzzleParticleSystem)
-	{
-		UGameplayStatics::SpawnEmitterAtLocation(
-			Character,
-			MuzzleParticleSystem,
-			EffectTransform.GetLocation(),
-			EffectTransform.Rotator(),
-			MuzzleScale,
-			true,
-			EPSCPoolMethod::AutoRelease,
-			true);
-	}
-}
-
-void UFE_CombatComponent::StartChargeProjectilePresentation(
-	TSubclassOf<AFE_CombatProjectile> ProjectileClass,
-	EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
-	FName AttachSocketName,
-	const FTransform& AttachOffset,
-	bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn || !ProjectileClass)
-	{
-		return;
-	}
-	if (Pawn->HasAuthority())
-	{
-		MulticastStartChargeProjectilePresentation(
-			ProjectileClass, AttachmentTarget, AttachSocketName, AttachOffset, bPredictedByOwner);
-	}
-	else if (bPredictedByOwner && Pawn->IsLocallyControlled())
-	{
-		StartChargeProjectilePresentationLocal(
-			ProjectileClass, AttachmentTarget, AttachSocketName, AttachOffset);
-	}
-}
-
-void UFE_CombatComponent::StopChargeProjectilePresentation(bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (!Pawn)
-	{
-		return;
-	}
-	if (Pawn->HasAuthority())
-	{
-		MulticastStopChargeProjectilePresentation(bPredictedByOwner);
-	}
-	else if (bPredictedByOwner && Pawn->IsLocallyControlled())
-	{
-		StopChargeProjectilePresentationLocal();
-	}
-}
-
-void UFE_CombatComponent::MulticastStartChargeProjectilePresentation_Implementation(
-	TSubclassOf<AFE_CombatProjectile> ProjectileClass,
-	EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
-	FName AttachSocketName,
-	FTransform AttachOffset,
-	bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (Pawn && !Pawn->HasAuthority() && Pawn->IsLocallyControlled() && bPredictedByOwner)
-	{
-		return;
-	}
-	StartChargeProjectilePresentationLocal(
-		ProjectileClass, AttachmentTarget, AttachSocketName, AttachOffset);
-}
-
-void UFE_CombatComponent::MulticastStopChargeProjectilePresentation_Implementation(bool bPredictedByOwner)
-{
-	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (Pawn && !Pawn->HasAuthority() && Pawn->IsLocallyControlled() && bPredictedByOwner)
-	{
-		return;
-	}
-	StopChargeProjectilePresentationLocal();
-}
-
-void UFE_CombatComponent::StartChargeProjectilePresentationLocal(
-	TSubclassOf<AFE_CombatProjectile> ProjectileClass,
-	EFE_ChargedProjectileAttachmentTarget AttachmentTarget,
-	FName AttachSocketName,
-	const FTransform& AttachOffset)
-{
-	ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if (!Character || !ProjectileClass || !Character->GetWorld() || GetNetMode() == NM_DedicatedServer)
-	{
-		return;
-	}
-
-	StopChargeProjectilePresentationLocal();
-	const FTransform PreviewTransform(Character->GetActorRotation(), Character->GetActorLocation());
-	UFE_ProjectilePoolSubsystem* ProjectilePool =
-		Character->GetWorld()->GetSubsystem<UFE_ProjectilePoolSubsystem>();
-	ChargeProjectilePreview = ProjectilePool
-		? ProjectilePool->AcquireProjectile(
-			ProjectileClass,
-			PreviewTransform,
-			Character,
-			Character,
-			true)
-		: nullptr;
-	if (!ChargeProjectilePreview)
-	{
-		return;
-	}
-
-	ChargeProjectilePreview->ConfigureAsLocalPreview();
-
-	USceneComponent* AttachParent = nullptr;
-	if (AttachmentTarget == EFE_ChargedProjectileAttachmentTarget::WeaponMesh)
-	{
-		if (const UFE_EquipmentComponent* Equipment = Character->FindComponentByClass<UFE_EquipmentComponent>())
-		{
-			AttachParent = Character->IsLocallyControlled() && Equipment->GetEquippedFirstPersonWeaponMesh()
-				? static_cast<USceneComponent*>(Equipment->GetEquippedFirstPersonWeaponMesh())
-				: static_cast<USceneComponent*>(Equipment->GetEquippedWorldWeaponMesh());
-		}
-	}
-	else
-	{
-		AttachParent = Character->IsLocallyControlled()
-			? IFE_CombatPresentation::FindFirstPersonMesh(Character)
-			: nullptr;
-		if (!AttachParent)
-		{
-			AttachParent = Character->GetMesh();
-		}
-	}
-
-	if (AttachParent)
-	{
-		ChargeProjectilePreview->AttachToComponent(
-			AttachParent,
-			FAttachmentTransformRules::SnapToTargetNotIncludingScale,
-			AttachSocketName);
-		ChargeProjectilePreview->SetActorRelativeTransform(AttachOffset);
-	}
-}
-
-void UFE_CombatComponent::StopChargeProjectilePresentationLocal()
-{
-	if (ChargeProjectilePreview)
-	{
-		ChargeProjectilePreview->ReturnToPool();
-		ChargeProjectilePreview = nullptr;
-	}
-}
-
 bool UFE_CombatComponent::ApplyDamage(AActor* TargetActor)
 {
-	const TSubclassOf<UGameplayEffect> EffectClass = DamageEffectClass.IsNull()
-		? UFE_DamageGameplayEffect::StaticClass()
-		: DamageEffectClass.LoadSynchronous();
-
-	return ApplyDamageInternal(TargetActor, EffectClass);
+	return ApplyDamageInternal(TargetActor, CachedDamageEffectClass);
 }
 
 bool UFE_CombatComponent::ApplyDamageFromHit(
 	AActor* TargetActor,
 	const FHitResult& HitResult,
-	const UFE_WeaponAttackData* AttackData)
+	const UFE_WeaponAttackData* AttackData,
+	EFE_DamageHitType HitType,
+	float HitQualityMultiplier, float AmmoDamageMultiplier)
 {
-	const TSubclassOf<UGameplayEffect> EffectClass = DamageEffectClass.IsNull()
-		? UFE_DamageGameplayEffect::StaticClass()
-		: DamageEffectClass.LoadSynchronous();
-
-	return ApplyDamageInternal(TargetActor, EffectClass, &HitResult, AttackData);
+	return ApplyDamageInternal(TargetActor, CachedDamageEffectClass, &HitResult, AttackData, HitType, HitQualityMultiplier, AmmoDamageMultiplier);
 }
 
 bool UFE_CombatComponent::ApplyDamageWithEffect(AActor* TargetActor, TSubclassOf<UGameplayEffect> DamageEffectClassOverride)
@@ -724,13 +281,114 @@ bool UFE_CombatComponent::ApplyDamageWithEffectFromHit(
 	AActor* TargetActor,
 	TSubclassOf<UGameplayEffect> DamageEffectClassOverride,
 	const FHitResult& HitResult,
-	const UFE_WeaponAttackData* AttackData)
+	const UFE_WeaponAttackData* AttackData,
+	EFE_DamageHitType HitType,
+	float HitQualityMultiplier, float AmmoDamageMultiplier)
 {
 	return ApplyDamageInternal(
 		TargetActor,
 		DamageEffectClassOverride,
 		&HitResult,
-		AttackData);
+		AttackData,
+		HitType,
+		HitQualityMultiplier, AmmoDamageMultiplier);
+}
+
+void UFE_CombatComponent::RefreshHitZoneData()
+{
+	if (bCombatConfigurationPending) { return; }
+	if (HitZoneLoadHandle) { HitZoneLoadHandle->CancelHandle(); HitZoneLoadHandle.Reset(); }
+	CachedHitZoneMappingData = HitZoneMappingData.Get();
+	CachedHitZoneMultiplierData = HitZoneMultiplierData.Get();
+	PrepareHitZoneHierarchy();
+	if (IsHitZoneDataReady()) { return; }
+	TArray<FSoftObjectPath> Paths;
+	GatherHitZoneAssetPaths(Paths);
+	HitZoneLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+		Paths, FStreamableDelegate::CreateUObject(this, &ThisClass::FinishLoadingHitZoneData));
+}
+
+void UFE_CombatComponent::FinishLoadingHitZoneData()
+{
+	CachedHitZoneMappingData = HitZoneMappingData.Get();
+	CachedHitZoneMultiplierData = HitZoneMultiplierData.Get();
+	PrepareHitZoneHierarchy();
+	if (!IsHitZoneDataReady())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s could not load its hit-zone assets. Direct hit damage is rejected until its rules are ready."),
+			*GetNameSafe(GetOwner()));
+	}
+	HitZoneLoadHandle.Reset(); // Cached UPROPERTY references keep the shared assets alive.
+}
+
+void UFE_CombatComponent::PrepareHitZoneHierarchy()
+{
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	HitZoneMeshComponent = Character ? Character->GetMesh()
+		: (GetOwner() ? GetOwner()->FindComponentByClass<USkeletalMeshComponent>() : nullptr);
+	if (CachedHitZoneMappingData && HitZoneMeshComponent.IsValid())
+	{
+		CachedHitZoneMappingData->PrepareForMesh(HitZoneMeshComponent->GetSkeletalMeshAsset());
+	}
+}
+
+bool UFE_CombatComponent::IsHitZoneDataReady() const
+{
+	if (bCombatConfigurationPending) { return false; }
+	USkeletalMesh* Mesh = HitZoneMeshComponent.IsValid() ? HitZoneMeshComponent->GetSkeletalMeshAsset() : nullptr;
+	return (HitZoneMappingData.IsNull() || (CachedHitZoneMappingData && CachedHitZoneMappingData == HitZoneMappingData.Get() &&
+		CachedHitZoneMappingData->IsPreparedForMesh(Mesh))) &&
+		(HitZoneMultiplierData.IsNull() || (CachedHitZoneMultiplierData && CachedHitZoneMultiplierData == HitZoneMultiplierData.Get()));
+}
+
+void UFE_CombatComponent::GatherHitZoneAssetPaths(TArray<FSoftObjectPath>& OutPaths) const
+{
+	if (!HitZoneMappingData.IsNull()) { OutPaths.AddUnique(HitZoneMappingData.ToSoftObjectPath()); }
+	if (!HitZoneMultiplierData.IsNull()) { OutPaths.AddUnique(HitZoneMultiplierData.ToSoftObjectPath()); }
+}
+
+float UFE_CombatComponent::ResolveHitRegionMultiplier(
+	FName BoneName, EFE_DamageHitType HitType, FName& OutRegionName) const
+{
+	OutRegionName = HitType == EFE_DamageHitType::Area ? FName(TEXT("Area")) : FName(TEXT("Default"));
+	if (HitType == EFE_DamageHitType::Area || BoneName.IsNone() || !IsHitZoneDataReady())
+	{
+		return 1.0f;
+	}
+	if (CachedHitZoneMappingData && !HitZoneMappingData.IsNull())
+	{
+		USkeletalMesh* Mesh = HitZoneMeshComponent.IsValid() ? HitZoneMeshComponent->GetSkeletalMeshAsset() : nullptr;
+		if (const EFE_HitZone* Zone = CachedHitZoneMappingData->FindHitZone(BoneName, Mesh))
+		{
+			OutRegionName = UFE_HitZoneMappingData::GetZoneName(*Zone);
+			return CachedHitZoneMultiplierData && !HitZoneMultiplierData.IsNull()
+				? CachedHitZoneMultiplierData->GetDamageMultiplier(*Zone) : 1.0f;
+		}
+	}
+	return 1.0f;
+}
+
+FHitResult UFE_CombatComponent::RefineDirectDamageHit(const FHitResult& Hit, float SweepRadius)
+{
+	AActor* Target = Hit.GetActor();
+	if (!Target || !Hit.BoneName.IsNone()) { return Hit; }
+	const ACharacter* Character = Cast<ACharacter>(Target);
+	USkeletalMeshComponent* Mesh = Character ? Character->GetMesh() : Target->FindComponentByClass<USkeletalMeshComponent>();
+	if (!Mesh || !Mesh->GetPhysicsAsset()) { return Hit; }
+	FHitResult BodyHit;
+	bool bHitBody = false;
+	if (SweepRadius > 0.0f)
+	{
+		bHitBody = Mesh->SweepComponent(BodyHit, Hit.TraceStart, Hit.TraceEnd, FQuat::Identity,
+			FCollisionShape::MakeSphere(SweepRadius));
+	}
+	else if (!Hit.TraceStart.Equals(Hit.TraceEnd))
+	{
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(FE_HitRegionRefinement), false);
+		Params.bReturnPhysicalMaterial = true;
+		bHitBody = Mesh->LineTraceComponent(BodyHit, Hit.TraceStart, Hit.TraceEnd, Params);
+	}
+	return bHitBody && !BodyHit.BoneName.IsNone() ? BodyHit : Hit;
 }
 
 float UFE_CombatComponent::CalculateReceivedKnockback(float IncomingKnockback) const
@@ -750,6 +408,12 @@ float UFE_CombatComponent::CalculateReceivedKnockback(float IncomingKnockback) c
 
 void UFE_CombatComponent::ApplyDamageReaction(const AActor* DamageSource, const FFE_AttackReactionData& ReactionData)
 {
+	ApplyDamageReactionInternal(DamageSource, ReactionData, nullptr);
+}
+
+void UFE_CombatComponent::ApplyDamageReactionInternal(const AActor* DamageSource,
+	const FFE_AttackReactionData& ReactionData, const FHitResult* HitResult)
+{
 	AActor* Victim = GetOwner();
 	if (!Victim || !Victim->HasAuthority())
 	{
@@ -757,104 +421,115 @@ void UFE_CombatComponent::ApplyDamageReaction(const AActor* DamageSource, const 
 	}
 
 	UAbilitySystemComponent* VictimAbilitySystem = FindAbilitySystemComponent(Victim);
-	const bool bVictimDead = VictimAbilitySystem
-		&& VictimAbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead);
-
 	// A lethal hit already triggered the death montage from the AttributeSet.
 	// Do not overwrite it with a knockback or hit-reaction montage afterwards.
-	if (!bVictimDead)
-	{
-		if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
-		{
-			const float FinalKnockback = CalculateReceivedKnockback(ReactionData.KnockbackAmount);
-			if (FinalKnockback > 0.0f && DamageSource && DamageSource != Victim)
-			{
-				FVector KnockbackDirection = Victim->GetActorLocation() - DamageSource->GetActorLocation();
-				KnockbackDirection.Z = 0.0f;
-				KnockbackDirection = KnockbackDirection.GetSafeNormal();
-				if (KnockbackDirection.IsNearlyZero())
-				{
-					KnockbackDirection = Victim->GetActorForwardVector();
-				}
-				VictimCharacter->LaunchCharacter(KnockbackDirection * FinalKnockback, true, true);
-			}
+	if (bDeathCollisionDisabled || !IsActorAlive(Victim)) { return; }
+	if (const UFE_KnockdownComponent* Knockdown = Victim->FindComponentByClass<UFE_KnockdownComponent>();
+		Knockdown && Knockdown->IsKnockedDown()) { return; }
 
-			if (!HitReactionMontages.IsEmpty())
-			{
-				const int32 MontageIndex = FMath::RandHelper(HitReactionMontages.Num());
-				if (UAnimMontage* HitMontage = HitReactionMontages[MontageIndex])
-				{
-					MulticastPlayHitReaction(HitMontage);
-				}
-			}
-		}
-	}
-
-	if (!bVictimDead && ReactionData.StunDuration > 0.0f && FMath::IsFinite(ReactionData.StunDuration))
+	// Snapshot before EndAbility removes the cancelled attack's protection.
+	const FFE_DamageReactionDecision Decision = ResolveDamageReaction(ReactionData);
+	if (Decision.bInterruptAttack)
 	{
 		if (VictimAbilitySystem)
 		{
-			if (!bReactionStunActive)
+			FGameplayTagContainer Tags(FallenEraCombatGameplayTags::Ability_Combat_Attack);
+			if (Decision.bApplyStun) { Tags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Aim); }
+			VictimAbilitySystem->CancelAbilities(&Tags);
+		}
+		if (Decision.bApplyStun)
+		{
+			if (UFE_WeaponAimingComponent* Aiming = Victim->FindComponentByClass<UFE_WeaponAimingComponent>())
 			{
-				// Stop an ability that was already active before State.Stunned was added.
-				// ActivationBlockedTags only prevents new activations.
-				VictimAbilitySystem->CancelAllAbilities();
-				if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
-				{
-					if (UCharacterMovementComponent* MovementComponent = VictimCharacter->GetCharacterMovement())
-					{
-						MovementComponent->StopMovementImmediately();
-					}
-					if (AController* Controller = VictimCharacter->GetController())
-					{
-						Controller->StopMovement();
-					}
-				}
-
-				VictimAbilitySystem->AddLooseGameplayTag(
-					FallenEraGameplayTags::State_Stunned,
-					1,
-					EGameplayTagReplicationState::TagAndCountToAll);
-				bReactionStunActive = true;
-			}
-
-			if (UWorld* World = GetWorld())
-			{
-				World->GetTimerManager().ClearTimer(StunTimerHandle);
-				World->GetTimerManager().SetTimer(
-					StunTimerHandle,
-					this,
-					&UFE_CombatComponent::ClearStunState,
-					ReactionData.StunDuration,
-					false);
+				Aiming->EndAim();
 			}
 		}
+		StopChargeProjectilePresentation(false);
 	}
+
+	if (Decision.bApplyStun)
+	{
+		if (!bReactionStunActive)
+		{
+			if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
+			{
+				if (UCharacterMovementComponent* MovementComponent = VictimCharacter->GetCharacterMovement())
+				{
+					MovementComponent->StopMovementImmediately();
+				}
+				if (AController* Controller = VictimCharacter->GetController()) { Controller->StopMovement(); }
+			}
+			VictimAbilitySystem->AddLooseGameplayTag(
+				FallenEraGameplayTags::State_Stunned, 1, EGameplayTagReplicationState::TagAndCountToAll);
+			bReactionStunActive = true;
+		}
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimer(
+				StunTimerHandle, this, &UFE_CombatComponent::ClearStunState, ReactionData.StunDuration, false);
+		}
+	}
+
+	// Knockback is independent of stagger protection and hit-montage immunity.
+	UAnimMontage* HitMontage = nullptr;
+	if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
+	{
+		const float FinalKnockback = CalculateReceivedKnockback(ReactionData.KnockbackAmount);
+		if (FinalKnockback > 0.0f && DamageSource && DamageSource != Victim)
+		{
+			FVector Direction = Victim->GetActorLocation() - DamageSource->GetActorLocation();
+			Direction.Z = 0.0f;
+			Direction = Direction.GetSafeNormal();
+			if (Direction.IsNearlyZero()) { Direction = Victim->GetActorForwardVector(); }
+			VictimCharacter->LaunchCharacter(Direction * FinalKnockback, true, true);
+		}
+		if (Decision.bPlayHitReaction && !HitReactionMontages.IsEmpty())
+		{
+			HitMontage = HitReactionMontages[FMath::RandHelper(HitReactionMontages.Num())];
+		}
+	}
+	FFE_ProceduralHitReactionEvent Event;
+	Event.bInterruptAttack = Decision.bInterruptAttack;
+	const UFE_ProceduralHitReactionComponent* PhysicalReaction =
+		Victim->FindComponentByClass<UFE_ProceduralHitReactionComponent>();
+	// Cosmetic motion may accompany a resisted light hit without cancelling the attack.
+	if (HitResult && !HitResult->BoneName.IsNone() && PhysicalReaction &&
+		PhysicalReaction->IsConfiguredForHits() && CanActorPlayPhysicalHitReaction(Victim))
+	{
+		Event.HitBone = HitResult->BoneName;
+		FVector Direction = (HitResult->TraceEnd - HitResult->TraceStart).GetSafeNormal();
+		if (Direction.IsNearlyZero() && DamageSource)
+		{
+			Direction = (Victim->GetActorLocation() - DamageSource->GetActorLocation()).GetSafeNormal();
+		}
+		if (Direction.IsNearlyZero()) { Direction = -HitResult->ImpactNormal; }
+		Event.Direction = Direction.GetSafeNormal();
+	}
+	if (Decision.bInterruptAttack || !Event.HitBone.IsNone()) { MulticastPlayDamageReaction(HitMontage, Event); }
 }
 
 void UFE_CombatComponent::HandleDeath()
 {
 	AActor* Victim = GetOwner();
-	if (!Victim || !Victim->HasAuthority() || bDeathMontagePlayed)
+	if (!Victim || !Victim->HasAuthority() || bDeathCollisionDisabled)
 	{
 		return;
 	}
 
-	bDeathMontagePlayed = true;
+	CancelAttackActions();
+	DeathStartServerTime = GetPresentationServerTime();
 	bDeathCollisionDisabled = true;
-	ApplyDeathCollisionState();
+	OnRep_DeathCollisionDisabled();
 	Victim->ForceNetUpdate();
-	if (DeathMontage)
-	{
-		MulticastPlayDeathMontage(DeathMontage);
-	}
 }
 
 void UFE_CombatComponent::OnRep_DeathCollisionDisabled()
 {
 	if (bDeathCollisionDisabled)
 	{
+		CancelAttackActions();
 		ApplyDeathCollisionState();
+		FinishLoadingCombatAssets();
 	}
 }
 
@@ -869,6 +544,13 @@ void UFE_CombatComponent::ApplyDeathCollisionState()
 	Victim->SetActorEnableCollision(false);
 	if (ACharacter* Character = Cast<ACharacter>(Victim))
 	{
+		if (UFE_KnockdownComponent* Knockdown = Victim->FindComponentByClass<UFE_KnockdownComponent>())
+		{
+			Knockdown->StopForDeath();
+		}
+		// Stop first: ProcHitReact must not restore QueryOnly after death sets NoCollision.
+		if (UFE_ProceduralHitReactionComponent* PhysicalReaction =
+			Victim->FindComponentByClass<UFE_ProceduralHitReactionComponent>()) { PhysicalReaction->StopReaction(); }
 		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
 		{
 			Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -885,14 +567,28 @@ void UFE_CombatComponent::ApplyDeathCollisionState()
 	}
 }
 
-void UFE_CombatComponent::MulticastPlayHitReaction_Implementation(UAnimMontage* HitMontage)
+void UFE_CombatComponent::MulticastPlayDamageReaction_Implementation(
+	UAnimMontage* HitMontage, const FFE_ProceduralHitReactionEvent& Event)
 {
+	if (bDeathCollisionDisabled || !IsActorAlive(GetOwner())) { return; }
+	if (const UFE_KnockdownComponent* Knockdown = GetOwner()->FindComponentByClass<UFE_KnockdownComponent>();
+		Knockdown && Knockdown->IsKnockedDown()) { return; }
+	// One event preserves stop-before-react ordering without stopping protected light-hit attacks.
+	if (Event.bInterruptAttack) { StopWeaponActionPresentationLocal(); }
+	if (!Event.HitBone.IsNone())
+	{
+		if (UFE_ProceduralHitReactionComponent* PhysicalReaction =
+			GetOwner()->FindComponentByClass<UFE_ProceduralHitReactionComponent>())
+		{
+			if (PhysicalReaction->TryPlayReaction(Event)) { return; }
+		}
+	}
 	PlayHitReactionMontage(HitMontage);
 }
 
 void UFE_CombatComponent::PlayHitReactionMontage(UAnimMontage* HitMontage)
 {
-	if (!HitMontage)
+	if (!HitMontage || bDeathCollisionDisabled)
 	{
 		return;
 	}
@@ -926,17 +622,15 @@ void UFE_CombatComponent::PlayHitReactionMontage(UAnimMontage* HitMontage)
 	}
 }
 
-void UFE_CombatComponent::MulticastPlayDeathMontage_Implementation(UAnimMontage* Montage)
-{
-	PlayDeathMontage(Montage);
-}
-
 void UFE_CombatComponent::PlayDeathMontage(UAnimMontage* Montage)
 {
-	if (!Montage)
+	if (!Montage || bDeathMontagePlayed || GetNetMode() == NM_DedicatedServer)
 	{
 		return;
 	}
+	bDeathMontagePlayed = true;
+	const float Position = FMath::Clamp(GetPresentationServerTime() - DeathStartServerTime,
+		0.0f, FMath::Max(0.0f, Montage->GetPlayLength() - KINDA_SMALL_NUMBER));
 
 	if (ACharacter* VictimCharacter = Cast<ACharacter>(GetOwner()))
 	{
@@ -945,7 +639,11 @@ void UFE_CombatComponent::PlayDeathMontage(UAnimMontage* Montage)
 			if (UAnimInstance* AnimInstance = Mesh->GetAnimInstance())
 			{
 				AnimInstance->Montage_Stop(0.05f);
-				AnimInstance->Montage_Play(Montage);
+				AnimInstance->Montage_Play(Montage, 1.0f, EMontagePlayReturnType::MontageLength, Position);
+				if (FAnimMontageInstance* Instance = AnimInstance->GetActiveInstanceForMontage(Montage))
+				{
+					Instance->bEnableAutoBlendOut = false;
+				}
 			}
 		}
 
@@ -956,7 +654,11 @@ void UFE_CombatComponent::PlayDeathMontage(UAnimMontage* Montage)
 				if (UAnimInstance* AnimInstance = FirstPersonMesh->GetAnimInstance())
 				{
 					AnimInstance->Montage_Stop(0.05f);
-					AnimInstance->Montage_Play(Montage);
+					AnimInstance->Montage_Play(Montage, 1.0f, EMontagePlayReturnType::MontageLength, Position);
+					if (FAnimMontageInstance* Instance = AnimInstance->GetActiveInstanceForMontage(Montage))
+					{
+						Instance->bEnableAutoBlendOut = false;
+					}
 				}
 			}
 		}
@@ -985,10 +687,12 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	AActor* TargetActor,
 	TSubclassOf<UGameplayEffect> EffectClass,
 	const FHitResult* HitResult,
-	const UFE_WeaponAttackData* AttackData)
+	const UFE_WeaponAttackData* AttackData,
+	EFE_DamageHitType HitType,
+	float HitQualityMultiplier, float AmmoDamageMultiplier)
 {
 	AActor* SourceActor = GetOwner();
-	if (!SourceActor || SourceActor == TargetActor ||
+	if (!IsActorAlive(SourceActor) || SourceActor == TargetActor ||
 		(!TargetActor && !HitResult))
 	{
 		return false;
@@ -1010,16 +714,22 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	DamageRequest.TargetActor = TargetActor;
 	DamageRequest.AttackData = const_cast<UFE_WeaponAttackData*>(AttackData);
 	DamageRequest.DamageEffectClass = EffectClass;
+	DamageRequest.HitType = HitType;
+	DamageRequest.AmmoDamageMultiplier = FMath::IsFinite(AmmoDamageMultiplier) ? FMath::Max(0.0f, AmmoDamageMultiplier) : 1.0f;
+	DamageRequest.HitQualityMultiplier = FMath::IsFinite(HitQualityMultiplier)
+		? FMath::Clamp(HitQualityMultiplier, 0.0f, 1.0f) : 0.0f;
 	DamageRequest.bHasHitResult = HitResult != nullptr;
 	if (HitResult)
 	{
-		DamageRequest.HitResult = *HitResult;
+		DamageRequest.HitResult = HitType == EFE_DamageHitType::Direct
+			? RefineDirectDamageHit(*HitResult) : *HitResult;
 	}
 	if (SourceAbilitySystem && SourceAbilitySystem->HasAttributeSetForAttribute(
 		UFallenEraAttributeSet::GetAttackPowerAttribute()))
 	{
 		DamageRequest.SourceAttackPower = SourceAbilitySystem->GetNumericAttribute(
-			UFallenEraAttributeSet::GetAttackPowerAttribute());
+			UFallenEraAttributeSet::GetAttackPowerAttribute()) * DamageRequest.AmmoDamageMultiplier;
+		if (!FMath::IsFinite(DamageRequest.SourceAttackPower)) { DamageRequest.SourceAttackPower = 0.0f; }
 	}
 
 	FFE_CombatDamageResult DamageResult;
@@ -1027,14 +737,18 @@ bool UFE_CombatComponent::ApplyDamageInternal(
 	{
 		DamageResult = IFE_Damageable::Execute_ReceiveCombatDamage(TargetActor, DamageRequest);
 	}
+	if (DamageResult.bHandled)
+	{
+		ShowHitDamageDebug(DamageRequest, DamageResult);
+	}
 
 	if (HitResult && AttackData && !DamageResult.bImpactCueHandled && SourceAbilitySystem)
 	{
 		FGameplayEffectContextHandle EffectContext = SourceAbilitySystem->MakeEffectContext();
 		EffectContext.AddSourceObject(const_cast<UFE_WeaponAttackData*>(AttackData));
 		EffectContext.AddInstigator(SourceActor, SourceActor);
-		EffectContext.AddHitResult(*HitResult, true);
-		ExecuteImpactCue(SourceAbilitySystem, SourceActor, EffectContext, *HitResult, AttackData);
+		EffectContext.AddHitResult(DamageRequest.HitResult, true);
+		ExecuteImpactCue(SourceAbilitySystem, SourceActor, EffectContext, DamageRequest.HitResult, AttackData);
 	}
 	return DamageResult.bDamageApplied;
 }
@@ -1044,7 +758,7 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 {
 	FFE_CombatDamageResult Result;
 	AActor* TargetActor = GetOwner();
-	if (!TargetActor || !TargetActor->HasAuthority() ||
+	if (!IsActorAlive(TargetActor) || !TargetActor->HasAuthority() ||
 		DamageRequest.TargetActor != TargetActor || !DamageRequest.SourceActor ||
 		!DamageRequest.DamageEffectClass ||
 		FECombatTeams::AreSameTeam(DamageRequest.SourceActor, TargetActor))
@@ -1053,6 +767,13 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 	}
 
 	UAbilitySystemComponent* SourceAbilitySystem = FindAbilitySystemComponent(DamageRequest.SourceActor);
+	if (DamageRequest.HitType == EFE_DamageHitType::Direct && DamageRequest.bHasHitResult && !IsHitZoneDataReady())
+	{
+		// Loading must not silently turn an intended headshot into x1. Area/non-positional damage is independent.
+		Result.bHandled = true;
+		Result.HitRegion = TEXT("NotReady");
+		return Result;
+	}
 	UAbilitySystemComponent* TargetAbilitySystem = FindAbilitySystemComponent(TargetActor);
 	if (!SourceAbilitySystem || !TargetAbilitySystem)
 	{
@@ -1077,6 +798,15 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 	{
 		return Result;
 	}
+	Result.HitRegionMultiplier = ResolveHitRegionMultiplier(
+		DamageRequest.bHasHitResult ? DamageRequest.HitResult.BoneName : NAME_None,
+		DamageRequest.HitType, Result.HitRegion);
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_HitRegionMultiplier, Result.HitRegionMultiplier);
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_HitQualityMultiplier, DamageRequest.HitQualityMultiplier);
+	EffectSpec.Data->SetSetByCallerMagnitude(
+		FallenEraCombatGameplayTags::SetByCaller_Damage_AmmoMultiplier, DamageRequest.AmmoDamageMultiplier);
 
 	const float HealthBeforeDamage = TargetAbilitySystem->HasAttributeSetForAttribute(
 		UFallenEraAttributeSet::GetHealthAttribute())
@@ -1096,11 +826,12 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 		const FVector HitLocation = DamageRequest.bHasHitResult
 			? FVector(DamageRequest.HitResult.ImpactPoint)
 			: TargetActor->GetActorLocation();
+		Result.AppliedDamage = FMath::Max(0.0f, HealthBeforeDamage - HealthAfterDamage);
 		UAISense_Damage::ReportDamageEvent(
 			TargetActor,
 			TargetActor,
 			DamageRequest.SourceActor,
-			FMath::Max(0.0f, HealthBeforeDamage - HealthAfterDamage),
+			Result.AppliedDamage,
 			DamageRequest.SourceActor->GetActorLocation(),
 			HitLocation,
 			TEXT("CombatDamage"));
@@ -1114,11 +845,54 @@ FFE_CombatDamageResult UFE_CombatComponent::ApplyGameplayEffectDamage(
 			}
 		}
 	}
+	if (Result.AppliedDamage > 0.0f && DamageRequest.bHasHitResult && DamageRequest.HitType == EFE_DamageHitType::Direct)
+	{
+		if (UFE_KnockdownComponent* Knockdown = TargetActor->FindComponentByClass<UFE_KnockdownComponent>())
+		{
+			FVector Direction = (DamageRequest.HitResult.TraceEnd - DamageRequest.HitResult.TraceStart).GetSafeNormal();
+			if (Direction.IsNearlyZero()) { Direction = -DamageRequest.HitResult.ImpactNormal; }
+			if (Knockdown->TryStartFromHit(DamageRequest.HitResult.BoneName, Direction)) { return Result; }
+		}
+	}
 	if (Result.bDamageApplied && DamageRequest.AttackData)
 	{
-		ApplyDamageReaction(DamageRequest.SourceActor, DamageRequest.AttackData->AttackReactionData);
+		ApplyDamageReactionInternal(DamageRequest.SourceActor, DamageRequest.AttackData->AttackReactionData,
+			DamageRequest.bHasHitResult && DamageRequest.HitType == EFE_DamageHitType::Direct
+				? &DamageRequest.HitResult : nullptr);
 	}
 	return Result;
+}
+
+void UFE_CombatComponent::ShowHitDamageDebug(
+	const FFE_CombatDamageRequest& Request, const FFE_CombatDamageResult& Result)
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (!CVarFEHitDamageDebug.GetValueOnGameThread()) { return; }
+	const FString Bone = Request.HitType == EFE_DamageHitType::Area ? TEXT("N/A")
+		: (Request.bHasHitResult ? Request.HitResult.BoneName.ToString() : TEXT("None"));
+	const FString Message = FString::Printf(TEXT("Hit: %s | Bone: %s | Region: %s | x%.2f | Quality: x%.2f | Damage: %.2f%s"),
+		*GetNameSafe(Request.TargetActor), *Bone, *Result.HitRegion.ToString(), Result.HitRegionMultiplier,
+		Request.HitQualityMultiplier, Result.AppliedDamage, Result.bDamageApplied ? TEXT("") : TEXT(" (rejected)"));
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	if (Pawn && Pawn->IsPlayerControlled() && !Pawn->IsLocallyControlled())
+	{
+		ClientShowHitDamageDebug(Message);
+	}
+	else
+	{
+		ClientShowHitDamageDebug_Implementation(Message);
+	}
+#endif
+}
+
+void UFE_CombatComponent::ClientShowHitDamageDebug_Implementation(const FString& Message)
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (GEngine && GetNetMode() != NM_DedicatedServer)
+	{
+		GEngine->AddOnScreenDebugMessage(INDEX_NONE, 3.0f, FColor::Yellow, Message);
+	}
+#endif
 }
 
 void UFE_CombatComponent::ExecuteImpactCue(

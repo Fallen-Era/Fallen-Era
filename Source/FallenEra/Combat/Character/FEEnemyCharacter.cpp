@@ -1,18 +1,26 @@
 #include "Combat/Character/FEEnemyCharacter.h"
+#include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
 
 #include "AbilitySystem/FallenEraAbilitySet.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
 #include "AbilitySystemComponent.h"
+#include "GameplayEffect.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Combat/Collision/FECollisionChannels.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Combat/Ability/FEEnemyMeleeAttackAbility.h"
 #include "Combat/AI/FEAISettingsDataAsset.h"
 #include "Combat/AI/FEEnemyAIController.h"
 #include "Combat/FECombatTeams.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEProceduralHitReactionComponent.h"
+#include "Combat/Component/FEKnockdownComponent.h"
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/GameplayEffect/FEDamageGameplayEffect.h"
 #include "Combat/Interface/FEDamageable.h"
 #include "NavigationInvokerComponent.h"
 #include "Net/UnrealNetwork.h"
@@ -31,11 +39,13 @@ AFE_EnemyCharacter::AFE_EnemyCharacter()
 
 	AttributeSet = CreateDefaultSubobject<UFallenEraAttributeSet>(TEXT("AttributeSet"));
 	CombatComponent = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("CombatComponent"));
+	CombatComponent->DeferCombatConfiguration();
+	PhysicalHitReactionComponent = CreateDefaultSubobject<UFE_ProceduralHitReactionComponent>(TEXT("PhysicalHitReaction"));
+	KnockdownComponent = CreateDefaultSubobject<UFE_KnockdownComponent>(TEXT("Knockdown"));
 	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
+	EquipmentComponent->SetInitialArmorInitializationDeferred(true);
 	NavigationInvokerComponent = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvokerComponent"));
 	NavigationInvokerComponent->SetGenerationRadii(3000.0f, 5000.0f);
-
-	AttackAbilityClass = UFE_EnemyMeleeAttackAbility::StaticClass();
 
 	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
 	{
@@ -87,21 +97,10 @@ void AFE_EnemyCharacter::BeginPlay()
 		}
 		else if (HasAuthority())
 		{
-			// A listen-server viewport may not mark a server-owned mesh as recently rendered
-			// soon enough to update its locomotion graph. Keep pose evaluation active while
-			// still refreshing bones only when the mesh is rendered.
-			CharacterMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPose;
+			// Socket-based server hits require bone refresh even outside the host's viewport.
+			CharacterMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickMontagesAndRefreshBonesWhenPlayingMontages;
 		}
 	}
-	InitializeEnemyAbilitySystem();
-	if (HasAuthority())
-	{
-		CachedAttackDamageEffect = CachedAISettings.DamageEffect.IsNull()
-			? nullptr
-			: CachedAISettings.DamageEffect.LoadSynchronous();
-	}
-	// Component BeginPlay may run before this character initializes its ASC.
-	EquipmentComponent->RefreshEquipment();
 }
 
 void AFE_EnemyCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -146,22 +145,37 @@ void AFE_EnemyCharacter::OnRep_ManagedVisualCullDistance()
 
 void AFE_EnemyCharacter::CacheSelectedAISettings()
 {
+	if (AISettingsLoadHandle) { AISettingsLoadHandle->CancelHandle(); AISettingsLoadHandle.Reset(); }
+	if (AISettingsEffectLoadHandle) { AISettingsEffectLoadHandle->CancelHandle(); AISettingsEffectLoadHandle.Reset(); }
 	bAISettingsCached = false;
 	CachedAISettings = FSAISettings();
 	CachedAttackDamageEffect = nullptr;
+	CachedAttackAbilityClass = nullptr;
 	CachedAISettingsDataAsset = nullptr;
 
 	if (AISettingsDataAssets.IsValidIndex(SelectedAISettingsIndex) &&
 		!AISettingsDataAssets[SelectedAISettingsIndex].IsNull())
 	{
-		// Only the selected preset and its hard-referenced animation assets are loaded.
-		CachedAISettingsDataAsset = AISettingsDataAssets[SelectedAISettingsIndex].LoadSynchronous();
+		const auto& Asset = AISettingsDataAssets[SelectedAISettingsIndex];
+		if (!Asset.IsValid())
+		{
+			AISettingsLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+				Asset.ToSoftObjectPath(), FStreamableDelegate::CreateUObject(this, &ThisClass::CacheLoadedAISettings));
+			return;
+		}
 	}
+	CacheLoadedAISettings();
+}
+
+void AFE_EnemyCharacter::CacheLoadedAISettings()
+{
+	CachedAISettingsDataAsset = AISettingsDataAssets.IsValidIndex(SelectedAISettingsIndex)
+		? AISettingsDataAssets[SelectedAISettingsIndex].Get() : nullptr;
 	if (CachedAISettingsDataAsset)
 	{
 		CachedAISettings = CachedAISettingsDataAsset->AISettings;
 	}
-	else if (!AISettingsDataAssets.IsEmpty())
+	else
 	{
 		UE_LOG(
 			LogTemp,
@@ -169,13 +183,77 @@ void AFE_EnemyCharacter::CacheSelectedAISettings()
 			TEXT("%s has no valid AI settings at index %d."),
 			*GetName(),
 			SelectedAISettingsIndex);
+		return;
 	}
 
 	if (CombatComponent)
 	{
 		CombatComponent->SetHitReactionMontages(CachedAISettings.HitReactionMontages);
 	}
+	TArray<FSoftObjectPath> DependencyPaths;
+	CachedAISettings.GatherAssetPaths(DependencyPaths, HasAuthority());
+	if (!CachedAISettings.AreAssetsLoaded(HasAuthority()))
+	{
+		AISettingsEffectLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+			DependencyPaths,
+			FStreamableDelegate::CreateUObject(this, &ThisClass::FinishAISettingsInitialization));
+		return;
+	}
+	FinishAISettingsInitialization();
+}
+
+void AFE_EnemyCharacter::FinishAISettingsInitialization()
+{
+	if (!CachedAISettingsDataAsset ||
+		!CachedAISettings.AreAssetsLoaded(HasAuthority()))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s could not load its AI preset dependencies. AI initialization is deferred."), *GetName());
+		return;
+	}
+	CachedAttackDamageEffect = CachedAISettings.DamageEffect.IsNull()
+		? UFE_DamageGameplayEffect::StaticClass() : CachedAISettings.DamageEffect.Get();
+	CachedAttackAbilityClass = CachedAISettings.AttackAbilityClass.Get();
+	CombatComponent->SetPreloadedCombatConfiguration(
+		CachedAISettings.DamageEffect, CachedAISettings.DeathMontage,
+		CachedAISettings.HitZoneMappingData, CachedAISettings.HitZoneMultiplierData);
+	PhysicalHitReactionComponent->Configure(CachedAISettings.PhysicalHitReaction);
+	KnockdownComponent->Configure(CachedAISettings.LegKnockdown);
+	if (HasAuthority())
+	{
+		EquipmentComponent->DefaultArmorDataAssets = CachedAISettings.DefaultArmorDataAssets;
+	}
+	// GAS and equipment must be ready before the decision timer can start an attack.
+	InitializeEnemyAbilitySystem();
+	EquipmentComponent->SetInitialArmorInitializationDeferred(false);
+	EquipmentComponent->RefreshEquipment();
 	bAISettingsCached = true;
+}
+
+void AFE_EnemyCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (AISettingsLoadHandle) { AISettingsLoadHandle->CancelHandle(); AISettingsLoadHandle.Reset(); }
+	if (AISettingsEffectLoadHandle) { AISettingsEffectLoadHandle->CancelHandle(); AISettingsEffectLoadHandle.Reset(); }
+	Super::EndPlay(EndPlayReason);
+}
+
+bool AFE_EnemyCharacter::GatherAISettingsAssetPaths(TArray<FSoftObjectPath>& OutPaths, bool bGameplayDependencies) const
+{
+	bool bHasPreset = false;
+	for (int32 Index = 0; Index < AISettingsDataAssets.Num(); ++Index)
+	{
+		if (!bRandomizeAISettings && Index != SelectedAISettingsIndex) { continue; }
+		const auto& Preset = AISettingsDataAssets[Index];
+		if (Preset.IsNull()) { continue; }
+		bHasPreset = true;
+		if (!bGameplayDependencies) { OutPaths.AddUnique(Preset.ToSoftObjectPath()); }
+		else
+		{
+			const UFE_AISettingsDataAsset* Data = Preset.Get();
+			if (!Data) { return false; }
+			Data->AISettings.GatherAssetPaths(OutPaths, true);
+		}
+	}
+	return bHasPreset;
 }
 
 void AFE_EnemyCharacter::InitializeEnemyAbilitySystem()
@@ -189,7 +267,12 @@ void AFE_EnemyCharacter::InitializeEnemyAbilitySystem()
 
 	if (HasAuthority() && !AbilitySystemComponent->HasMatchingGameplayTag(FallenEraGameplayTags::State_AbilitySystem_Initialized))
 	{
-		for (const UFallenEraAbilitySet* AbilitySet : DefaultAbilitySets)
+		TArray<UFallenEraAbilitySet*> StartupAbilitySets;
+		for (const auto& AbilitySet : CachedAISettings.DefaultAbilitySets)
+		{
+			StartupAbilitySets.AddUnique(AbilitySet.Get());
+		}
+		for (const UFallenEraAbilitySet* AbilitySet : StartupAbilitySets)
 		{
 			if (AbilitySet)
 			{
@@ -197,9 +280,19 @@ void AFE_EnemyCharacter::InitializeEnemyAbilitySystem()
 			}
 		}
 
-		if (AttackAbilityClass && !AbilitySystemComponent->FindAbilitySpecFromClass(AttackAbilityClass))
+		for (const FFE_AIStartupEffect& Effect : CachedAISettings.StartupEffects)
 		{
-			AbilitySystemComponent->GiveAbility(FGameplayAbilitySpec(AttackAbilityClass, 1, INDEX_NONE, this));
+			if (Effect.GameplayEffect.IsNull()) { continue; }
+			FGameplayEffectContextHandle Context = AbilitySystemComponent->MakeEffectContext();
+			Context.AddSourceObject(CachedAISettingsDataAsset);
+			const FGameplayEffectSpecHandle Spec = AbilitySystemComponent->MakeOutgoingSpec(
+				Effect.GameplayEffect.Get(), FMath::Max(0.0f, Effect.EffectLevel), Context);
+			if (Spec.IsValid()) { AbilitySystemComponent->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get()); }
+		}
+
+		if (CachedAttackAbilityClass && !AbilitySystemComponent->FindAbilitySpecFromClass(CachedAttackAbilityClass))
+		{
+			AbilitySystemComponent->GiveAbility(FGameplayAbilitySpec(CachedAttackAbilityClass, 1, INDEX_NONE, this));
 		}
 
 		AbilitySystemComponent->AddLooseGameplayTag(
@@ -225,22 +318,49 @@ bool AFE_EnemyCharacter::IsDead() const
 	return AbilitySystemComponent && AbilitySystemComponent->HasMatchingGameplayTag(FallenEraGameplayTags::State_Dead);
 }
 
+bool AFE_EnemyCharacter::IsTargetWithinAttackRange(const AActor* TargetActor) const
+{
+	if (!IsValid(TargetActor)) { return false; }
+	const float Range = FMath::Max(0.0f, CachedAISettings.AttackRange);
+	const FVector Origin = GetActorLocation();
+	if (TargetActor->IsA<APawn>())
+	{
+		return FVector::DistSquared(Origin, TargetActor->GetActorLocation()) <= FMath::Square(Range);
+	}
+	TInlineComponentArray<UPrimitiveComponent*> Components(TargetActor);
+	for (UPrimitiveComponent* Component : Components)
+	{
+		if (!Component->IsQueryCollisionEnabled() || Component->GetCollisionResponseToChannel(FECollisionChannels::EnemyTrace) != ECR_Block ||
+			Component->Bounds.GetBox().ComputeSquaredDistanceToPoint(Origin) > FMath::Square(Range)) { continue; }
+		FVector SurfacePoint;
+		const float Distance = Component->GetClosestPointOnCollision(Origin, SurfacePoint);
+		if (Distance >= 0.0f && Distance <= Range) { return true; }
+		if (Distance < 0.0f)
+		{
+			// Complex-only geometry may not support closest-point queries. Require a real surface hit, never just its bounds.
+			FHitResult Hit;
+			FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_AIObstacleReach), true, this);
+			if (Component->LineTraceComponent(Hit, Origin, Component->Bounds.Origin, QueryParams) && Hit.Distance <= Range) { return true; }
+		}
+	}
+	return false;
+}
+
 bool AFE_EnemyCharacter::TryStartAttack(AActor* TargetActor)
 {
-	if (!HasAuthority() || !AbilitySystemComponent || !AttackAbilityClass || !IsValid(TargetActor) ||
-		IsDead() || IsAttackInProgress() || FECombatTeams::AreSameTeam(this, TargetActor) ||
+	if (!HasAuthority() || !AbilitySystemComponent || !CachedAttackAbilityClass || !IsValid(TargetActor) ||
+		!bAISettingsCached || !UFE_CombatComponent::CanActorAttack(this) || IsAttackInProgress() || FECombatTeams::AreSameTeam(this, TargetActor) ||
 		CachedAISettings.AttackMontages.IsEmpty())
 	{
 		return false;
 	}
-	if (FVector::DistSquared(GetActorLocation(), TargetActor->GetActorLocation()) >
-		FMath::Square(FMath::Max(0.0f, CachedAISettings.AttackRange)))
+	if (!IsTargetWithinAttackRange(TargetActor))
 	{
 		return false;
 	}
 
 	PendingAttackTarget = TargetActor;
-	const bool bActivated = AbilitySystemComponent->TryActivateAbilityByClass(AttackAbilityClass, false);
+	const bool bActivated = AbilitySystemComponent->TryActivateAbilityByClass(CachedAttackAbilityClass, false);
 	if (!bActivated)
 	{
 		PendingAttackTarget.Reset();
@@ -250,21 +370,21 @@ bool AFE_EnemyCharacter::TryStartAttack(AActor* TargetActor)
 
 bool AFE_EnemyCharacter::IsAttackInProgress() const
 {
-	if (!AbilitySystemComponent || !AttackAbilityClass)
+	if (!AbilitySystemComponent || !CachedAttackAbilityClass)
 	{
 		return false;
 	}
-	const FGameplayAbilitySpec* AttackSpec = AbilitySystemComponent->FindAbilitySpecFromClass(AttackAbilityClass);
+	const FGameplayAbilitySpec* AttackSpec = AbilitySystemComponent->FindAbilitySpecFromClass(CachedAttackAbilityClass);
 	return AttackSpec && AttackSpec->IsActive();
 }
 
 void AFE_EnemyCharacter::CancelActiveAttack()
 {
-	if (!HasAuthority() || !AbilitySystemComponent || !AttackAbilityClass)
+	if (!HasAuthority() || !AbilitySystemComponent || !CachedAttackAbilityClass)
 	{
 		return;
 	}
-	if (const FGameplayAbilitySpec* AttackSpec = AbilitySystemComponent->FindAbilitySpecFromClass(AttackAbilityClass);
+	if (const FGameplayAbilitySpec* AttackSpec = AbilitySystemComponent->FindAbilitySpecFromClass(CachedAttackAbilityClass);
 		AttackSpec && AttackSpec->IsActive())
 	{
 		AbilitySystemComponent->CancelAbilityHandle(AttackSpec->Handle);

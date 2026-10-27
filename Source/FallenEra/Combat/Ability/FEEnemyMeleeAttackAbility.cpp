@@ -10,12 +10,16 @@
 #include "Combat/Collision/FECollisionChannels.h"
 #include "Combat/FECombatTeams.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/FECombatGameplayTags.h"
 
 UFE_EnemyMeleeAttackAbility::UFE_EnemyMeleeAttackAbility()
 {
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
 	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::ServerOnly;
 	ActivationPolicy = EFallenEraAbilityActivationPolicy::OnInputTriggered;
+	FGameplayTagContainer Tags = GetAssetTags();
+	Tags.AddTag(FallenEraCombatGameplayTags::Ability_Combat_Attack);
+	SetAssetTags(Tags);
 }
 
 bool UFE_EnemyMeleeAttackAbility::CanActivateAbility(
@@ -41,8 +45,7 @@ bool UFE_EnemyMeleeAttackAbility::CanActivateAbility(
 		return false;
 	}
 
-	return FVector::DistSquared(EnemyCharacter->GetActorLocation(), TargetActor->GetActorLocation()) <=
-		FMath::Square(FMath::Max(0.0f, EnemyCharacter->GetAttackRange()));
+	return EnemyCharacter->IsTargetWithinAttackRange(TargetActor);
 }
 
 void UFE_EnemyMeleeAttackAbility::ActivateAbility(
@@ -69,6 +72,10 @@ void UFE_EnemyMeleeAttackAbility::ActivateAbility(
 	}
 
 	DamagedActors.Reset();
+	if (UFE_CombatComponent* Combat = CachedEnemyCharacter->GetCombatComponent())
+	{
+		Combat->SetAttackStaggerProtection(this, ActiveAttackSettings.IgnoreStaggerUpTo);
+	}
 	NextActivationAllowedTime = CachedEnemyCharacter->GetWorld()->GetTimeSeconds() +
 		FMath::Max(0.01f, CachedEnemyCharacter->GetAttackCooldown());
 
@@ -123,6 +130,10 @@ void UFE_EnemyMeleeAttackAbility::EndAbility(
 	StopTrace();
 	if (CachedEnemyCharacter)
 	{
+		if (UFE_CombatComponent* Combat = CachedEnemyCharacter->GetCombatComponent())
+		{
+			Combat->ClearAttackStaggerProtection(this);
+		}
 		CachedEnemyCharacter->ClearPendingAttackTarget();
 	}
 	DamagedActors.Reset();
@@ -168,7 +179,6 @@ void UFE_EnemyMeleeAttackAbility::StartTrace()
 	{
 		return;
 	}
-	DamagedActors.Reset();
 	bTraceActive = true;
 	TraceTickTask = UFE_MeleeTraceTask::StartMeleeTrace(this);
 	TraceTickTask->OnTraceTick.AddDynamic(this, &UFE_EnemyMeleeAttackAbility::ExecuteTrace);
@@ -189,6 +199,13 @@ void UFE_EnemyMeleeAttackAbility::ExecuteTrace()
 {
 	if (!bTraceActive || !CachedEnemyCharacter || !CachedEnemyCharacter->HasAuthority())
 	{
+		return;
+	}
+	const int32 MaxTargets = FMath::Max(1, ActiveAttackSettings.MaxHitTargets);
+	if (DamagedActors.Num() >= MaxTargets ||
+		!UFE_CombatComponent::CanActorAttack(CachedEnemyCharacter))
+	{
+		StopTrace();
 		return;
 	}
 
@@ -212,14 +229,15 @@ void UFE_EnemyMeleeAttackAbility::ExecuteTrace()
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_EnemyMeleeAbility), false, CachedEnemyCharacter);
 	QueryParams.bReturnPhysicalMaterial = true;
 	TArray<FHitResult> Hits;
-	if (!World->SweepMultiByChannel(
+	World->SweepMultiByChannel(
 		Hits,
 		TraceStart,
 		TraceEnd,
 		FQuat::Identity,
 		FECollisionChannels::EnemyTrace,
 		FCollisionShape::MakeSphere(FMath::Max(0.0f, ActiveAttackSettings.TraceRadius)),
-		QueryParams))
+		QueryParams);
+	if (Hits.IsEmpty())
 	{
 		return;
 	}
@@ -234,17 +252,17 @@ void UFE_EnemyMeleeAttackAbility::ExecuteTrace()
 		}
 
 		const TSubclassOf<UGameplayEffect> DamageEffect = CachedEnemyCharacter->GetCachedAttackDamageEffect();
-		const bool bApplied = DamageEffect
-			? CombatComponent->ApplyDamageWithEffectFromHit(TargetActor, DamageEffect, Hit, nullptr)
-			: CombatComponent->ApplyDamageFromHit(TargetActor, Hit, nullptr);
+		const FHitResult BodyHit = UFE_CombatComponent::RefineDirectDamageHit(Hit, ActiveAttackSettings.TraceRadius);
+		const bool bApplied = CombatComponent->ApplyDamageWithEffectFromHit(TargetActor, DamageEffect, BodyHit, nullptr);
 		if (!bApplied)
 		{
 			continue;
 		}
 
 		DamagedActors.Add(TargetActor);
-		if (DamagedActors.Num() >= FMath::Max(1, ActiveAttackSettings.MaxHitTargets))
+		if (DamagedActors.Num() >= MaxTargets)
 		{
+			StopTrace();
 			break;
 		}
 	}

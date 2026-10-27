@@ -2,6 +2,8 @@
 
 #include "FallenEraCharacter.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimClassInterface.h"
+#include "AnimNodes/AnimNode_CopyPoseFromMesh.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -13,6 +15,7 @@
 #include "InputAction.h"
 #include "InputMappingContext.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/SpringArmComponent.h"
 #include "FallenEra.h"
 #include "FallenEraPlayerState.h"
 #include "AbilitySystem/FallenEraAbilitySystemComponent.h"
@@ -22,9 +25,13 @@
 #include "Combat/Component/FECombatComponent.h"
 #include "Combat/Component/FECharacterStatusComponent.h"
 #include "Combat/Component/FEEquipmentComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
+#include "Combat/Component/FEPlayerMovementStatsComponent.h"
+#include "Combat/Component/FEStaminaComponent.h"
 #include "NavigationInvokerComponent.h"
 #include "Perception/AIPerceptionStimuliSourceComponent.h"
 #include "Perception/AISense_Sight.h"
+#include "UObject/UnrealType.h"
 
 AFallenEraCharacter::AFallenEraCharacter()
 {
@@ -34,20 +41,46 @@ AFallenEraCharacter::AFallenEraCharacter()
 	// Create the first person mesh that will be viewed only by this character's owner
 	FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));
 
-	FirstPersonMesh->SetupAttachment(GetMesh());
 	FirstPersonMesh->SetOnlyOwnerSee(true);
 	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
 	// Create the Camera Component	
 	FirstPersonCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("First Person Camera"));
-	FirstPersonCameraComponent->SetupAttachment(FirstPersonMesh, FName("head"));
-	FirstPersonCameraComponent->SetRelativeLocationAndRotation(FVector(-2.8f, 5.89f, 0.0f), FRotator(0.0f, 90.0f, -90.0f));
+	FirstPersonCameraComponent->SetupAttachment(GetCapsuleComponent());
+	FirstPersonCameraComponent->SetRelativeLocation(FVector(0.0f, 0.0f, BaseEyeHeight));
 	FirstPersonCameraComponent->bUsePawnControlRotation = true;
 	FirstPersonCameraComponent->bEnableFirstPersonFieldOfView = true;
 	FirstPersonCameraComponent->bEnableFirstPersonScale = true;
 	FirstPersonCameraComponent->FirstPersonFieldOfView = 70.0f;
 	FirstPersonCameraComponent->FirstPersonScale = 0.6f;
+
+	ThirdPersonSpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("Third Person Spring Arm"));
+	ThirdPersonSpringArm->SetupAttachment(GetCapsuleComponent());
+	ThirdPersonSpringArm->SetRelativeLocation(FVector(0.0f, 0.0f, BaseEyeHeight));
+	ThirdPersonSpringArm->TargetArmLength = 300.0f;
+	ThirdPersonSpringArm->SocketOffset = FVector(0.0f, 50.0f, 0.0f);
+	ThirdPersonSpringArm->bUsePawnControlRotation = true;
+	ThirdPersonSpringArm->bDoCollisionTest = true;
+	ThirdPersonSpringArm->SetComponentTickEnabled(false);
+	ThirdPersonCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("Third Person Camera"));
+	ThirdPersonCameraComponent->SetupAttachment(ThirdPersonSpringArm, USpringArmComponent::SocketName);
+	ThirdPersonCameraComponent->bUsePawnControlRotation = false;
+	ThirdPersonCameraComponent->SetAutoActivate(false);
+
+	// The mesh skeleton origin remains at foot level, relative to the camera's eye height.
+	FirstPersonMesh->SetupAttachment(FirstPersonCameraComponent);
+	FirstPersonMesh->SetRelativeLocationAndRotation(
+		FVector(0.0f, 0.0f, -96.0f - BaseEyeHeight), FRotator(0.0f, -90.0f, 0.0f));
+
+	FirstPersonLegsMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Legs"));
+	FirstPersonLegsMesh->SetupAttachment(GetCapsuleComponent());
+	FirstPersonLegsMesh->SetRelativeLocationAndRotation(FVector(0.0f, 0.0f, -96.0f), FRotator(0.0f, -90.0f, 0.0f));
+	FirstPersonLegsMesh->SetOnlyOwnerSee(true);
+	FirstPersonLegsMesh->SetCollisionProfileName(TEXT("NoCollision"));
+	FirstPersonLegsMesh->SetGenerateOverlapEvents(false);
+	FirstPersonLegsMesh->SetCastShadow(false);
+	FirstPersonLegsMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
 
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);
@@ -58,10 +91,15 @@ AFallenEraCharacter::AFallenEraCharacter()
 	// Configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+	GetCharacterMovement()->MaxWalkSpeed = 300.0f;
 
 	CombatComponent = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("CombatComponent"));
 	EquipmentComponent = CreateDefaultSubobject<UFE_EquipmentComponent>(TEXT("EquipmentComponent"));
+	WeaponAimingComponent = CreateDefaultSubobject<UFE_WeaponAimingComponent>(TEXT("WeaponAimingComponent"));
 	CharacterStatusComponent = CreateDefaultSubobject<UFE_CharacterStatusComponent>(TEXT("CharacterStatusComponent"));
+	PlayerMovementStatsComponent =
+		CreateDefaultSubobject<UFE_PlayerMovementStatsComponent>(TEXT("PlayerMovementStatsComponent"));
+	StaminaComponent = CreateDefaultSubobject<UFE_StaminaComponent>(TEXT("StaminaComponent"));
 	PerceptionStimuliSourceComponent =
 		CreateDefaultSubobject<UAIPerceptionStimuliSourceComponent>(TEXT("PerceptionStimuliSourceComponent"));
 	NavigationInvokerComponent = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvokerComponent"));
@@ -69,7 +107,6 @@ AFallenEraCharacter::AFallenEraCharacter()
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("Player"));
 	bReplicates = true;
 }
-
 UAbilitySystemComponent* AFallenEraCharacter::GetAbilitySystemComponent() const
 {
 	return GetFallenEraAbilitySystemComponent();
@@ -94,6 +131,36 @@ FFE_CombatDamageResult AFallenEraCharacter::ReceiveCombatDamage_Implementation(
 		: FFE_CombatDamageResult();
 }
 
+void AFallenEraCharacter::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+	FirstPersonMesh->AddTickPrerequisiteComponent(GetMesh());
+	FirstPersonMesh->OnAnimInitialized.AddUniqueDynamic(this, &AFallenEraCharacter::RefreshFirstPersonPoseSource);
+	RefreshFirstPersonPoseSource();
+	// Legs need no separate locomotion evaluation while sharing the same skeleton.
+	FirstPersonLegsMesh->SetLeaderPoseComponent(GetMesh());
+	ApplyPerspectivePresentation();
+}
+
+void AFallenEraCharacter::RefreshFirstPersonPoseSource()
+{
+	UAnimInstance* AnimInstance = FirstPersonMesh->GetAnimInstance();
+	const IAnimClassInterface* AnimClass = AnimInstance
+		? IAnimClassInterface::GetFromClass(AnimInstance->GetClass()) : nullptr;
+	if (!AnimClass)
+	{
+		return;
+	}
+	// Bind once per animation initialization, not every frame. Independent arm ABPs are untouched.
+	for (const FStructProperty* NodeProperty : AnimClass->GetAnimNodeProperties())
+	{
+		if (NodeProperty->Struct == FAnimNode_CopyPoseFromMesh::StaticStruct())
+		{
+			NodeProperty->ContainerPtrToValuePtr<FAnimNode_CopyPoseFromMesh>(AnimInstance)->SourceMeshComponent = GetMesh();
+		}
+	}
+}
+
 void AFallenEraCharacter::BeginPlay()
 {
 	Super::BeginPlay();
@@ -102,19 +169,31 @@ void AFallenEraCharacter::BeginPlay()
 		PerceptionStimuliSourceComponent->RegisterForSense(UAISense_Sight::StaticClass());
 	}
 	SetCombatInputEnabled(true);
+	ApplyPerspectivePresentation();
+	StaminaComponent->InitializeAbilitySystem();
+	if (PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->RefreshMovementState();
+	}
 }
 
 void AFallenEraCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
+	ApplyPerspectivePresentation();
 
 	if (AFallenEraPlayerState* FallenEraPlayerState = GetPlayerState<AFallenEraPlayerState>())
 	{
 		FallenEraPlayerState->InitializeAbilitySystem(this);
 	}
+	StaminaComponent->InitializeAbilitySystem();
 	if (HasAuthority() && EquipmentComponent)
 	{
 		EquipmentComponent->RefreshEquipment();
+	}
+	if (PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->RefreshMovementState();
 	}
 }
 
@@ -126,9 +205,14 @@ void AFallenEraCharacter::OnRep_PlayerState()
 	{
 		FallenEraPlayerState->InitializeAbilitySystem(this);
 	}
+	StaminaComponent->InitializeAbilitySystem();
 	if (EquipmentComponent)
 	{
 		EquipmentComponent->RefreshEquipment();
+	}
+	if (PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->RefreshMovementState();
 	}
 }
 
@@ -190,6 +274,25 @@ void AFallenEraCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 				CombatSwapAction, ETriggerEvent::Started,
 				this, &AFallenEraCharacter::HandleCombatSwap);
 		}
+
+		if (CombatTogglePerspectiveAction)
+		{
+			EnhancedInputComponent->BindAction(CombatTogglePerspectiveAction, ETriggerEvent::Started,
+				this, &AFallenEraCharacter::HandleCombatTogglePerspective);
+		}
+
+		if (SprintAction)
+		{
+			EnhancedInputComponent->BindAction(
+				SprintAction, ETriggerEvent::Started,
+				this, &AFallenEraCharacter::HandleSprintStarted);
+			EnhancedInputComponent->BindAction(
+				SprintAction, ETriggerEvent::Completed,
+				this, &AFallenEraCharacter::HandleSprintReleased);
+			EnhancedInputComponent->BindAction(
+				SprintAction, ETriggerEvent::Canceled,
+				this, &AFallenEraCharacter::HandleSprintReleased);
+		}
 	}
 	else
 	{
@@ -200,6 +303,7 @@ void AFallenEraCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 void AFallenEraCharacter::AbilityInputPressed(const FInputActionValue& Value, FGameplayTag InputTag)
 {
 	(void)Value;
+	if (StaminaComponent) { StaminaComponent->BeginActionAttempt(); }
 	if (UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent())
 	{
 		AbilitySystem->AbilityInputTagPressed(InputTag);
@@ -265,6 +369,8 @@ void AFallenEraCharacter::DoMove(float Right, float Forward)
 
 bool AFallenEraCharacter::CanJumpInternal_Implementation() const
 {
+	// Holding an already-started jump must not shorten its height after paying the take-off cost.
+	if (!bWasJumping && StaminaComponent && !StaminaComponent->CanJumpWithStamina()) { return false; }
 	const UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent();
 	if (AbilitySystem && (
 		AbilitySystem->HasMatchingGameplayTag(FallenEraGameplayTags::State_InputBlocked) ||
@@ -278,8 +384,30 @@ bool AFallenEraCharacter::CanJumpInternal_Implementation() const
 	return Super::CanJumpInternal_Implementation();
 }
 
+void AFallenEraCharacter::CheckJumpInput(float DeltaTime)
+{
+	const int32 PreviousJumpCount = JumpCurrentCount;
+	Super::CheckJumpInput(DeltaTime);
+	// Keep resource transactions outside the overridable BP OnJumped event.
+	// Falling off a ledge may increment the count without a successful jump, so also test bWasJumping.
+	if (HasAuthority() && bWasJumping && JumpCurrentCount > PreviousJumpCount && StaminaComponent)
+	{
+		StaminaComponent->ConsumeJumpStamina();
+	}
+}
+
 void AFallenEraCharacter::DoJumpStart()
 {
+	if (StaminaComponent)
+	{
+		StaminaComponent->BeginActionAttempt();
+		const UFallenEraAbilitySystemComponent* ASC = GetFallenEraAbilitySystemComponent();
+		const bool bMovementBlocked = ASC && ASC->HasMatchingGameplayTag(FallenEraGameplayTags::State_MovementBlocked);
+		if (!bMovementBlocked && !StaminaComponent->CanJumpWithStamina() && Super::CanJumpInternal_Implementation())
+		{
+			StaminaComponent->NotifyActionRejected();
+		}
+	}
 	// pass Jump to the character
 	Jump();
 }
@@ -294,18 +422,10 @@ void AFallenEraCharacter::PlayAttackMontage(UAnimMontage* Montage)
 {
 	if (CombatComponent)
 	{
-		CombatComponent->PlayAttackMontageLocal(Montage);
+		CombatComponent->PlayAttackMontage(Montage, false);
 	}
 }
 
-void AFallenEraCharacter::MulticastPlayAttackMontage_Implementation(UAnimMontage* Montage)
-{
-	if (!HasAuthority() && IsLocallyControlled())
-	{
-		return;
-	}
-	PlayAttackMontage(Montage);
-}
 
 void AFallenEraCharacter::HandleCombatLeftClickStarted(const FInputActionValue& Value)
 {
@@ -339,8 +459,26 @@ void AFallenEraCharacter::HandleCombatSwap(const FInputActionValue& Value)
 	}
 }
 
+void AFallenEraCharacter::HandleSprintStarted(const FInputActionValue& Value)
+{
+	if (Value.Get<bool>() && PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->SetSprinting(true);
+	}
+}
+
+void AFallenEraCharacter::HandleSprintReleased(const FInputActionValue& Value)
+{
+	(void)Value;
+	if (PlayerMovementStatsComponent)
+	{
+		PlayerMovementStatsComponent->SetSprinting(false);
+	}
+}
+
 void AFallenEraCharacter::PressCombatAbility(const FGameplayTag& InputTag)
 {
+	if (StaminaComponent) { StaminaComponent->BeginActionAttempt(); }
 	if (UFallenEraAbilitySystemComponent* AbilitySystem = GetFallenEraAbilitySystemComponent())
 	{
 		AbilitySystem->AbilityInputTagPressed(InputTag);

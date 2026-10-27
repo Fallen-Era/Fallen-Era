@@ -18,6 +18,7 @@ public class FallenEra : ModuleRules
 			"GameplayAbilities",
 			"GameplayTags",
 			"GameplayTasks",
+			"GameplayMessageRuntime",
 			"GameplayStateTreeModule",
 			"StateTreeModule",
 			"Niagara",
@@ -30,16 +31,20 @@ public class FallenEra : ModuleRules
 			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",
-			"PhysicsCore"
+			"ProcHitReact",
 			"DeveloperSettings",
-			"AssetRegistry"
-
+			"AssetRegistry",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] 
 		{
-			"GameplayMessageRuntime",
+			"AnimGraphRuntime",
 		});
+
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AnimGraph", "BlueprintGraph" });
+		}
 
 		PublicIncludePaths.AddRange(new string[] {
 			"FallenEra",

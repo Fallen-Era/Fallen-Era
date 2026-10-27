@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "Combat/Component/FECombatComponent.h"
+#include "Combat/Component/FEWeaponAimingComponent.h"
 #include "Combat/Projectile/FECombatProjectile.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
 
@@ -32,7 +33,7 @@ void UFE_ChargedProjectileAttackAbility::ActivateAbility(
 	const UFE_ChargedProjectileAttackData* AttackData = Cast<UFE_ChargedProjectileAttackData>(ResolveAttackData(CombatCharacter));
 	if (!CombatCharacter || !WeaponData || !AttackData || !SupportsChargedAttackData(AttackData) ||
 		!CanFireProjectile(CombatCharacter, AttackData) ||
-		!CommitAbility(Handle, ActorInfo, ActivationInfo))
+		!CheckCost(Handle, ActorInfo) || !CommitAbilityCooldown(Handle, ActorInfo, ActivationInfo, false))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
@@ -85,6 +86,11 @@ void UFE_ChargedProjectileAttackAbility::BeginRelease()
 	{
 		return;
 	}
+	if (!CheckCost(CurrentSpecHandle, CurrentActorInfo))
+	{
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+		return;
+	}
 
 	bReleaseRequested = true;
 	ReleasedChargeAlpha = CalculateChargeAlpha();
@@ -132,11 +138,16 @@ void UFE_ChargedProjectileAttackAbility::FireChargedProjectile()
 		return;
 	}
 
-	SpawnProjectile(
+	if (!CommitWeaponShotCost())
+	{
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+		return;
+	}
+	if (!SpawnProjectile(
 		CombatCharacter,
 		WeaponData,
 		CachedChargedAttackData,
-		CalculateLaunchSpeed());
+		CalculateLaunchSpeed())) { RefundFailedProjectileAmmo(); }
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 }
 
@@ -180,15 +191,28 @@ void UFE_ChargedProjectileAttackAbility::StartLocalChargePresentation()
 			CachedChargedAttackData->AttachmentTarget,
 			CachedChargedAttackData->ChargeAttachSocketName,
 			CachedChargedAttackData->ChargeAttachOffset,
-			true);
+			true,
+			CachedChargedAttackData->MaxChargeTime,
+			CachedChargedAttackData->ChargeMontage,
+			CachedChargedAttackData->IsA<UFE_BowAttackData>());
 		bChargePresentationActive = true;
 	}
 	StartSpecializedChargePresentation();
+	if (CombatCharacter->IsLocallyControlled())
+	{
+		ChargeSwayComponent = CombatCharacter->FindComponentByClass<UFE_WeaponAimingComponent>();
+		if (ChargeSwayComponent.IsValid() && GetCachedWeaponData())
+		{
+			ChargeSwayComponent->BeginChargeSway(this, GetCachedWeaponData()->Template.AimSwaySettings);
+		}
+	}
 }
 
 void UFE_ChargedProjectileAttackAbility::StopLocalChargePresentation()
 {
 	StopSpecializedChargePresentation();
+	if (ChargeSwayComponent.IsValid()) { ChargeSwayComponent->EndChargeSway(this); }
+	ChargeSwayComponent.Reset();
 
 	if (bChargePresentationActive)
 	{

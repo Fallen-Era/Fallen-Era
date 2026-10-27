@@ -140,7 +140,7 @@ void AFE_GrenadeProjectile::Explode()
 		ExplosionHit.ImpactPoint = TargetLocation;
 		ExplosionHit.Normal = ImpactNormal;
 		ExplosionHit.ImpactNormal = ImpactNormal;
-		ApplyProjectileDamage(TargetActor, ExplosionHit);
+		ApplyProjectileDamage(TargetActor, ExplosionHit, EFE_DamageHitType::Area);
 	}
 
 	ReturnToPool();
