@@ -280,7 +280,7 @@ void AFE_EnemyCharacter::InitializeEnemyAbilitySystem()
 			}
 		}
 
-		for (const FSAIStartupEffect& Effect : CachedAISettings.StartupEffects)
+		for (const FFE_AIStartupEffect& Effect : CachedAISettings.StartupEffects)
 		{
 			if (Effect.GameplayEffect.IsNull()) { continue; }
 			FGameplayEffectContextHandle Context = AbilitySystemComponent->MakeEffectContext();

@@ -22,7 +22,7 @@ bool FFE_AttributeLifetimeReplicationTest::RunTest(const FString& Parameters)
 	TArray<FLifetimeProperty> LifetimeProps;
 	Attributes->GetLifetimeReplicatedProps(LifetimeProps);
 	TestTrue(TEXT("Direct query initializes property indices"), AttributeClass->HasAnyClassFlags(CLASS_ReplicationDataIsSetUp));
-	TestEqual(TEXT("All ten attributes have separate registrations"), LifetimeProps.Num(), 10);
+	TestEqual(TEXT("All eleven attributes have separate registrations"), LifetimeProps.Num(), 11);
 	TSet<uint16> RepIndices;
 	for (const FLifetimeProperty& Entry : LifetimeProps)
 	{
@@ -32,7 +32,7 @@ bool FFE_AttributeLifetimeReplicationTest::RunTest(const FString& Parameters)
 
 	for (const FName Name : {FName(TEXT("Health")), FName(TEXT("MaxHealth")), FName(TEXT("Stamina")),
 		FName(TEXT("MaxStamina")), FName(TEXT("AttackPower")), FName(TEXT("DefensePower")),
-		FName(TEXT("KnockbackResistance")), FName(TEXT("Accuracy")), FName(TEXT("RecoilControl")), FName(TEXT("StaminaRecoveryRate"))})
+		FName(TEXT("KnockbackResistance")), FName(TEXT("Accuracy")), FName(TEXT("RecoilControl")), FName(TEXT("StaminaRecoveryRate")), FName(TEXT("MovementSpeedMultiplier"))})
 	{
 		const FProperty* Property = FindFieldChecked<FProperty>(AttributeClass, Name);
 		const FLifetimeProperty* Entry = LifetimeProps.FindByPredicate(

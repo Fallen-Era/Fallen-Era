@@ -67,7 +67,7 @@ namespace
 		~FFE_ObstacleFixture() { World->DestroyWorld(false); GEngine->DestroyWorldContext(World); }
 	};
 
-	enum class EFE_ObstacleScenario { Stalled, Partial, Filters, Progress, Disabled };
+	enum class EFE_ObstacleScenario { Stalled, Partial, Filters, Progress, Disabled, LowObstacle, TurnedPath };
 	class FFE_ObstacleDecisionCommand : public IAutomationLatentCommand
 	{
 	public:
@@ -78,6 +78,18 @@ namespace
 			{
 				Fixture = MakeUnique<FFE_ObstacleFixture>();
 				if (Scenario == EFE_ObstacleScenario::Partial) { Fixture->Controller->bProvidePartialPath = true; }
+				if (Scenario == EFE_ObstacleScenario::TurnedPath)
+				{
+					Fixture->Controller->bProvidePartialPath = true;
+					Fixture->Controller->PartialPathDirection = FVector::RightVector;
+					Fixture->Wall->Box->SetBoxExtent(FVector(200, 25, 200));
+					Fixture->Wall->Box->SetRelativeLocation(FVector(-1000, 140, 0));
+				}
+				if (Scenario == EFE_ObstacleScenario::LowObstacle)
+				{
+					Fixture->Wall->Box->SetBoxExtent(FVector(25, 200, 10));
+					Fixture->Wall->Box->SetRelativeLocation(FVector(-860, 0, -70));
+				}
 				if (Scenario == EFE_ObstacleScenario::Filters) { Fixture->Wall->Team = FECombatTeams::Enemy; }
 				if (Scenario == EFE_ObstacleScenario::Disabled)
 				{
@@ -93,13 +105,13 @@ namespace
 			}
 			Fixture->Advance(Step >= 9 ? 0.6f : 0.3f);
 			Test->TestTrue(TEXT("Obstacle handling preserves the original pursuit target"), Fixture->Controller->GetCurrentCombatTarget() == Fixture->Goal);
-			if (Scenario == EFE_ObstacleScenario::Partial)
+			if (Scenario == EFE_ObstacleScenario::Partial || Scenario == EFE_ObstacleScenario::TurnedPath)
 			{
 				if (Step == 1)
 				{
 					Test->TestTrue(TEXT("Scripted partial path was accepted"), Fixture->Controller->GetPathFollowingComponent()->HasPartialPath());
 					Test->TestFalse(TEXT("Having a partial path alone does not start an attack"), Fixture->Enemy->IsAttackInProgress());
-					Fixture->Enemy->SetActorLocation(FVector(40, 0, 0));
+					Fixture->Enemy->SetActorLocation(Fixture->Controller->PartialPathDirection * 40.0f);
 					Fixture->Controller->GetPathFollowingComponent()->OnPathFinished(FPathFollowingResult(EPathFollowingResult::Success, FPathFollowingResultFlags::None));
 					Test->TestFalse(TEXT("Engine remembers that partial completion did not reach the real goal"), Fixture->Controller->GetPathFollowingComponent()->DidMoveReachGoal());
 					return false;
@@ -219,6 +231,8 @@ FE_OBSTACLE_TEST(FFE_EnemyObstaclePartialTest, "PartialArrival", Partial)
 FE_OBSTACLE_TEST(FFE_EnemyObstacleFiltersTest, "CollisionAndTeamFilters", Filters)
 FE_OBSTACLE_TEST(FFE_EnemyObstacleProgressTest, "ProgressDoesNotAttack", Progress)
 FE_OBSTACLE_TEST(FFE_EnemyObstacleDisabledTest, "Disabled", Disabled)
+FE_OBSTACLE_TEST(FFE_EnemyLowObstacleTest, "LowObstacle", LowObstacle)
+FE_OBSTACLE_TEST(FFE_EnemyTurnedPathTest, "TurnedPartialPath", TurnedPath)
 #undef FE_OBSTACLE_TEST
 
 #endif

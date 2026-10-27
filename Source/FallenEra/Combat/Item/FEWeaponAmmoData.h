@@ -86,4 +86,6 @@ struct FALLENERA_API FFE_WeaponAmmoState
 	UPROPERTY(BlueprintReadOnly, Category="Ammo") FGuid WeaponInstanceId;
 	UPROPERTY(BlueprintReadOnly, Category="Ammo") FGuid SelectedAmmoId;
 	UPROPERTY(BlueprintReadOnly, Category="Ammo") FFE_AmmoRoundData LoadedAmmoData;
+	/** Owner-only prediction input, published with the corresponding weapon identity. */
+	UPROPERTY(BlueprintReadOnly, Category="Combat") float StaminaCost = 10.0f;
 };

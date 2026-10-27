@@ -67,12 +67,13 @@ public:
 
 	/** Server snapshot; client combat stats continue to come from replicated GAS attributes. */
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Instance")
-	FFE_WeaponInstanceData GetWeaponInstanceData() const { return CurrentWeaponInstance; }
+	const FFE_WeaponInstanceData& GetWeaponInstanceData() const { return CurrentWeaponInstance; }
+	FGuid GetWeaponInstanceId() const;
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Stamina")
-	float GetWeaponStaminaCost() const { return CurrentWeaponInstance.StaminaCost; }
+	float GetWeaponStaminaCost() const;
 
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Ammo")
-	FFE_WeaponAmmoState GetAmmoState() const { return AmmoState; }
+	const FFE_WeaponAmmoState& GetAmmoState() const { return AmmoState; }
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Ammo")
 	int32 GetReserveAmmo(FGameplayTag AmmoType) const;
 	/** Server-only integration point for a future inventory. Replaces a loose-ammo stack. */
@@ -87,6 +88,8 @@ public:
 	bool AddAmmoInstance(const FFE_AmmoStack& Stack);
 	UFUNCTION(BlueprintPure, Category="FallenEra|Equipment|Ammo")
 	TArray<FFE_AmmoStack> GetCompatibleAmmo() const;
+	/** Native output overload retains caller capacity; Blueprint keeps its existing array-return node. */
+	void GetCompatibleAmmo(TArray<FFE_AmmoStack>& OutAmmo) const;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Equipment|Ammo Selection", meta=(ClampMin="0.1", Units="s"))
 	float AmmoSelectionHoldDuration = 0.25f;
 	/** WBP parent must be FE_AmmoRadialWidget; the class and sector WBP are preloaded asynchronously. */
@@ -219,6 +222,7 @@ protected:
 	void FinishWarmingWeaponDataAssets();
 	TMap<FGameplayTag, TSoftObjectPtr<UFE_WeaponItemData>> WeaponAssetByTag;
 	void ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData);
+	void RestoreWeaponInstance(UFE_WeaponItemData* WeaponData);
 	void RequestWeaponLoad(const TArray<FSoftObjectPath>& AssetPaths, bool bLoadingDataAssets);
 	void GatherWeaponDependencyPaths(
 		const UFE_WeaponItemData* WeaponData,

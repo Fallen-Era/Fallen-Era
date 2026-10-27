@@ -66,8 +66,10 @@ protected:
 	float MovingSpeedThreshold = 10.0f;
 
 private:
-	UFUNCTION(Server, Reliable)
+	UFUNCTION(Server, Reliable, WithValidation)
 	void ServerSetSprinting(bool bNewSprinting);
+	class UFE_StaminaComponent* GetStaminaComponent();
+	TWeakObjectPtr<class UFE_StaminaComponent> CachedStamina;
 
 	UFUNCTION()
 	void OnRep_Sprinting();

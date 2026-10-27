@@ -3,7 +3,6 @@
 #include "AbilitySystemComponent.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "Combat/Component/FECombatComponent.h"
-#include "Combat/Component/FEWeaponAimingComponent.h"
 #include "Combat/Component/FEStaminaComponent.h"
 #include "Combat/FECombatGameplayTags.h"
 #include "Combat/GameplayEffect/FEMovementHandlingGameplayEffect.h"
@@ -58,7 +57,7 @@ void UFE_PlayerMovementStatsComponent::SetSprinting(bool bNewSprinting)
 	}
 	if (bNewSprinting)
 	{
-		if (UFE_StaminaComponent* Stamina = OwnerActor->FindComponentByClass<UFE_StaminaComponent>()) { Stamina->BeginActionAttempt(); }
+		if (UFE_StaminaComponent* Stamina = GetStaminaComponent()) { Stamina->BeginActionAttempt(); }
 	}
 
 	SetSprintingInternal(bNewSprinting);
@@ -66,6 +65,18 @@ void UFE_PlayerMovementStatsComponent::SetSprinting(bool bNewSprinting)
 	{
 		ServerSetSprinting(bNewSprinting);
 	}
+}
+
+UFE_StaminaComponent* UFE_PlayerMovementStatsComponent::GetStaminaComponent()
+{
+	if (!CachedStamina.IsValid() && GetOwner()) { CachedStamina = GetOwner()->FindComponentByClass<UFE_StaminaComponent>(); }
+	return CachedStamina.Get();
+}
+
+bool UFE_PlayerMovementStatsComponent::ServerSetSprinting_Validate(bool bNewSprinting)
+{
+	// Gameplay restrictions are checked below; a legitimate in-flight request must not disconnect its owner.
+	return Cast<APawn>(GetOwner()) != nullptr;
 }
 
 void UFE_PlayerMovementStatsComponent::ServerSetSprinting_Implementation(bool bNewSprinting)
@@ -82,13 +93,15 @@ void UFE_PlayerMovementStatsComponent::OnRep_Sprinting()
 void UFE_PlayerMovementStatsComponent::SetSprintingInternal(bool bNewSprinting)
 {
 	// Validate both local prediction and server RPC requests against the current ADS state.
-	const UFE_WeaponAimingComponent* Aiming = GetOwner()->FindComponentByClass<UFE_WeaponAimingComponent>();
-	UFE_StaminaComponent* Stamina = GetOwner()->FindComponentByClass<UFE_StaminaComponent>();
-	if (bNewSprinting && (!Aiming || !Aiming->IsAiming()) && Stamina && !Stamina->CanSprintWithStamina())
+	const UAbilitySystemComponent* ASC = UFE_CombatComponent::FindAbilitySystemComponent(GetOwner());
+	const bool bAiming = ASC && ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_Aiming);
+	UFE_StaminaComponent* Stamina = GetStaminaComponent();
+	if (bNewSprinting && !bAiming && Stamina && !Stamina->CanSprintWithStamina())
 	{
 		Stamina->NotifyActionRejected();
 	}
-	bNewSprinting = bNewSprinting && (!Aiming || !Aiming->IsAiming()) && (!Stamina || Stamina->CanSprintWithStamina());
+	bNewSprinting = bNewSprinting && !bAiming && UFE_CombatComponent::CanActorAttack(GetOwner()) &&
+		(!Stamina || Stamina->CanSprintWithStamina());
 	if (bSprinting == bNewSprinting)
 	{
 		ApplyMovementSpeed();

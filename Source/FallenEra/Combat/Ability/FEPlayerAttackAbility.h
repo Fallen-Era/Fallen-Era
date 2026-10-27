@@ -9,6 +9,9 @@ class ACharacter;
 class UAnimMontage;
 class UFE_WeaponAttackData;
 class UFE_WeaponItemData;
+class UFE_EquipmentComponent;
+class UFE_CombatComponent;
+class UFE_WeaponAimingComponent;
 struct FFE_AccuracySettings;
 struct FFE_RecoilSettings;
 
@@ -47,7 +50,13 @@ protected:
 	/** Collision channel used by this attack type. Player attacks target the Enemy object channel by default. */
 	virtual ECollisionChannel GetAttackTraceChannel() const;
 
-	static const UFE_WeaponItemData* GetWeaponData(const AActor* Avatar);
+	const UFE_WeaponItemData* GetWeaponData(const AActor* Avatar) const;
+	UFE_EquipmentComponent* GetEquipmentComponent(const AActor* Avatar) const;
+	UFE_CombatComponent* GetCombatComponent(const AActor* Avatar) const;
+	UFE_WeaponAimingComponent* GetAimingComponent(const AActor* Avatar) const;
+	mutable TWeakObjectPtr<UFE_EquipmentComponent> CachedEquipment;
+	mutable TWeakObjectPtr<UFE_CombatComponent> CachedCombat;
+	mutable TWeakObjectPtr<UFE_WeaponAimingComponent> CachedAiming;
 
 	/** Resolves the AttackActions entry whose granted spec owns this activation. */
 	const UFE_WeaponAttackData* ResolveAttackData(const ACharacter* CombatCharacter) const;

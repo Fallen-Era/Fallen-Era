@@ -41,6 +41,19 @@ struct FFE_ChargePresentationState
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFEBowChargeChanged, float);
 
+/** Latest reload can be reconstructed after packet loss, async equipment loading or relevancy changes. */
+USTRUCT()
+struct FFE_ReloadPresentationState
+{
+	GENERATED_BODY()
+	UPROPERTY() uint16 Revision = 0;
+	UPROPERTY() float StartServerTime = -1.0f;
+	UPROPERTY() float Duration = 0.0f;
+	UPROPERTY() FGameplayTag WeaponTag;
+	UPROPERTY() TSoftObjectPtr<UAnimMontage> CharacterMontage;
+	UPROPERTY() TSoftObjectPtr<UAnimMontage> WeaponMontage;
+};
+
 /** Reusable, server-authoritative bridge for applying GameplayEffect damage to any GAS actor. */
 UCLASS(ClassGroup=(Combat), meta=(BlueprintSpawnableComponent))
 class FALLENERA_API UFE_CombatComponent : public UActorComponent
@@ -49,6 +62,9 @@ class FALLENERA_API UFE_CombatComponent : public UActorComponent
 
 public:
 	UFE_CombatComponent();
+	/** Server-only state transition. Clients restore montage position from the synchronized clock. */
+	void StartReloadPresentation(UAnimMontage* CharacterMontage, UAnimMontage* WeaponMontage, float Duration);
+	void EndReloadPresentation();
 	virtual void BeginPlay() override;
 	/** Rebind after PlayerState ASC actor info becomes available. */
 	void RefreshAbilitySystem();
@@ -207,6 +223,14 @@ protected:
 	TSoftObjectPtr<UAnimMontage> DeathMontage;
 
 private:
+	UPROPERTY(ReplicatedUsing=OnRep_ReloadState)
+	FFE_ReloadPresentationState ReloadState;
+	UFUNCTION() void OnRep_ReloadState();
+	void RestoreReloadPresentation();
+	void StopReloadPresentationLocal();
+	TSharedPtr<FStreamableHandle> ReloadAssetLoadHandle;
+	UPROPERTY(Transient) TObjectPtr<UAnimMontage> ReloadCharacterMontage;
+	UPROPERTY(Transient) TObjectPtr<UAnimMontage> ReloadWeaponMontage;
 	void StopLocalWeaponRecoil();
 	TWeakObjectPtr<APlayerController> RecoilController;
 	FVector2D PendingRecoilKick = FVector2D::ZeroVector;

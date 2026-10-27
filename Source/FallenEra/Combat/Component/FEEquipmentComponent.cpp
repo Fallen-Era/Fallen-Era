@@ -379,8 +379,18 @@ void UFE_EquipmentComponent::FinishWarmingWeaponDataAssets()
 	WarmWeaponLoadHandle = Paths.IsEmpty() ? nullptr : UAssetManager::GetStreamableManager().RequestAsyncLoad(Paths);
 }
 
-void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
+void UFE_EquipmentComponent::RestoreWeaponInstance(UFE_WeaponItemData* WeaponData)
 {
+	const FGameplayTag ItemTag = GetCurrentItemTag();
+	if (GetOwner()->HasAuthority() && AmmoInstanceItemTag != ItemTag)
+	{
+		if (const FFE_WeaponInstanceData* Saved = TestLoadedAmmoByItemTag.Find(ItemTag))
+		{
+			CurrentWeaponInstance = *Saved;
+			WeaponInstanceTemplate = WeaponData;
+		}
+		AmmoInstanceItemTag = ItemTag;
+	}
 	if (WeaponInstanceTemplate.Get() != WeaponData)
 	{
 		CurrentWeaponInstance = WeaponData->Instance;
@@ -388,6 +398,11 @@ void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 		WeaponInstanceTemplate = WeaponData;
 		if (GetOwner()->HasAuthority()) { WeaponAttachmentLoadout.WeaponTag = FGameplayTag(); }
 	}
+}
+
+void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
+{
+	RestoreWeaponInstance(WeaponData);
 	if (!CurrentWeaponInstance.IsValid())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Invalid equipment instance seed on %s"), *GetNameSafe(WeaponData));
@@ -396,13 +411,14 @@ void UFE_EquipmentComponent::ApplyLoadedWeapon(UFE_WeaponItemData* WeaponData)
 	}
 	CurrentWeaponData = WeaponData;
 	PendingWeaponData = nullptr;
+	InitializeWeaponAmmo();
 
 	ApplyEquippedWeaponTags();
 	ApplyEquippedWeaponOffense();
 	ApplyWeaponVisuals();
 	InitializeWeaponAttachments();
 	CacheWeaponAbilities();
-	InitializeWeaponAmmo();
+	PublishAmmoState();
 	if (GetOwner()->HasAuthority() && CurrentWeaponInstance.LoadedAmmo == 0 && CanReloadWeapon())
 	{
 		const bool bChargedOnly = !WeaponData->Template.AttackActions.IsEmpty() &&

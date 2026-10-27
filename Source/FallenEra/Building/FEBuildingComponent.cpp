@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "FEBuildingComponent.h"
+#include "Combat/Component/FECombatComponent.h"
 #include "FEBuildInventoryProvider.h"
 #include "FEBuildPiece.h"
 #include "FEBuildPieceDefinition.h"
@@ -1474,15 +1475,15 @@ bool UFEBuildingComponent::TrySwingTool(FGameplayTag InputTag)
     if (Now - LastRepairClickTime < UFEBuildingSettings::Get()->RepairInterval) return false;
     LastRepairClickTime = Now;
 
-    // 원격 클라는 자기 휘두르기를 바로 재생한다 — HT 의 MulticastPlayAttackMontage 가 원격 소유 클라를 건너뛰기 때문.
+    // 원격 소유자는 공개 전투 API로 예측 재생하고 서버가 다른 클라이언트에 전파한다.
     // 호스트는 서버 쪽 멀티캐스트에서 한 번 재생되므로 여기서 재생하지 않는다 (중복 방지)
     if (!GetOwner()->HasAuthority())
     {
-        AFallenEraCharacter* Character = Cast<AFallenEraCharacter>(GetOwner());
+        UFE_CombatComponent* Combat = GetOwner()->FindComponentByClass<UFE_CombatComponent>();
         UAnimMontage* Montage = GetToolMontage(InputTag);
-        if (Character && Montage)
+        if (Combat && Montage)
         {
-            Character->PlayAttackMontage(Montage);
+            Combat->PlayAttackMontage(Montage, true);
         }
     }
     return true;
@@ -1506,10 +1507,10 @@ bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
     }
 
     // 다른 플레이어에게 휘두르기 표시. 원격 소유 클라는 HT 멀티캐스트가 건너뛴다 (이미 로컬 재생)
-    AFallenEraCharacter* Character = Cast<AFallenEraCharacter>(GetOwner());
-    if (UAnimMontage* Montage = GetToolMontage(InputTag); Character && Montage)
+    UFE_CombatComponent* Combat = GetOwner()->FindComponentByClass<UFE_CombatComponent>();
+    if (UAnimMontage* Montage = GetToolMontage(InputTag); Combat && Montage)
     {
-        Character->MulticastPlayAttackMontage(Montage);
+        Combat->PlayAttackMontage(Montage, true);
     }
     return true;
 }

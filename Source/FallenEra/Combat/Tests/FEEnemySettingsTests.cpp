@@ -119,7 +119,7 @@ bool FFE_EnemyPresetConfigurationTest::RunTest(const FString& Parameters)
 {
 	FFE_EnemySettingsTestWorld Fixture;
 	UFE_AISettingsDataAsset* Preset = NewObject<UFE_AISettingsDataAsset>();
-	FSAIStartupEffect& StartupEffect = Preset->AISettings.StartupEffects.AddDefaulted_GetRef();
+	FFE_AIStartupEffect& StartupEffect = Preset->AISettings.StartupEffects.AddDefaulted_GetRef();
 	StartupEffect.GameplayEffect = UFE_EnemySettingsTestEffect::StaticClass();
 	UFE_ArmorItemData* Armor = NewObject<UFE_ArmorItemData>();
 	Armor->Template.EquipmentSlotTag = FGameplayTag::RequestGameplayTag(TEXT("Equipment.Slot.Body"));

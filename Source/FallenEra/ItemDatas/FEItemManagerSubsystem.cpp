@@ -36,7 +36,7 @@ void UFEItemManagerSubsystem::RefreshItemCache()
 
 	for (const FAssetData& AssetData : AssetDataList)
 	{
-		const UFEItemBase* ItemAsset = Cast<UFEItemBase>(AssetData.GetAsset());
+		UFEItemBase* ItemAsset = Cast<UFEItemBase>(AssetData.GetAsset());
 		if (!ItemAsset)
 		{
 			ItemAsset = Cast<UFEItemBase>(AssetData.ToSoftObjectPath().TryLoad());
@@ -73,7 +73,7 @@ const UFEItemBase* UFEItemManagerSubsystem::GetItemData(FName InItemID) const
 		return nullptr;
 	}
 
-	const TObjectPtr<const UFEItemBase>* Found = ItemCache.Find(InItemID);
+	const TObjectPtr<UFEItemBase>* Found = ItemCache.Find(InItemID);
 	return Found ? Found->Get() : nullptr;
 }
 
@@ -92,9 +92,9 @@ bool UFEItemManagerSubsystem::HasItemData(FName InItemID) const
 	return !InItemID.IsNone() && ItemCache.Contains(InItemID);
 }
 
-TArray<const UFEItemBase*> UFEItemManagerSubsystem::GetAllItemData() const
+TArray<UFEItemBase*> UFEItemManagerSubsystem::GetAllItemData() const
 {
-	TArray<const UFEItemBase*> Result;
+	TArray<UFEItemBase*> Result;
 	Result.Reserve(ItemCache.Num());
 	for (const auto& Pair : ItemCache)
 	{
@@ -106,9 +106,9 @@ TArray<const UFEItemBase*> UFEItemManagerSubsystem::GetAllItemData() const
 	return Result;
 }
 
-TArray<const UFEItemBase*> UFEItemManagerSubsystem::GetItemsByTag(FGameplayTag MatchingTag) const
+TArray<UFEItemBase*> UFEItemManagerSubsystem::GetItemsByTag(FGameplayTag MatchingTag) const
 {
-	TArray<const UFEItemBase*> Result;
+	TArray<UFEItemBase*> Result;
 	for (const auto& Pair : ItemCache)
 	{
 		if (Pair.Value && Pair.Value->ItemTags.HasTag(MatchingTag))

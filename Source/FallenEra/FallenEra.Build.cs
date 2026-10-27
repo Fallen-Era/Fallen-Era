@@ -18,6 +18,7 @@ public class FallenEra : ModuleRules
 			"GameplayAbilities",
 			"GameplayTags",
 			"GameplayTasks",
+			"GameplayMessageRuntime",
 			"GameplayStateTreeModule",
 			"StateTreeModule",
 			"Niagara",

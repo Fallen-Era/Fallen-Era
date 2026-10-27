@@ -37,7 +37,7 @@ FPathFollowingRequestResult AFE_EnemyObstacleTestController::MoveTo(const FAIMov
 		FNavPathSharedPtr Path = MakeShared<FNavigationPath>();
 		const FVector Start = GetPawn()->GetNavAgentLocation();
 		Path->GetPathPoints().Emplace(Start);
-		Path->GetPathPoints().Emplace(Start + FVector(40.0f, 0.0f, 0.0f));
+		Path->GetPathPoints().Emplace(Start + PartialPathDirection * 40.0f);
 		Path->SetIsPartial(true);
 		Path->MarkReady();
 		Result.MoveId = GetPathFollowingComponent()->RequestMove(MoveRequest, Path);

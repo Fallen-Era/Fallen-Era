@@ -2,6 +2,9 @@
 
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
+#include "Combat/GameplayEffect/FEEnemySlowGameplayEffect.h"
+#include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Combat/AI/FEAITargetCoordinatorSubsystem.h"
@@ -80,6 +83,7 @@ void AFE_EnemyAIController::OnPossess(APawn* InPawn)
 	}
 
 	HomeLocation = InPawn->GetActorLocation();
+	BindMovementAttributes();
 	ResetCombatNavigation();
 	TargetMemories.Reset();
 	CurrentTargetAcquiredTime = -1.0f;
@@ -93,6 +97,7 @@ void AFE_EnemyAIController::OnPossess(APawn* InPawn)
 
 void AFE_EnemyAIController::OnUnPossess()
 {
+	UnbindMovementAttributes();
 	GetWorldTimerManager().ClearTimer(DecisionTimerHandle);
 	ClearTarget();
 	TargetMemories.Reset();
@@ -155,6 +160,7 @@ void AFE_EnemyAIController::OnMoveCompleted(
 			(Result.IsSuccess() && Following && !Following->DidMoveReachGoal());
 		if (bCombatMoveBlocked && GetPawn())
 		{
+			if (Result.IsSuccess() && !FinalCombatPathDirection.IsNearlyZero()) { LastCombatMoveDirection = FinalCombatPathDirection; }
 			LastCombatProgressLocation = GetPawn()->GetActorLocation();
 			LastCombatProgressTime = GetWorld()->GetTimeSeconds();
 			NextObstacleProbeTime = 0.0f;
@@ -479,11 +485,19 @@ void AFE_EnemyAIController::UpdateCombat(AFE_EnemyCharacter& EnemyCharacter, AAc
 	MoveRequest.SetCanStrafe(bCanTrackActor);
 	MoveRequest.SetAllowPartialPath(true);
 	const FPathFollowingRequestResult Result = MoveTo(MoveRequest);
+	if (const UPathFollowingComponent* Following = GetPathFollowingComponent(); Following && Following->GetPath().IsValid())
+	{
+		LastCombatMoveDirection = (Following->GetCurrentTargetLocation() - Location).GetSafeNormal2D();
+		const TArray<FNavPathPoint>& Points = Following->GetPath()->GetPathPoints();
+		if (Points.Num() > 1) { FinalCombatPathDirection = (Points.Last().Location - Points[Points.Num() - 2].Location).GetSafeNormal2D(); }
+	}
 	CombatMoveRequestId = Result.Code == EPathFollowingRequestResult::RequestSuccessful ? Result.MoveId : FAIRequestID::InvalidRequest;
 }
 
 void AFE_EnemyAIController::ResetCombatNavigation()
 {
+	LastCombatMoveDirection = FVector::ZeroVector;
+	FinalCombatPathDirection = FVector::ZeroVector;
 	CombatMoveRequestId = FAIRequestID::InvalidRequest;
 	BlockingObstacle.Reset();
 	bCombatMoveBlocked = false;
@@ -501,11 +515,21 @@ bool AFE_EnemyAIController::TryAttackBlockingObstacle(AFE_EnemyCharacter& EnemyC
 		NextObstacleProbeTime = CurrentTime + FMath::Max(0.1f, ObstacleRetryInterval);
 		BlockingObstacle.Reset();
 		const FVector Start = EnemyCharacter.GetActorLocation();
-		const FVector ToGoal = PursuitLocation - Start;
-		const FVector End = Start + ToGoal.GetClampedToMaxSize(FMath::Max(0.0f, EnemyCharacter.GetAttackRange()));
+		FVector Direction = LastCombatMoveDirection;
+		if (const UPathFollowingComponent* Following = GetPathFollowingComponent(); Following && Following->GetPath().IsValid())
+		{
+			const FVector ToNextPoint = Following->GetCurrentTargetLocation() - Start;
+			if (ToNextPoint.SizeSquared2D() > FMath::Square(10.0f)) { Direction = ToNextPoint.GetSafeNormal2D(); }
+		}
+		if (Direction.IsNearlyZero()) { Direction = (PursuitLocation - Start).GetSafeNormal2D(); }
+		const FVector End = Start + Direction * FMath::Max(0.0f, EnemyCharacter.GetAttackRange());
 		FHitResult Hit;
 		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FE_AIBlockingObstacle), false, &EnemyCharacter);
-		if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, FECollisionChannels::EnemyTrace, QueryParams) &&
+		const UCapsuleComponent* Capsule = EnemyCharacter.GetCapsuleComponent();
+		const float Radius = FMath::Clamp(Capsule->GetScaledCapsuleRadius() * 0.5f, 8.0f, 30.0f);
+		const float HalfHeight = FMath::Max(Radius, Capsule->GetScaledCapsuleHalfHeight() - 4.0f);
+		if (GetWorld()->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, FECollisionChannels::EnemyTrace,
+			FCollisionShape::MakeCapsule(Radius, HalfHeight), QueryParams) &&
 			IsValidTarget(Hit.GetActor()) && !Hit.GetActor()->IsA<APawn>())
 		{
 			BlockingObstacle = Hit.GetActor();
@@ -1059,15 +1083,66 @@ bool AFE_EnemyAIController::IsWithinTargetEvaluationRadius(const AActor& Actor) 
 
 void AFE_EnemyAIController::SetMovementSpeed(
 	AFE_EnemyCharacter& EnemyCharacter,
-	float MovementSpeed) const
+	float MovementSpeed)
 {
-	if (UCharacterMovementComponent* MovementComponent = EnemyCharacter.GetCharacterMovement())
+	BaseMovementSpeed = FMath::Max(0.0f, MovementSpeed);
+	ApplyMovementSpeedMultiplier();
+}
+
+void AFE_EnemyAIController::BindMovementAttributes()
+{
+	UnbindMovementAttributes();
+	AFE_EnemyCharacter* Enemy = Cast<AFE_EnemyCharacter>(GetPawn());
+	UAbilitySystemComponent* ASC = Enemy ? Enemy->GetAbilitySystemComponent() : nullptr;
+	if (!ASC) { return; }
+	MovementAbilitySystem = ASC;
+	BaseMovementSpeed = Enemy->GetPatrolMovementSpeed();
+	SlowTagHandle = ASC->RegisterGameplayTagEvent(FallenEraCombatGameplayTags::State_Slowed).AddUObject(this, &ThisClass::HandleSlowTagChanged);
+	MovementMultiplierHandle = ASC->GetGameplayAttributeValueChangeDelegate(UFallenEraAttributeSet::GetMovementSpeedMultiplierAttribute())
+		.AddUObject(this, &ThisClass::HandleMovementMultiplierChanged);
+	HandleSlowTagChanged(FallenEraCombatGameplayTags::State_Slowed, ASC->GetTagCount(FallenEraCombatGameplayTags::State_Slowed));
+	ApplyMovementSpeedMultiplier();
+}
+
+void AFE_EnemyAIController::UnbindMovementAttributes()
+{
+	if (UAbilitySystemComponent* ASC = MovementAbilitySystem.Get())
 	{
-		const UAbilitySystemComponent* AbilitySystem = EnemyCharacter.GetAbilitySystemComponent();
-		const bool bSlowed = AbilitySystem && AbilitySystem->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Slowed);
-		// Recompute from the patrol/chase base: repeated decisions and overlapping slow sources must not compound.
-		MovementComponent->MaxWalkSpeed = FMath::Max(0.0f, MovementSpeed) * (bSlowed ? 0.5f : 1.0f);
+		ASC->RegisterGameplayTagEvent(FallenEraCombatGameplayTags::State_Slowed).Remove(SlowTagHandle);
+		ASC->GetGameplayAttributeValueChangeDelegate(UFallenEraAttributeSet::GetMovementSpeedMultiplierAttribute()).Remove(MovementMultiplierHandle);
+		ASC->RemoveActiveGameplayEffect(SlowEffectHandle);
 	}
+	SlowEffectHandle.Invalidate();
+	MovementAbilitySystem.Reset();
+}
+
+void AFE_EnemyAIController::HandleSlowTagChanged(FGameplayTag Tag, int32 Count)
+{
+	if (UAbilitySystemComponent* ASC = MovementAbilitySystem.Get())
+	{
+		if (Count > 0 && !SlowEffectHandle.IsValid())
+		{
+			SlowEffectHandle = ASC->ApplyGameplayEffectToSelf(GetDefault<UFE_EnemySlowGameplayEffect>(), 1.0f, ASC->MakeEffectContext());
+		}
+		else if (Count == 0)
+		{
+			ASC->RemoveActiveGameplayEffect(SlowEffectHandle);
+			SlowEffectHandle.Invalidate();
+		}
+	}
+}
+
+void AFE_EnemyAIController::HandleMovementMultiplierChanged(const FOnAttributeChangeData& Change)
+{
+	ApplyMovementSpeedMultiplier();
+}
+
+void AFE_EnemyAIController::ApplyMovementSpeedMultiplier()
+{
+	AFE_EnemyCharacter* Enemy = Cast<AFE_EnemyCharacter>(GetPawn());
+	UAbilitySystemComponent* ASC = MovementAbilitySystem.Get();
+	const float Multiplier = ASC ? ASC->GetNumericAttribute(UFallenEraAttributeSet::GetMovementSpeedMultiplierAttribute()) : 1.0f;
+	if (Enemy && Enemy->GetCharacterMovement()) { Enemy->GetCharacterMovement()->MaxWalkSpeed = BaseMovementSpeed * FMath::Max(0.0f, Multiplier); }
 }
 
 void AFE_EnemyAIController::SetDecisionTimerRate(float Interval, float InitialDelay)

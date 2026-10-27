@@ -212,6 +212,8 @@ void UFE_CombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 	if (CombatAssetLoadHandle) { CombatAssetLoadHandle->CancelHandle(); CombatAssetLoadHandle.Reset(); }
 	if (ChargeAssetLoadHandle) { ChargeAssetLoadHandle->CancelHandle(); ChargeAssetLoadHandle.Reset(); }
+	if (ReloadAssetLoadHandle) { ReloadAssetLoadHandle->CancelHandle(); ReloadAssetLoadHandle.Reset(); }
+	StopReloadPresentationLocal();
 	if (HitZoneLoadHandle) { HitZoneLoadHandle->CancelHandle(); HitZoneLoadHandle.Reset(); }
 	CachedHitZoneMappingData = nullptr;
 	CachedHitZoneMultiplierData = nullptr;
@@ -237,6 +239,7 @@ void UFE_CombatComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	DOREPLIFETIME(UFE_CombatComponent, bDeathCollisionDisabled);
 	DOREPLIFETIME(UFE_CombatComponent, DeathStartServerTime);
 	DOREPLIFETIME(UFE_CombatComponent, ChargeState);
+	DOREPLIFETIME(UFE_CombatComponent, ReloadState);
 }
 
 UAbilitySystemComponent* UFE_CombatComponent::FindAbilitySystemComponent(AActor* Actor)

@@ -294,7 +294,7 @@ public:
 
 	/** Draws the authoritative pellet trace. Red means blocking hit; green means no hit. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan|Debug")
-	bool bDrawDebugTrace = true;
+	bool bDrawDebugTrace = false;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Hitscan|Debug",
 		meta=(EditCondition="bDrawDebugTrace", ClampMin="0.0", Units="s"))
@@ -340,7 +340,7 @@ public:
 
 	/** Draws camera aim, socket convergence, and final spread direction on authority. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Debug")
-	bool bDrawDebugAim = true;
+	bool bDrawDebugAim = false;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Projectile|Debug",
 		meta=(EditCondition="bDrawDebugAim", ClampMin="0.0", Units="s"))

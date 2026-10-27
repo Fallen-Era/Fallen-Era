@@ -30,5 +30,6 @@ class AFE_EnemyObstacleTestController : public AFE_EnemyAIController
 public:
 	virtual FPathFollowingRequestResult MoveTo(const FAIMoveRequest& MoveRequest, FNavPathSharedPtr* OutPath = nullptr) override;
 	bool bProvidePartialPath = false;
+	FVector PartialPathDirection = FVector::ForwardVector;
 	int32 MoveRequests = 0;
 };

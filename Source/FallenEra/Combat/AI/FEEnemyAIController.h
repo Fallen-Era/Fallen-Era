@@ -4,6 +4,7 @@
 #include "AIController.h"
 #include "Perception/AIPerceptionTypes.h"
 #include "Combat/Interface/FEEncounterTarget.h"
+#include "GameplayEffectTypes.h"
 #include "FEEnemyAIController.generated.h"
 
 class UAIPerceptionComponent;
@@ -11,6 +12,8 @@ class UAISenseConfig_Damage;
 class UAISenseConfig_Hearing;
 class UAISenseConfig_Sight;
 class AFE_EnemyCharacter;
+class UAbilitySystemComponent;
+struct FOnAttributeChangeData;
 struct FSAITargetSelectionSettings;
 
 struct FFE_AITargetMemory
@@ -86,7 +89,19 @@ private:
 	float CalculateTargetScore(const AActor& Actor, const FFE_AITargetMemory& Memory) const;
 	const FSAITargetSelectionSettings& GetTargetSelectionSettings() const;
 	FVector GetLastKnownTargetLocation(const AActor& Actor) const;
-	void SetMovementSpeed(AFE_EnemyCharacter& EnemyCharacter, float MovementSpeed) const;
+	void SetMovementSpeed(AFE_EnemyCharacter& EnemyCharacter, float MovementSpeed);
+	void BindMovementAttributes();
+	void UnbindMovementAttributes();
+	void HandleSlowTagChanged(FGameplayTag Tag, int32 Count);
+	void HandleMovementMultiplierChanged(const FOnAttributeChangeData& Change);
+	void ApplyMovementSpeedMultiplier();
+	TWeakObjectPtr<UAbilitySystemComponent> MovementAbilitySystem;
+	FDelegateHandle SlowTagHandle;
+	FDelegateHandle MovementMultiplierHandle;
+	FActiveGameplayEffectHandle SlowEffectHandle;
+	float BaseMovementSpeed = 0.0f;
+	FVector LastCombatMoveDirection = FVector::ZeroVector;
+	FVector FinalCombatPathDirection = FVector::ZeroVector;
 
 	UPROPERTY(VisibleAnywhere, Category="FallenEra|AI")
 	TObjectPtr<UAIPerceptionComponent> EnemyPerceptionComponent;

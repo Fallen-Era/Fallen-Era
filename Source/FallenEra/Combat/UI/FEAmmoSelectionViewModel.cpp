@@ -34,8 +34,10 @@ void UFE_AmmoSelectionViewModel::Refresh()
 	TArray<FSoftObjectPath> Paths;
 	if (Equipment.IsValid())
 	{
-		const FFE_WeaponAmmoState State = Equipment->GetAmmoState();
-		for (const FFE_AmmoStack& Stack : Equipment->GetCompatibleAmmo())
+		const FFE_WeaponAmmoState& State = Equipment->GetAmmoState();
+		TArray<FFE_AmmoStack> CompatibleAmmo;
+		Equipment->GetCompatibleAmmo(CompatibleAmmo);
+		for (const FFE_AmmoStack& Stack : CompatibleAmmo)
 		{
 			FFE_AmmoSelectionOption& Option = Options.AddDefaulted_GetRef();
 			Option.AmmoId = Stack.Instance.InstanceId;

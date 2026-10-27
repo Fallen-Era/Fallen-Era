@@ -132,10 +132,27 @@ int32 UFE_EquipmentComponent::GetReserveAmmo(FGameplayTag AmmoType) const
 TArray<FFE_AmmoStack> UFE_EquipmentComponent::GetCompatibleAmmo() const
 {
 	TArray<FFE_AmmoStack> Result;
+	GetCompatibleAmmo(Result);
+	return Result;
+}
+
+void UFE_EquipmentComponent::GetCompatibleAmmo(TArray<FFE_AmmoStack>& OutAmmo) const
+{
+	OutAmmo.Reset();
 	const FGameplayTag Type = GetOwner()->HasAuthority() && CurrentWeaponData
 		? CurrentWeaponData->Template.AmmoSettings.AmmoType : AmmoState.AmmoType;
-	for (const FFE_AmmoStack& Stack : AmmoInventory) { if (Stack.AmmoType == Type) { Result.Add(Stack); } }
-	return Result;
+	for (const FFE_AmmoStack& Stack : AmmoInventory) { if (Stack.AmmoType == Type) { OutAmmo.Add(Stack); } }
+}
+
+float UFE_EquipmentComponent::GetWeaponStaminaCost() const
+{
+	return GetOwner() && !GetOwner()->HasAuthority() && AmmoState.WeaponTag == GetCurrentItemTag()
+		? AmmoState.StaminaCost : CurrentWeaponInstance.StaminaCost;
+}
+
+FGuid UFE_EquipmentComponent::GetWeaponInstanceId() const
+{
+	return GetOwner() && !GetOwner()->HasAuthority() ? AmmoState.WeaponInstanceId : CurrentWeaponInstance.InstanceId;
 }
 
 bool UFE_EquipmentComponent::SetReserveAmmo(FGameplayTag AmmoType, int32 Count)
@@ -167,12 +184,6 @@ void UFE_EquipmentComponent::InitializeWeaponAmmo()
 {
 	if (!GetOwner()->HasAuthority() || !CurrentWeaponData) { return; }
 	InitializeAmmoInventory();
-	const FGameplayTag NewTag = GetCurrentItemTag();
-	if (AmmoInstanceItemTag != NewTag)
-	{
-		if (const FFE_WeaponInstanceData* Saved = TestLoadedAmmoByItemTag.Find(NewTag)) { CurrentWeaponInstance = *Saved; }
-		AmmoInstanceItemTag = NewTag;
-	}
 	const auto& Settings = CurrentWeaponData->Template.AmmoSettings;
 	CurrentWeaponInstance.LoadedAmmo = FMath::Clamp(CurrentWeaponInstance.LoadedAmmo, 0, FMath::Max(1, Settings.MagazineCapacity));
 	const bool bHasSelection = AmmoInventory.ContainsByPredicate([this](const FFE_AmmoStack& Stack)
@@ -201,8 +212,6 @@ void UFE_EquipmentComponent::InitializeWeaponAmmo()
 			CurrentWeaponInstance.LoadedAmmoData = *Selected;
 		}
 	}
-	SaveLoadedWeaponAmmo();
-	PublishAmmoState();
 }
 
 const FFE_AmmoStack* UFE_EquipmentComponent::FindSelectedAmmo() const
@@ -222,6 +231,7 @@ void UFE_EquipmentComponent::PublishAmmoState()
 	AmmoState.WeaponInstanceId = CurrentWeaponData ? CurrentWeaponInstance.InstanceId : FGuid();
 	AmmoState.SelectedAmmoId = CurrentWeaponData ? CurrentWeaponInstance.SelectedAmmoId : FGuid();
 	AmmoState.LoadedAmmoData = CurrentWeaponData ? CurrentWeaponInstance.LoadedAmmoData : FFE_AmmoRoundData();
+	AmmoState.StaminaCost = CurrentWeaponData ? CurrentWeaponInstance.StaminaCost : 0.0f;
 	OnAmmoChanged.Broadcast();
 	GetOwner()->ForceNetUpdate();
 }
@@ -259,7 +269,6 @@ bool UFE_EquipmentComponent::ConsumeWeaponAmmo(const UFE_WeaponItemData* Weapon,
 	if (!Weapon->Template.AmmoSettings.bUsesAmmo) { return true; }
 	OutRound = CurrentWeaponInstance.LoadedAmmoData;
 	--CurrentWeaponInstance.LoadedAmmo;
-	SaveLoadedWeaponAmmo();
 	PublishAmmoState();
 	return true;
 }
@@ -276,7 +285,6 @@ void UFE_EquipmentComponent::RefundWeaponAmmo(const UFE_WeaponItemData* Weapon, 
 		CurrentWeaponInstance.LoadedAmmoData.HasSameStats(Round) && CurrentWeaponInstance.LoadedAmmo < Weapon->Template.AmmoSettings.MagazineCapacity)
 	{
 		++CurrentWeaponInstance.LoadedAmmo;
-		SaveLoadedWeaponAmmo();
 	}
 	else
 	{
@@ -362,7 +370,6 @@ bool UFE_EquipmentComponent::FinishWeaponReload()
 	PendingReloadAmmoId.Invalidate();
 	ReloadWeaponInstanceId.Invalidate();
 	AmmoState.bReloading = false;
-	SaveLoadedWeaponAmmo();
 	PublishAmmoState();
 	return true;
 }

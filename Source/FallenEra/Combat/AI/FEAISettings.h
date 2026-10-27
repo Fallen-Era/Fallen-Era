@@ -19,7 +19,7 @@ class UFE_HitZoneMultiplierData;
 
 /** Startup GE: use Instant for initial attributes, Infinite/Duration for immunity and buffs. */
 USTRUCT(BlueprintType)
-struct FALLENERA_API FSAIStartupEffect
+struct FALLENERA_API FFE_AIStartupEffect
 {
 	GENERATED_BODY()
 
@@ -137,7 +137,7 @@ struct FALLENERA_API FSAISettings
 
 	/** Configure initialization/immunity GEs here without creating an AbilitySet. Never duplicate a GE in both lists. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Combat|Abilities", meta=(TitleProperty="GameplayEffect"))
-	TArray<FSAIStartupEffect> StartupEffects;
+	TArray<FFE_AIStartupEffect> StartupEffects;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Equipment")
 	TArray<TSoftObjectPtr<UFE_ArmorItemData>> DefaultArmorDataAssets;

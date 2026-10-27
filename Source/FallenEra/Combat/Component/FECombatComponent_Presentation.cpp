@@ -408,6 +408,7 @@ void UFE_CombatComponent::MulticastStopWeaponActionPresentation_Implementation(b
 
 void UFE_CombatComponent::StopWeaponActionPresentationLocal()
 {
+	StopReloadPresentationLocal();
 	LocalChargeState = FFE_ChargePresentationState();
 	const ACharacter* Character = Cast<ACharacter>(GetOwner());
 	if (Character && ActiveAttackMontage)
@@ -671,6 +672,7 @@ void UFE_CombatComponent::OnRep_ChargeState(const FFE_ChargePresentationState& P
 void UFE_CombatComponent::HandleWeaponChanged(const UFE_WeaponItemData* WeaponData)
 {
 	StopLocalWeaponRecoil();
+	if (WeaponData) { RestoreReloadPresentation(); }
 	const APawn* Pawn = Cast<APawn>(GetOwner());
 	if (WeaponData && Pawn && !Pawn->IsLocallyControlled()) { RestoreChargePresentation(); }
 }

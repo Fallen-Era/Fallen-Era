@@ -141,7 +141,8 @@ void UFE_PlayerStatusViewModel::RefreshAmmo()
 {
 	const UFE_EquipmentComponent* Equipment = EquipmentComponent.Get();
 	const UFE_WeaponItemData* Weapon = Equipment ? Equipment->GetCurrentWeaponData() : nullptr;
-	const FFE_WeaponAmmoState Ammo = Equipment ? Equipment->GetAmmoState() : FFE_WeaponAmmoState();
+	static const FFE_WeaponAmmoState EmptyAmmo;
+	const FFE_WeaponAmmoState& Ammo = Equipment ? Equipment->GetAmmoState() : EmptyAmmo;
 	// Async weapon loading and owner-only ammo replication may complete in either order.
 	const bool bShowAmmo = Weapon && Weapon->Template.AmmoSettings.bUsesAmmo &&
 		Ammo.WeaponTag == Equipment->GetCurrentItemTag();

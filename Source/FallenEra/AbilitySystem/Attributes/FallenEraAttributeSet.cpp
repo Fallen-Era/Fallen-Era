@@ -10,6 +10,7 @@ UFallenEraAttributeSet::UFallenEraAttributeSet()
 	, Stamina(100.0f)
 	, MaxStamina(100.0f)
 	, StaminaRecoveryRate(10.0f)
+	, MovementSpeedMultiplier(1.0f)
 	, AttackPower(0.0f)
 	, DefensePower(0.0f)
 	, KnockbackResistance(0.0f)
@@ -28,7 +29,8 @@ void UFallenEraAttributeSet::PreAttributeChange(const FGameplayAttribute& Attrib
 		NewValue = FMath::Max(NewValue, 1.0f);
 	}
 	else if (Attribute == GetAttackPowerAttribute() || Attribute == GetDefensePowerAttribute() ||
-		Attribute == GetKnockbackResistanceAttribute() || Attribute == GetStaminaRecoveryRateAttribute())
+		Attribute == GetKnockbackResistanceAttribute() || Attribute == GetStaminaRecoveryRateAttribute() ||
+		Attribute == GetMovementSpeedMultiplierAttribute())
 	{
 		NewValue = FMath::Max(NewValue, 0.0f);
 	}
@@ -141,6 +143,12 @@ void UFallenEraAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, KnockbackResistance, COND_None, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, Accuracy, COND_OwnerOnly, REPNOTIFY_Always);
 	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, RecoilControl, COND_OwnerOnly, REPNOTIFY_Always);
+	DOREPLIFETIME_CONDITION_NOTIFY(UFallenEraAttributeSet, MovementSpeedMultiplier, COND_None, REPNOTIFY_Always);
+}
+
+void UFallenEraAttributeSet::OnRep_MovementSpeedMultiplier(const FGameplayAttributeData& OldValue)
+{
+	GAMEPLAYATTRIBUTE_REPNOTIFY(UFallenEraAttributeSet, MovementSpeedMultiplier, OldValue);
 }
 
 void UFallenEraAttributeSet::OnRep_Health(const FGameplayAttributeData& OldValue)

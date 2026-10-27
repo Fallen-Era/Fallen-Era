@@ -51,6 +51,8 @@ public:
 	FTransform GetWeaponSocketWorldTransform(FName SocketName) const;
 	FOnFEAimAlphaChanged& OnAimAlphaChanged() { return AimAlphaChanged; }
 private:
+	/** Direct component/BP callers do not necessarily own the aim GA's activation tag. */
+	TWeakObjectPtr<class UAbilitySystemComponent> DirectAimStateAbilitySystem;
 	UPROPERTY(ReplicatedUsing=OnRep_IsAiming)
 	bool bIsAiming = false;
 	UFUNCTION() void OnRep_IsAiming();

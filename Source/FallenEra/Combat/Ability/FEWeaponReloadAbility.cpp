@@ -52,11 +52,6 @@ void UFE_WeaponReloadAbility::ActivateAbility(const FGameplayAbilitySpecHandle H
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
-	if (UFE_CombatComponent* Combat = Avatar->FindComponentByClass<UFE_CombatComponent>())
-	{
-		if (Settings.ReloadMontage.IsValid()) { Combat->PlayAttackMontage(Settings.ReloadMontage.Get(), false); }
-		if (Settings.WeaponReloadMontage.IsValid()) { Combat->PlayWeaponMeshMontage(Settings.WeaponReloadMontage.Get(), false); }
-	}
 	const auto GetMontageDuration = [](const UAnimMontage* Montage)
 	{
 		return Montage ? Montage->GetPlayLength() / Montage->RateScale : 0.0f;
@@ -65,6 +60,10 @@ void UFE_WeaponReloadAbility::ActivateAbility(const FGameplayAbilitySpecHandle H
 	const float MontageTime = FMath::Max(GetMontageDuration(Settings.ReloadMontage.Get()),
 		GetMontageDuration(Settings.WeaponReloadMontage.Get()));
 	if (MontageTime <= 0.0f) { CompleteReload(); return; }
+	if (UFE_CombatComponent* Combat = Avatar->FindComponentByClass<UFE_CombatComponent>())
+	{
+		Combat->StartReloadPresentation(Settings.ReloadMontage.Get(), Settings.WeaponReloadMontage.Get(), MontageTime);
+	}
 	ReloadTask = UAbilityTask_WaitDelay::WaitDelay(this, MontageTime);
 	ReloadTask->OnFinish.AddDynamic(this, &ThisClass::CompleteReload);
 	ReloadTask->ReadyForActivation();
@@ -83,6 +82,10 @@ void UFE_WeaponReloadAbility::EndAbility(const FGameplayAbilitySpecHandle Handle
 	if (ReloadTask) { ReloadTask->EndTask(); ReloadTask = nullptr; }
 	if (bStartedReload)
 	{
+		if (AActor* Avatar = GetAvatarActorFromActorInfo())
+		{
+			if (UFE_CombatComponent* Combat = Avatar->FindComponentByClass<UFE_CombatComponent>()) { Combat->EndReloadPresentation(); }
+		}
 		if (Equipment.IsValid()) { Equipment->CancelWeaponReload(); }
 		if (UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo())
 		{

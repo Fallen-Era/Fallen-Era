@@ -67,6 +67,12 @@ bool UFE_WeaponAimingComponent::BeginAim()
 		bCapturedPresentation = false;
 	}
 	bIsAiming = true;
+	if (UAbilitySystemComponent* ASC = UFE_CombatComponent::FindAbilitySystemComponent(GetOwner());
+		ASC && !ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::State_Combat_Aiming))
+	{
+		ASC->AddLooseGameplayTag(FallenEraCombatGameplayTags::State_Combat_Aiming, 1, EGameplayTagReplicationState::TagAndCountToAll);
+		DirectAimStateAbilitySystem = ASC;
+	}
 	RefreshAimView();
 	if (UFE_PlayerMovementStatsComponent* Movement = GetOwner()->FindComponentByClass<UFE_PlayerMovementStatsComponent>();
 		Movement && Movement->IsSprinting())
@@ -127,6 +133,11 @@ void UFE_WeaponAimingComponent::EndAim(bool bImmediate)
 {
 	const bool bWasAiming = bIsAiming;
 	bIsAiming = false;
+	if (UAbilitySystemComponent* ASC = DirectAimStateAbilitySystem.Get())
+	{
+		ASC->RemoveLooseGameplayTag(FallenEraCombatGameplayTags::State_Combat_Aiming, 1, EGameplayTagReplicationState::TagAndCountToAll);
+	}
+	DirectAimStateAbilitySystem.Reset();
 	RefreshAimView();
 	if (bWasAiming && GetOwner()->HasAuthority()) { GetOwner()->ForceNetUpdate(); }
 	if (bWasAiming && Sight) { StartCameraBlend(Sight->BlendOutTime); }

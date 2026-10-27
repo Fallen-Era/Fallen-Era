@@ -680,18 +680,18 @@ void UFE_MonsterSpawnSubsystem::RequestEnemyClassLoad(
 		return;
 	}
 	TSharedPtr<FStreamableHandle> LoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
-		ClassPath, FStreamableDelegate::CreateUObject(this, &ThisClass::PrepareEnemyAssets, ClassPath, 0));
+		ClassPath, FStreamableDelegate::CreateUObject(this, &ThisClass::PrepareEnemyAssets, ClassPath, EFE_EnemyAssetLoadStage::Presets));
 	EnemyClassLoadHandles.Add(ClassPath, LoadHandle);
 }
 
-void UFE_MonsterSpawnSubsystem::PrepareEnemyAssets(FSoftObjectPath ClassPath, int32 Stage)
+void UFE_MonsterSpawnSubsystem::PrepareEnemyAssets(FSoftObjectPath ClassPath, EFE_EnemyAssetLoadStage Stage)
 {
 	UClass* Class = Cast<UClass>(ClassPath.ResolveObject());
 	const AFE_EnemyCharacter* DefaultEnemy = Class ? Cast<AFE_EnemyCharacter>(Class->GetDefaultObject()) : nullptr;
 	if (!DefaultEnemy) { return; }
 	TArray<FSoftObjectPath> Paths;
-	if (Stage < 2 && !DefaultEnemy->GatherAISettingsAssetPaths(Paths, Stage == 1)) { return; }
-	if (Stage == 2)
+	if (Stage != EFE_EnemyAssetLoadStage::Ready && !DefaultEnemy->GatherAISettingsAssetPaths(Paths, Stage == EFE_EnemyAssetLoadStage::Dependencies)) { return; }
+	if (Stage == EFE_EnemyAssetLoadStage::Ready)
 	{
 		TArray<FSoftObjectPath> GameplayPaths;
 		if (!DefaultEnemy->GatherAISettingsAssetPaths(GameplayPaths, true)) { return; }
@@ -699,9 +699,11 @@ void UFE_MonsterSpawnSubsystem::PrepareEnemyAssets(FSoftObjectPath ClassPath, in
 		ReadyEnemyClasses.Add(ClassPath);
 		return;
 	}
-	if (Paths.IsEmpty()) { PrepareEnemyAssets(ClassPath, Stage + 1); return; }
+	const EFE_EnemyAssetLoadStage NextStage = Stage == EFE_EnemyAssetLoadStage::Presets
+		? EFE_EnemyAssetLoadStage::Dependencies : EFE_EnemyAssetLoadStage::Ready;
+	if (Paths.IsEmpty()) { PrepareEnemyAssets(ClassPath, NextStage); return; }
 	EnemyDependencyLoadHandles.FindOrAdd(ClassPath).Add(UAssetManager::GetStreamableManager().RequestAsyncLoad(
-		Paths, FStreamableDelegate::CreateUObject(this, &ThisClass::PrepareEnemyAssets, ClassPath, Stage + 1)));
+		Paths, FStreamableDelegate::CreateUObject(this, &ThisClass::PrepareEnemyAssets, ClassPath, NextStage)));
 }
 
 void UFE_MonsterSpawnSubsystem::RebuildCellPopulation()

@@ -45,6 +45,11 @@ public:
 	FGameplayAttributeData StaminaRecoveryRate;
 	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, StaminaRecoveryRate)
 
+	/** Movement effects modify this factor; AI patrol/chase speeds remain preset base values. */
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_MovementSpeedMultiplier, Category="Attributes|Movement")
+	FGameplayAttributeData MovementSpeedMultiplier;
+	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, MovementSpeedMultiplier)
+
 	/** Persistent attack power, including the currently equipped weapon's Offense bonus. */
 	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_AttackPower, Category="Attributes|Combat")
 	FGameplayAttributeData AttackPower;
@@ -74,6 +79,8 @@ public:
 	ATTRIBUTE_ACCESSORS(UFallenEraAttributeSet, Healing)
 
 protected:
+	UFUNCTION()
+	void OnRep_MovementSpeedMultiplier(const FGameplayAttributeData& OldValue);
 	UFUNCTION()
 	void OnRep_Health(const FGameplayAttributeData& OldValue);
 

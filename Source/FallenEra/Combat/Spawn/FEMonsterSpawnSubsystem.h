@@ -8,6 +8,8 @@
 class AFE_EnemyCharacter;
 class AFE_MonsterSpawnAnchor;
 class APawn;
+enum class EFE_EnemyAssetLoadStage : uint8 { Presets, Dependencies, Ready };
+
 struct FStreamableHandle;
 class UFE_MonsterEncounterDataAsset;
 class UFE_MonsterSpawnProfileDataAsset;
@@ -120,7 +122,7 @@ private:
 
 	const FFEMonsterSpawnEntry* SelectWeightedEntry(const TArray<FFEMonsterSpawnEntry>& Entries) const;
 	void RequestEnemyClassLoad(const TSoftClassPtr<AFE_EnemyCharacter>& EnemyClass);
-	void PrepareEnemyAssets(FSoftObjectPath ClassPath, int32 Stage);
+	void PrepareEnemyAssets(FSoftObjectPath ClassPath, EFE_EnemyAssetLoadStage Stage);
 	void RebuildCellPopulation();
 	TMap<FIntPoint, int32> CellPopulation;
 	TSet<FSoftObjectPath> ReadyEnemyClasses;

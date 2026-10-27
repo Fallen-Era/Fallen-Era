@@ -14,9 +14,33 @@
 #include "Particles/ParticleSystem.h"
 #include "Sound/SoundBase.h"
 
-const UFE_WeaponItemData* UFE_PlayerAttackAbility::GetWeaponData(const AActor* Avatar)
+namespace
 {
-	const UFE_EquipmentComponent* Equipment = Avatar ? Avatar->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+    template<typename T>
+    T* ResolveAttackComponent(const AActor* Avatar, TWeakObjectPtr<T>& Cached)
+    {
+        if (!Avatar) { return nullptr; }
+        if (!Cached.IsValid() || Cached->GetOwner() != Avatar) { Cached = Avatar->FindComponentByClass<T>(); }
+        return Cached.Get();
+    }
+}
+
+UFE_EquipmentComponent* UFE_PlayerAttackAbility::GetEquipmentComponent(const AActor* Avatar) const
+{
+    return ResolveAttackComponent(Avatar, CachedEquipment);
+}
+UFE_CombatComponent* UFE_PlayerAttackAbility::GetCombatComponent(const AActor* Avatar) const
+{
+    return ResolveAttackComponent(Avatar, CachedCombat);
+}
+UFE_WeaponAimingComponent* UFE_PlayerAttackAbility::GetAimingComponent(const AActor* Avatar) const
+{
+    return ResolveAttackComponent(Avatar, CachedAiming);
+}
+
+const UFE_WeaponItemData* UFE_PlayerAttackAbility::GetWeaponData(const AActor* Avatar) const
+{
+	const UFE_EquipmentComponent* Equipment = Avatar ? GetEquipmentComponent(Avatar) : nullptr;
 	return Equipment ? Equipment->GetCurrentWeaponData() : nullptr;
 }
 
@@ -40,14 +64,14 @@ bool UFE_PlayerAttackAbility::CheckCost(const FGameplayAbilitySpecHandle Handle,
 	const UFE_WeaponAttackData* Attack = ResolveAttackData(Handle, Character);
 	if (!Attack || (!Attack->IsA<UFE_HitscanAttackData>() && !Attack->IsA<UFE_ProjectileAttackDataBase>())) { return true; }
 	const UFE_WeaponItemData* Weapon = GetWeaponData(Character);
-	const UFE_EquipmentComponent* Equipment = Character ? Character->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+	const UFE_EquipmentComponent* Equipment = Character ? GetEquipmentComponent(Character) : nullptr;
 	return Weapon && (!Weapon->Template.AmmoSettings.bUsesAmmo || (Equipment && Equipment->CanFireWeaponAmmo(Weapon)));
 }
 
 bool UFE_PlayerAttackAbility::HasLoadedWeaponAmmo() const
 {
 	const AActor* Avatar = GetAvatarActorFromActorInfo();
-	const UFE_EquipmentComponent* Equipment = Avatar ? Avatar->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
+	const UFE_EquipmentComponent* Equipment = Avatar ? GetEquipmentComponent(Avatar) : nullptr;
 	return Equipment && Equipment->CanFireWeaponAmmo(GetCachedWeaponData());
 }
 
@@ -57,8 +81,8 @@ bool UFE_PlayerAttackAbility::CommitWeaponShotCost()
 	AActor* Avatar = GetAvatarActorFromActorInfo();
 	if (Avatar->HasAuthority())
 	{
-		UFE_EquipmentComponent* Equipment = Avatar->FindComponentByClass<UFE_EquipmentComponent>();
-		AmmoShotInstanceId = Equipment->GetWeaponInstanceData().InstanceId;
+		UFE_EquipmentComponent* Equipment = GetEquipmentComponent(Avatar);
+		AmmoShotInstanceId = Equipment->GetWeaponInstanceId();
 		if (!Equipment->ConsumeWeaponAmmo(GetCachedWeaponData(), ShotAmmo)) { return false; }
 		bAmmoConsumedThisActivation = GetCachedWeaponData()->Template.AmmoSettings.bUsesAmmo;
 	}
@@ -69,7 +93,7 @@ void UFE_PlayerAttackAbility::RefundFailedProjectileAmmo()
 {
 	if (AActor* Avatar = GetAvatarActorFromActorInfo(); Avatar && Avatar->HasAuthority() && bAmmoConsumedThisActivation)
 	{
-		if (UFE_EquipmentComponent* Equipment = Avatar->FindComponentByClass<UFE_EquipmentComponent>())
+		if (UFE_EquipmentComponent* Equipment = GetEquipmentComponent(Avatar))
 		{
 			Equipment->RefundWeaponAmmo(GetCachedWeaponData(), AmmoShotInstanceId, ShotAmmo);
 		}
@@ -118,7 +142,7 @@ void UFE_PlayerAttackAbility::EndAbility(
 {
 	if (AActor* Avatar = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr)
 	{
-		if (UFE_CombatComponent* Combat = Avatar->FindComponentByClass<UFE_CombatComponent>())
+		if (UFE_CombatComponent* Combat = GetCombatComponent(Avatar))
 		{
 			Combat->ClearAttackStaggerProtection(this);
 		}
@@ -132,7 +156,7 @@ void UFE_PlayerAttackAbility::EndAbility(
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 	if (AActor* Avatar = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr; !bWasCancelled && Avatar && Avatar->HasAuthority())
 	{
-		if (UFE_EquipmentComponent* Equipment = Avatar->FindComponentByClass<UFE_EquipmentComponent>())
+		if (UFE_EquipmentComponent* Equipment = GetEquipmentComponent(Avatar))
 		{
 			Equipment->CompleteAmmoAttack(AmmoWeapon, bCharged, bConsumed);
 		}
@@ -197,7 +221,7 @@ void UFE_PlayerAttackAbility::CacheAttackContext(
 	CachedDamageEffectClass = nullptr;
 	if (AActor* Avatar = GetAvatarActorFromActorInfo())
 	{
-		if (UFE_CombatComponent* Combat = Avatar->FindComponentByClass<UFE_CombatComponent>())
+		if (UFE_CombatComponent* Combat = GetCombatComponent(Avatar))
 		{
 			Combat->SetAttackStaggerProtection(this, AttackData ? AttackData->IgnoreStaggerUpTo : EFE_StaggerStrength::None);
 		}
@@ -230,7 +254,7 @@ void UFE_PlayerAttackAbility::PlayAttackEffects(
 		return;
 	}
 
-	if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
+	if (UFE_CombatComponent* Combat = GetCombatComponent(CombatCharacter))
 	{
 		Combat->PlayWeaponAttackEffects(WeaponData, AttackData,
 			NetExecutionPolicy == EGameplayAbilityNetExecutionPolicy::LocalPredicted);
@@ -245,7 +269,7 @@ void UFE_PlayerAttackAbility::PlayAttackPresentation(
 	PlayAttackMontage(CombatCharacter, AttackData);
 	if (CombatCharacter && AttackData && AttackData->WeaponMeshAttackMontage)
 	{
-		if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
+		if (UFE_CombatComponent* Combat = GetCombatComponent(CombatCharacter))
 		{
 			Combat->PlayWeaponMeshMontage(
 				AttackData->WeaponMeshAttackMontage,
@@ -264,7 +288,7 @@ void UFE_PlayerAttackAbility::PlayAttackMontage(
 		return;
 	}
 
-	if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
+	if (UFE_CombatComponent* Combat = GetCombatComponent(CombatCharacter))
 	{
 		Combat->PlayAttackMontage(Montage, NetExecutionPolicy == EGameplayAbilityNetExecutionPolicy::LocalPredicted);
 	}
@@ -294,7 +318,7 @@ void UFE_PlayerAttackAbility::ApplyDamage(
 		return;
 	}
 
-	UFE_CombatComponent* CombatComponent = CombatCharacter->FindComponentByClass<UFE_CombatComponent>();
+	UFE_CombatComponent* CombatComponent = GetCombatComponent(CombatCharacter);
 	if (!CombatComponent)
 	{
 		return;
@@ -408,13 +432,13 @@ void UFE_PlayerAttackAbility::ApplyLocalRecoil(
 			UFallenEraAttributeSet::GetRecoilControlAttribute());
 	}
 
-	if (UFE_CombatComponent* Combat = CombatCharacter->FindComponentByClass<UFE_CombatComponent>())
+	if (UFE_CombatComponent* Combat = GetCombatComponent(CombatCharacter))
 	{
 		Combat->ApplyLocalWeaponRecoil(RecoilSettings, RecoilControl);
 	}
 	if (const UFE_WeaponItemData* Weapon = GetCachedWeaponData())
 	{
-		if (UFE_WeaponAimingComponent* Aiming = CombatCharacter->FindComponentByClass<UFE_WeaponAimingComponent>())
+		if (UFE_WeaponAimingComponent* Aiming = GetAimingComponent(CombatCharacter))
 		{
 			Aiming->ApplyShotRecoil(Weapon->Template.VisualRecoilSettings, RecoilControl);
 		}
