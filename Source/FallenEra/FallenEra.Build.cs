@@ -24,10 +24,11 @@ public class FallenEra : ModuleRules
 			"GameplayStateTreeModule",
 			"Niagara",
 			"UMG",
-
+			"PCG",
 			"Voxel",
 			"VoxelGraph",
 			"VoxelCore",
+			"VoxelPCG",
 			"ModelViewViewModel",
 			"Slate",
 			"SlateCore",

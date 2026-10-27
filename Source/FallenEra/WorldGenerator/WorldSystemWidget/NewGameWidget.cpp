@@ -92,11 +92,11 @@ void UNewGameWidget::OnWorldGenerateClicked()
 	FText SeedText = EDIT_TXT_WorldSeed->GetText();
 	
 	
-	// 보류
-	if ()
-	{
-		
-	}
+	// // 보류
+	// if ()
+	// {
+	// 	
+	// }
 	
 	UGameplayMessageSubsystem& MessageSubsystem = 
 		UGameplayMessageSubsystem::Get(this);

@@ -42,15 +42,24 @@ protected:
 	/*
 	 * 흩 뿌려진 Region Seed들을 가지고 Region Edges를 Cache한다.
 	 */
-	bool GenerateVoronoiRegions();
+	bool GenerateVoronoiRegions(FBox2D Bounds, FGeneratedRegionData& Data);
 	
-	void AssignRandomBiomeTags();
+	void AssignRandomBiomeTags(FRandomStream& Stream, FGeneratedRegionData& Data);
 	
-	void OptimizeBiomeAdjacency();
+	void OptimizeBiomeAdjacency(const FRegionGenerationSettings& Settings, FGeneratedRegionData& Data);
 	
 	void ValidateBiomeConnectivity();
 	
+	EBiomeType GetBiomeAt(FVector2D WorldPosition);
 	
+	FVector2D WarpOffset(const FVector2D& Position) const;
+	int32 FindNearestOriginalSite(const FVector2D& Position) const;
+	void ResetWarpState();
+	
+	FRegionGenerationSettings ActiveGenerationSettings{};
+	
+	FVector2D WarpPhaseX = FVector2D::ZeroVector;
+	FVector2D WarpPhaseY = FVector2D::ZeroVector;
 	
 	void ClearGenerator();
 	

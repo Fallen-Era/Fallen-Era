@@ -4,47 +4,16 @@
 #include "WorldSystemData.generated.h"
 
 
-USTRUCT(Blueprintable)
-struct FRegionSite
+struct FBiomeAffinityTable
 {
-	GENERATED_BODY()
+	static constexpr int32 BiomeCount = 5;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	FVector2D Center = FVector2D::ZeroVector;
+	double Values[BiomeCount][BiomeCount] = {};
 	
-};
-
-USTRUCT(Blueprintable)
-struct FRegionLink
-{
-	GENERATED_BODY()
-	
-	int32 NeighborRegionIndex = INDEX_NONE;
-	int32 EdgeIndex = INDEX_NONE;
-};
-
-USTRUCT(Blueprintable)
-struct FRegionEdge
-{
-	GENERATED_BODY()
-	
-	FVector2D A = FVector2D::ZeroVector;
-	FVector2D B = FVector2D::ZeroVector;
-
-	int32 RegionA = INDEX_NONE;
-	int32 RegionB = INDEX_NONE;
-};
-
-/*
- * 각 섹터가 가질 수 있는 여러 길 형태의 정의.
- */
-UENUM(Blueprintable)
-enum class EWayType : uint8
-{
-	Paved,		// 아스팔트, 콘크리트 등 포장 도로
-	Unpaved,	// 흙/자갈 등으로 도로 형태는 조성됨
-	Trail,		// 자연 지형을 따라 최소한으로 형성된 길
-	OffRoad,	// 실제 길 없음, 지형 그대로 통과
+	double Get(EBiomeType A, EBiomeType B) const
+	{
+		return Values[static_cast<int32>(A)][static_cast<int32>(B)];
+	}
 };
 
 
@@ -86,6 +55,70 @@ enum class EBiomeType : uint8
 	Hills,				// 산악
 	Desert,				// 사막
 	Tundra,				// 극지방
+};
+
+
+USTRUCT(Blueprintable)
+struct FRegionSite
+{
+	GENERATED_BODY()
+	
+	FVector2D Center = FVector2D::ZeroVector;
+	EBiomeType Biome = EBiomeType::TemperateForest;
+	TArray<FRegionLink> Links;
+	TArray<FVector2D> Polygon;
+};
+
+USTRUCT(Blueprintable)
+struct FRegionEdge
+{
+	GENERATED_BODY()
+	
+	FVector2D A = FVector2D::ZeroVector;
+	FVector2D B = FVector2D::ZeroVector;
+
+	int32 RegionA = INDEX_NONE;
+	int32 RegionB = INDEX_NONE;
+};
+
+struct FRegionGenerationSettings
+{
+	double GridSpacing;
+	int32 MaxSwapIterations;
+	
+	bool bEnableWarp;
+	double WarpStrength;
+	double WarpWavelength;
+	
+	FBiomeAffinityTable Affinity;
+};
+
+struct FGeneratedRegionData
+{
+	TArray<FRegionSite> Sites;
+	TArray<FRegionEdge> Edges;
+};
+
+USTRUCT(Blueprintable)
+struct FRegionLink
+{
+	GENERATED_BODY()
+	
+	int32 NeighborRegionIndex = INDEX_NONE;
+	int32 EdgeIndex = INDEX_NONE;
+};
+
+
+/*
+ * 각 섹터가 가질 수 있는 여러 길 형태의 정의.
+ */
+UENUM(Blueprintable)
+enum class EWayType : uint8
+{
+	Paved,		// 아스팔트, 콘크리트 등 포장 도로
+	Unpaved,	// 흙/자갈 등으로 도로 형태는 조성됨
+	Trail,		// 자연 지형을 따라 최소한으로 형성된 길
+	OffRoad,	// 실제 길 없음, 지형 그대로 통과
 };
 
 
@@ -144,9 +177,8 @@ struct FWorldSectorDefinition
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	TArray<FWayPoint> WayPoints;
 	
-	
-	
 };
+
 
 
 
