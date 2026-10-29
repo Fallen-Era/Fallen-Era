@@ -32,6 +32,10 @@ namespace
     /** 계단처럼 소켓으로도 붙는 땅 피스의 "지면에 닿음" 판정 두께(바닥면 위아래 ±). 토대 밖 계단의 20cm 뜸(토대 높이)을 포함한다 */
     constexpr float GroundContactTolerance = 25.f;
     
+    /** 소켓 없는 피스(가구·방어시설)의 "지면에 닿음" 판정 두께. 맨땅에서는 바닥을 가장 높은 지면 지점에 맞춰 놓으므로 1cm 반올림만 덮으면 된다.
+     *  토대(20cm) 위에 놓인 것은 땅에 닿지 않은 것으로 봐야 토대가 부서질 때 같이 무너진다 — 25 로는 토대 아래 지면까지 닿았다 */
+    constexpr float RestingGroundTolerance = 5.f;
+    
     /** 소켓 없는 피스의 받침 찾기 상자를 옆으로 줄이는 양 — 옆에 붙어 선 벽은 받침이 아니다 */
     constexpr float RestingSideInset = 10.f;
 
@@ -258,7 +262,9 @@ bool UFEBuildingSubsystem::IsAnchorAt(const UWorld* World, const UFEBuildPieceDe
     // 피스·플레이어·적은 오브젝트 타입이 달라 잡히지 않는다
     const FBox LocalBounds = StaticMesh->GetBoundingBox();
     const FVector BottomCenter(LocalBounds.GetCenter().X, LocalBounds.GetCenter().Y, LocalBounds.Min.Z);
-    const FVector HalfExtent(LocalBounds.GetExtent().X, LocalBounds.GetExtent().Y, GroundContactTolerance);
+    // 계단은 토대 밖 20cm 뜸까지 지면으로 보고(25), 가구·방어시설은 실제로 닿았을 때만(5)
+    const float Tolerance = Piece->Sockets.IsEmpty() ? RestingGroundTolerance : GroundContactTolerance;
+    const FVector HalfExtent(LocalBounds.GetExtent().X, LocalBounds.GetExtent().Y, Tolerance);
 
     FCollisionObjectQueryParams GroundTypes;
     GroundTypes.AddObjectTypesToQuery(ECC_WorldStatic);

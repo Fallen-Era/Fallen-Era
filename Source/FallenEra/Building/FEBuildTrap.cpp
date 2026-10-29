@@ -85,7 +85,8 @@ void AFEBuildTrap::HandleBeginOverlap(UPrimitiveComponent* OverlappedComponent, 
         }
     }
 
-    // 밟자마자 한 번 맞고, 그 뒤로 DamageInterval 마다. 대상이 없으면 TickDamage 가 타이머를 끈다
+    // 타이머가 꺼져 있으면(첫 대상) 바로 한 번 맞고, 이미 돌고 있으면 다음 주기에 다른 대상과 같이 맞는다 (대상마다 타이머를 두지 않는다).
+    // 대상이 없으면 TickDamage 가 타이머를 끈다
     if (!GetWorldTimerManager().IsTimerActive(DamageTimer))
     {
         GetWorldTimerManager().SetTimer(DamageTimer, this, &AFEBuildTrap::TickDamage, DamageInterval, true, 0.f);

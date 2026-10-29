@@ -122,6 +122,10 @@ public:
     /** [Client Only] 이 기계의 플레이어가 발리스타에 탔다/내렸다. 발리스타의 OnRep_Operator 가 부른다 (시야·입력·이동 잠금·조준 틱) */
     void HandleBallistaMounted(AFEBuildBallista* Ballista);
     void HandleBallistaDismounted(AFEBuildBallista* Ballista);
+    
+    /** [Client Only] 탑승 중인 발리스타의 입력(IMC)을 넣는다. 이미 넣었거나 IMC 가 로드 전이면 아무것도 안 한다 —
+     *  탑승 때 한 번, IMC 로드가 탑승보다 늦으면 발리스타의 로드 완료 콜백이 한 번 더 부른다 */
+    void AddBallistaInput();
 
     /** HUD 위젯이 바인딩할 뷰모델. 지연 생성 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
@@ -367,16 +371,18 @@ private:
 
     /** 발리스타 IMC 를 넣은 입력 서브시스템. 폰이 사라져도 같은 곳에서 빼기 위해 기억한다 (빌드 모드 IMC 와 같은 이유) */
     TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> BallistaInputOwner;
-
-    /** [Client Only] 매 프레임: 컨트롤 회전 → 발리스타 머리. 각도가 바뀌었으면 10Hz 이하로 서버에 보낸다 */
+    
+    /** [Client Only] 매 프레임: 컨트롤 회전 → 발리스타 머리. 바뀌었으면 10Hz 이하로, 그대로여도 0.5초마다 서버에 보낸다 */
     void UpdateBallistaAim();
 
     int8 LastSentAimYaw = 0;
     int8 LastSentAimPitch = 0;
     double LastAimSendTime = -1.0;
     
-    /** [Client Only] 이 시각 전에는 발사를 보내지 않는다 (로컬 장전). 서버도 발리스타별로 다시 확인한다 */
-    double BallistaReadyTime = 0.0;
+    /** [Server Only] 발리스타 요청 간격 제한 (FEBuilding::ConsumeRequestSlot). 장전(발리스타별 ReloadTime)과 별개로,
+     *  조작된 클라의 빈 발사·조준 요청이 서버 처리와 Reliable 안내를 무제한으로 만들지 않게 */
+    double NextFireRequestTime = 0.0;
+    double NextAimRequestTime = 0.0;
 
     /** [Client Only] 탑승 중 HUD(탄약 수·장전 중). 값이 바뀔 때만 뷰모델을 갱신한다. LastHudAmmo = -1 이면 다음 호출에서 무조건 갱신 */
     void UpdateBallistaHud();
