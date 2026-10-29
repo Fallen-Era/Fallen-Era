@@ -3,13 +3,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "FEBuildDefense.h"
+#include "FEBuildStorage.h"
 #include "FEBuildBallista.generated.h"
 
 class UCameraComponent;
 class UInputMappingContext;
 class UEnhancedInputLocalPlayerSubsystem;
 class UAbilitySystemComponent;
+class UFallenEraAttributeSet;
+class UFE_CombatComponent;
 class APlayerController;
 class AFE_CombatProjectile;
 class ACharacter;
@@ -19,10 +21,12 @@ class ACharacter;
  * 탄약 칸 1개(볼트만 — 보관함 서버 로직 재사용). 전용 탄약 UI 는 탑승 중 Tab, 또는 내린 상태에서 발리스타를 조준하고 Tab.
  * 탑승은 발리스타가 전부 처리한다. 서버가 조작자를 Owner 로 지정하므로 그 클라가 발리스타에 직접 Server RPC(발사·조준·내리기)를 보내고,
  * 조작자 기계에서는 발리스타가 시야·입력·이동 잠금·조준을 맡는다. 플레이어 쪽 컴포넌트는 발리스타를 모른다 (탑승 GA 는 FindOperatedBy 로 찾는다).
+ * 볼트 피해는 HT 전투 경로를 탄다: 볼트의 DamageSource = 발리스타 → 발리스타의 UFE_CombatComponent 가 자체 ASC 의 AttackPower 로 피해를 준다.
+ * 발리스타 자신의 체력은 다른 피스와 같은 AFEBuildPiece::Health (구조물 HP 는 GAS 예외, HT 합의).
  * 머리(Head)는 보이기만 하는 부품이라 콜리전이 없다 — 총신이 벽·난간 자리 위로 나가도 그 설치를 막지 않는다.
  */
 UCLASS()
-class FALLENERA_API AFEBuildBallista : public AFEBuildDefense
+class FALLENERA_API AFEBuildBallista : public AFEBuildStorage
 {
     GENERATED_BODY()
 
@@ -108,6 +112,10 @@ protected:
      *  소프트 참조: BeginPlay 에서 모든 기계가 미리 받는다 (서버는 발사, 클라는 리플리케이트된 볼트를 띄울 때 필요) */
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Ballista")
     TSoftClassPtr<AFE_CombatProjectile> BoltClass;
+	
+	/** 볼트 1발의 공격력. 대상 방어력을 뺀 만큼 들어간다. 명중 시점에 ASC 의 AttackPower 로 읽힌다 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Ballista", meta = (ClampMin = 0))
+	float AttackPower = 20.f;
 
     /** 발사 속도 (cm/s) */
     UPROPERTY(EditDefaultsOnly, Category = "FallenEra|Building|Ballista", meta = (ClampMin = 0))
@@ -140,6 +148,18 @@ protected:
     /** 볼트가 나오는 곳. Head 에 붙어 같이 돈다 (총신 끝에 둔다) */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building|Ballista")
     TObjectPtr<USceneComponent> Muzzle;
+	
+	/** 볼트 피해용 공격자 ASC (AttackPower). 복제한다 — 볼트에 AttackData(명중 효과)를 붙이면 공격자 ASC 로 GameplayCue 가 나간다 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building|Ballista")
+	TObjectPtr<UAbilitySystemComponent> AbilitySystem;
+
+	/** 볼트가 명중하면 HT 투사체가 DamageSource(발리스타)의 이 컴포넌트로 피해를 준다 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "FallenEra|Building|Ballista")
+	TObjectPtr<UFE_CombatComponent> Combat;
+
+	/** AttackPower 를 담는 AttributeSet. ASC 가 소유자 하위 객체에서 자동으로 찾아 등록한다 */
+	UPROPERTY()
+	TObjectPtr<UFallenEraAttributeSet> Attributes;
 
 private:
     /** [Server RPC] 발사. 조준은 정밀값(float, 발리스타 기준 상대 각도) — 리플리케이트용 int8 은 1° 단위라 멀리서 빗나간다 */

@@ -10,6 +10,7 @@
 #include "FEBuildingGameplayTags.h"
 #include "FEBuildingSettings.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "Combat/Component/FECombatComponent.h"
 #include "Camera/CameraComponent.h"
@@ -59,8 +60,13 @@ AFEBuildBallista::AFEBuildBallista()
     Capacity = 1; // 탄약 칸 1개. 한 칸 최대 개수는 MaxStackSize (BP 기본값)
     AmmoTag = FEBuildingTags::Item_Ammo_Bolt;
     
-    // 함정과 달리 ASC 를 복제한다 — 나중에 볼트에 AttackData(명중 효과)를 붙이면 공격자 ASC 로 GameplayCue 가 나간다
-    AbilitySystem->SetIsReplicated(true);
+    // 볼트 피해용 공격자. ASC 는 복제한다(기본값) — 나중에 볼트에 AttackData(명중 효과)를 붙이면 공격자 ASC 로 GameplayCue 가 나간다
+    AbilitySystem = CreateDefaultSubobject<UAbilitySystemComponent>(TEXT("AbilitySystem"));
+    AbilitySystem->SetReplicationMode(EGameplayEffectReplicationMode::Minimal);
+    
+    Attributes = CreateDefaultSubobject<UFallenEraAttributeSet>(TEXT("Attributes"));
+    
+    Combat = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("Combat"));
     
     // 조준(머리 회전)은 매 프레임 따라가야 해서 틱을 쓴다. 이 기계의 플레이어가 탔을 때만 켠다 (AFEBuildPiece 는 틱 없음)
     PrimaryActorTick.bCanEverTick = true;
@@ -93,6 +99,13 @@ void AFEBuildBallista::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 void AFEBuildBallista::BeginPlay()
 {
     Super::BeginPlay();
+    
+    // 공격자 정보. 서버·클라 모두 초기화한다 (클라 = 명중 효과용). 공격력은 서버 값만 쓴다 (피해는 서버에서만 계산)
+    AbilitySystem->InitAbilityActorInfo(this, this);
+    if (HasAuthority())
+    {
+        AbilitySystem->SetNumericAttributeBase(UFallenEraAttributeSet::GetAttackPowerAttribute(), AttackPower);
+    }
 
     // 탑승 입력은 화면이 있는 기계에서만 쓴다. 탑승 순간 멈칫하지 않게 미리 비동기로 받아 둔다.
     // 로드가 끝나기 전에 탔으면 완료 콜백이 그때 입력을 넣는다 — 게임 스레드를 멈추고 기다리지 않는다

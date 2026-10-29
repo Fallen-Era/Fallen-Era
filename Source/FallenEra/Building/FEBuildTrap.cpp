@@ -2,6 +2,8 @@
 
 #include "FEBuildTrap.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystem/Attributes/FallenEraAttributeSet.h"
+#include "Combat/GameplayEffect/FEDamageGameplayEffect.h"
 #include "AbilitySystem/FallenEraGameplayTags.h"
 #include "Combat/Component/FECombatComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -13,6 +15,17 @@ namespace
     const FName TrapCollisionProfile(TEXT("BuildTrap"));
 }
 
+AFEBuildTrap::AFEBuildTrap()
+{
+    AbilitySystem = CreateDefaultSubobject<UAbilitySystemComponent>(TEXT("AbilitySystem"));
+    // 공격 전용이라 복제하지 않는다 — 피해는 서버에서만 계산하고, 맞은 쪽의 피해 GE·GameplayCue 는 대상 ASC 로 복제된다.
+    // 수가 많은 함정마다 ASC·AttributeSet 이 클라로 가지 않게
+    AbilitySystem->SetIsReplicated(false);
+
+    Attributes = CreateDefaultSubobject<UFallenEraAttributeSet>(TEXT("Attributes"));
+    Combat = CreateDefaultSubobject<UFE_CombatComponent>(TEXT("Combat"));
+}
+
 FGenericTeamId AFEBuildTrap::GetGenericTeamId() const
 {
     return FGenericTeamId::NoTeam;
@@ -21,7 +34,13 @@ FGenericTeamId AFEBuildTrap::GetGenericTeamId() const
 void AFEBuildTrap::BeginPlay()
 {
     Super::BeginPlay();
+    
+    // 공격자 정보. 서버·클라 모두 초기화한다 (클라는 ASC 를 복제하지 않아 쓰이지 않지만 초기화는 무해)
+    AbilitySystem->InitAbilityActorInfo(this, this);
     if (!HasAuthority()) return; // 피해 판정은 서버만
+
+    // 피해 경로(HT ApplyDamageInternal)가 공격자 ASC 의 AttackPower 를 읽는다
+    AbilitySystem->SetNumericAttributeBase(UFallenEraAttributeSet::GetAttackPowerAttribute(), AttackPower);
 
     UStaticMeshComponent* TrapMesh = GetMesh();
     TrapMesh->OnComponentBeginOverlap.AddDynamic(this, &AFEBuildTrap::HandleBeginOverlap);
@@ -133,8 +152,9 @@ void AFEBuildTrap::TickDamage()
     {
         if (IsActorBeingDestroyed()) return; // 내구도가 다 닳아 이번 틱에 부서졌다
 
+        // 피해 GE 는 C++ 클래스를 직접 넘긴다 — 컴포넌트 기본값(소프트 클래스)의 동기 로드를 피하고 BP 설정 누락도 없다
         AActor* Actor = Victim.Actor.Get();
-        if (Actor != nullptr && DealDamage(Actor))
+        if (Actor != nullptr && Combat->ApplyDamageWithEffect(Actor, UFE_DamageGameplayEffect::StaticClass()))
         {
             UE_LOG(LogFEBuilding, Verbose, TEXT("%s hit %s"), *GetName(), *Actor->GetName());
             if (SelfDamagePerHit > 0.f)
