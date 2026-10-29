@@ -19,6 +19,8 @@ namespace FEBuildingTags
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Build_Demolish);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Build_Menu);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Interact);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Ballista_Exit);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Input_Ballista_Fire);
     
     // 상태 (로컬 loose 태그. 다른 시스템이 "빌드 중"을 알아야 할 때 이 태그만 본다)
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Building);
@@ -56,7 +58,12 @@ namespace FEBuildingTags
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Food_RawMeat);
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Food_CookedMeat);
     
-    // 수리 도구. 이 태그가 ItemTags 에 있는 무기를 들고 있어야 서버가 수리를 허용한다
-    // ponytail: 아이템 식별이 FPrimaryAssetId 로 바뀌면 아이템 ID 비교로 교체
+    // 방어시설 재료·탄약 (임시. 아이템 담당이 정하면 교체)
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_MetalScrap);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Resource_Rope);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Ammo_Bolt);
+    
+    // 망치 아이템 식별 태그 (망치 DA Template > Item Tags, 장비 Test Item Tags 매칭용).
+    // "들고 있는지" 판정은 HT 장착 태그 Equipment.Weapon.Hammer 로 한다 (FEBuildingComponent::IsHoldingRepairTool)
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Tool_Hammer);
 }

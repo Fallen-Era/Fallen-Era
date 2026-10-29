@@ -107,3 +107,15 @@ struct FALLENERA_API FFEBuildPieceRecord
 	UPROPERTY()
 	float Health = 0.f;
 };
+
+namespace FEBuilding
+{
+	/** [Server] 요청 간격 제한 (수리·업그레이드, 발리스타 장전). 받을 때마다 NextAllowedTime 을 Interval 씩 누적한다 —
+	 *  지터로 일찍 온 요청(Interval 의 절반까지)은 받되, 아무리 빨리 보내도 평균 간격은 Interval */
+	inline bool ConsumeRequestSlot(double& NextAllowedTime, double Now, double Interval)
+	{
+		if (Now < NextAllowedTime - Interval * 0.5) return false;
+		NextAllowedTime = FMath::Max(NextAllowedTime, Now) + Interval;
+		return true;
+	}
+}

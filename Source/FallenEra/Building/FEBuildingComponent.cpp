@@ -27,9 +27,11 @@
 #include "Combat/Component/FEEquipmentComponent.h"
 #include "Combat/Weapon/FEWeaponItemData.h"
 #include "Combat/FECombatGameplayTags.h"
-#include "FallenEraCharacter.h"
 #include "Combat/Collision/FECollisionChannels.h"
 #include "InputMappingContext.h"
+#include "FEBuildBallista.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -47,16 +49,23 @@ namespace
         return FText::Join(FText::FromString(TEXT(", ")), Parts);
     }
     
-    /** 구조물은 건설 탭, 그 외(가구·방어시설·이동)는 가구 탭 */
+    /** 구조물은 건설 탭, 방어시설(함정·발리스타)은 방어 탭, 그 외(가구·이동)는 가구 탭 */
     bool MatchesMenuTab(const UFEBuildPieceDefinition& Definition, EFEBuildMenuTab Tab)
     {
-        const bool bIsStructure = Definition.Category == FEBuildingTags::Build_Piece_Structure;
-        return Tab == (bIsStructure ? EFEBuildMenuTab::Construction : EFEBuildMenuTab::Furniture);
+        const EFEBuildMenuTab PieceTab = Definition.Category == FEBuildingTags::Build_Piece_Structure ? EFEBuildMenuTab::Construction
+            : Definition.Category == FEBuildingTags::Build_Piece_Defense ? EFEBuildMenuTab::Defense
+            : EFEBuildMenuTab::Furniture;
+        return Tab == PieceTab;
     }
 
     FText GetMenuTabTitle(EFEBuildMenuTab Tab)
     {
-        return Tab == EFEBuildMenuTab::Construction ? LOCTEXT("TabConstruction", "건설") : LOCTEXT("TabFurniture", "가구");
+        switch (Tab)
+        {
+        case EFEBuildMenuTab::Construction: return LOCTEXT("TabConstruction", "건설");
+        case EFEBuildMenuTab::Defense:      return LOCTEXT("TabDefense", "방어");
+        default:                            return LOCTEXT("TabFurniture", "가구");
+        }
     }
 
     /** 투입 패널 선택지: 재질 미정이면 사슬 전체(나무·돌·철), 정해졌으면 현재 재질 하나.
@@ -108,21 +117,36 @@ namespace
      *  위아래 = 지면 접촉·천장 아래 끼우기 */
     constexpr float SideClearance = 22.f;
     constexpr float FaceClearance = 2.f;
+    
+    /** 소켓 없는 피스(가구·함정)의 옆 여유. 맞닿기만 허용하고 겹침은 막는다 */
+    constexpr float FreeSideClearance = 1.f;
+
+    /** 지지 면적(MinSupportCoverage) 검사: 바닥을 N×N 칸으로 나눠 각 칸 중앙 아래에서 표면을 찾는다 */
+    constexpr int32 CoverageSamples = 4;
+
+    /** 칸 배치 기준 판으로 인정하는 윗면 (법선 Z). 지붕 같은 경사면은 기준이 되지 않는다 */
+    constexpr float GridBoardMinNormalZ = 0.95f;
 
     /** bRequiresFoundationBelow: 피스 중심 아래 이 깊이까지 anchor(토대)를 찾는다. 2층 천장은 1층 천장을 지나 토대를 찾는다 */
     constexpr float FoundationSearchDepth = 2000.f;
 
     /** [Client] 고스트가 움직이는 동안의 최소 검증 간격. 클릭 순간에는 ConfirmPlacement 가 따로 검증한다 */
     constexpr double PreviewMovingValidateInterval = 0.05;
+    
+    /** [Client] 발리스타 조준을 서버로 보내는 최소 간격 (다른 플레이어에게 보이는 용도, 바뀌었을 때만) */
+    constexpr double BallistaAimSendInterval = 0.1;
+    
+    /** [Client] 조준이 그대로여도 이 간격마다 다시 보낸다 — Unreliable 이라 마지막 패킷을 잃으면 다른 화면의 총신이 이전 각도에 멈춘다 */
+    constexpr double BallistaAimRefreshInterval = 0.5;
 
-    /** [Server] 요청 간격 제한. 받을 때마다 NextAllowedTime 을 Interval 씩 누적한다 —
-     *  지터로 일찍 온 요청(Interval 의 절반까지)은 받되, 아무리 빨리 보내도 평균 간격은 Interval */
-    bool ConsumeRequestSlot(double& NextAllowedTime, double Now, double Interval)
-    {
-        if (Now < NextAllowedTime - Interval * 0.5) return false;
-        NextAllowedTime = FMath::Max(NextAllowedTime, Now) + Interval;
-        return true;
-    }
+    /** [Server] 조준 요청을 받는 최소 간격. 보내는 간격의 절반이라 지터로 몰려 온 정상 패킷은 거의 버리지 않는다 */
+    constexpr double BallistaAimAcceptInterval = BallistaAimSendInterval * 0.5;
+
+    /** [Server] 한 조작자의 발사 요청 최소 간격. 장전 시간(2초)보다 훨씬 짧아 정상 발사는 걸리지 않는다 */
+    constexpr double BallistaFireRequestInterval = 0.25;
+
+    /** 발리스타 카메라 ↔ 캐릭터 시야 전환 시간 (초) */
+    constexpr float BallistaViewBlendTime = 0.3f;
     
     UClass* ResolvePieceClass(const UFEBuildPieceDefinition* Piece)
     {
@@ -141,7 +165,8 @@ namespace
 
     /**
      * 아래로 트레이스해 놓일 표면을 찾는다. 지형(WorldStatic/WorldDynamic)이 기본이고,
-     * bIncludeStructures 면 완성된 구조물(BuildPiece)도 표면으로 인정한다 (가구를 토대·천장 위에 놓을 때).
+     * bIncludeStructures 면 구조물(소켓 있는 BuildPiece — 토대·천장)도 표면으로 인정한다 (가구·함정을 그 위에 놓을 때).
+     * 가구·함정(소켓 없는 피스)은 표면이 아니다 — 그 위로 올라타 쌓이거나, 옆 함정 모서리에 코너가 걸려 들뜨지 않게
      */
     bool TraceSurface(const UWorld* World, const FVector& Point, float Slack, const AActor* IgnoreActor, bool bIncludeStructures, FHitResult& OutHit)
     {
@@ -153,9 +178,22 @@ namespace
             SurfaceTypes.AddObjectTypesToQuery(ECC_FEBuildPiece);
         }
 
+        // 오브젝트 타입 멀티 트레이스는 맞은 것을 전부(가까운 순) 돌려준다 → 위에서부터 첫 "표면"을 고른다
         const FVector Offset(0.f, 0.f, Slack);
         FCollisionQueryParams Params(SCENE_QUERY_STAT(FEBuildGround), false, IgnoreActor);
-        return World->LineTraceSingleByObjectType(OutHit, Point + Offset, Point - Offset, SurfaceTypes, Params);
+        TArray<FHitResult> Hits;
+        World->LineTraceMultiByObjectType(Hits, Point + Offset, Point - Offset, SurfaceTypes, Params);
+        for (const FHitResult& Hit : Hits)
+        {
+            const AFEBuildPiece* Piece = Cast<AFEBuildPiece>(Hit.GetActor());
+            const bool bIsAttachment = Piece != nullptr && Piece->GetDefinition() != nullptr && Piece->GetDefinition()->Sockets.IsEmpty();
+            if (!bIsAttachment)
+            {
+                OutHit = Hit;
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 바닥 4코너의 로컬 위치 (Z = 메시 하단) */
@@ -165,6 +203,96 @@ namespace
         OutCorners[1] = FVector(LocalBounds.Max.X, LocalBounds.Min.Y, LocalBounds.Min.Z);
         OutCorners[2] = FVector(LocalBounds.Min.X, LocalBounds.Max.Y, LocalBounds.Min.Z);
         OutCorners[3] = FVector(LocalBounds.Max.X, LocalBounds.Max.Y, LocalBounds.Min.Z);
+    }
+    
+    /** 바닥면을 CoverageSamples×CoverageSamples 칸으로 나눈 각 칸 중앙 아래 Slack 안에 표면이 있는 비율 (0~1) */
+    float GetSupportCoverage(const UWorld* World, const FBox& LocalBounds, const FTransform& Transform, float Slack, const AActor* IgnoreActor, bool bIncludeStructures)
+    {
+        int32 Hits = 0;
+        for (int32 IndexX = 0; IndexX < CoverageSamples; ++IndexX)
+        {
+            for (int32 IndexY = 0; IndexY < CoverageSamples; ++IndexY)
+            {
+                const FVector LocalPoint(
+                    FMath::Lerp(LocalBounds.Min.X, LocalBounds.Max.X, (IndexX + 0.5f) / CoverageSamples),
+                    FMath::Lerp(LocalBounds.Min.Y, LocalBounds.Max.Y, (IndexY + 0.5f) / CoverageSamples),
+                    LocalBounds.Min.Z);
+                FHitResult SurfaceHit;
+                if (TraceSurface(World, Transform.TransformPosition(LocalPoint), Slack, IgnoreActor, bIncludeStructures, SurfaceHit))
+                {
+                    ++Hits;
+                }
+            }
+        }
+        return static_cast<float>(Hits) / (CoverageSamples * CoverageSamples);
+    }
+
+    /**
+     * 칸 배치(GridCellSize > 0) 피스의 위치·회전을 칸에 맞춘다. 칸 크기는 DA 값이고 메시 크기와 무관하다.
+     * 1) 커서가 평평한 구조물(소켓 있는 피스 — 토대·천장) 윗면 → 그 판을 칸으로 나눈 칸 중앙 (판 밖으로 나가지 않음)
+     * 2) 아니면 SnapRadius 안 가장 가까운 칸 배치 피스 → 거기서 칸 단위로 이어 붙임 (함정끼리 스냅)
+     * 3) 둘 다 없으면 그대로 (자유 배치)
+     * 높이는 이후 표면 맞춤이 정한다. 클라 편의 기능이라 서버는 결과 위치만 검증한다(겹침·지지 면적)
+     */
+    void SnapToGrid(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FHitResult* CursorHit, int32 YawStepOffset, const AActor* IgnoreActor, FVector& InOutLocation, uint8& InOutYawStep)
+    {
+        const double Cell = Piece->GridCellSize;
+        if (Cell < 1.0) return;
+
+        const AFEBuildPiece* Board = CursorHit ? Cast<AFEBuildPiece>(CursorHit->GetActor()) : nullptr;
+        const bool bBoardIsStructure = Board != nullptr && Board->GetDefinition() != nullptr && !Board->GetDefinition()->Sockets.IsEmpty();
+        const UStaticMesh* BoardMesh = bBoardIsStructure ? Board->GetDefinition()->Mesh.Get() : nullptr;
+        const bool bOnFlatBoard = BoardMesh != nullptr && CursorHit->ImpactNormal.Z >= GridBoardMinNormalZ;
+
+        const AFEBuildPiece* Anchor = bOnFlatBoard ? Board : nullptr;
+        if (Anchor == nullptr)
+        {
+            TArray<AFEBuildPiece*> Nearby;
+            UFEBuildingSubsystem::GatherNearbyPieces(World, InOutLocation, UFEBuildingSettings::Get()->SnapRadius, IgnoreActor, Nearby);
+            float BestDistSq = TNumericLimits<float>::Max();
+            for (const AFEBuildPiece* Other : Nearby)
+            {
+                const float DistSq = FVector::DistSquared2D(Other->GetActorLocation(), InOutLocation);
+                if (Other->GetDefinition()->GridCellSize > 0.f && DistSq < BestDistSq)
+                {
+                    BestDistSq = DistSq;
+                    Anchor = Other;
+                }
+            }
+        }
+        if (Anchor == nullptr) return;
+
+        const FTransform AnchorXf = Anchor->GetActorTransform();
+        FVector Local = AnchorXf.InverseTransformPosition(InOutLocation);
+        if (bOnFlatBoard)
+        {
+            // 판 바운드를 칸으로 나눈 칸 중앙. 커서가 판 가장자리 밖이어도 가장자리 칸에 멈춘다
+            const FBox BoardBounds = BoardMesh->GetBoundingBox();
+            const auto SnapToCell = [Cell](double Value, double Min, double Max)
+            {
+                const int32 Count = FMath::Max(1, FMath::FloorToInt((Max - Min) / Cell + 0.01));
+                const int32 Index = FMath::Clamp(FMath::FloorToInt((Value - Min) / Cell), 0, Count - 1);
+                return Min + (Index + 0.5) * Cell;
+            };
+            Local.X = SnapToCell(Local.X, BoardBounds.Min.X, BoardBounds.Max.X);
+            Local.Y = SnapToCell(Local.Y, BoardBounds.Min.Y, BoardBounds.Max.Y);
+        }
+        else
+        {
+            // 기준 피스에서 칸 단위로 이어 붙인다
+            Local.X = FMath::RoundToDouble(Local.X / Cell) * Cell;
+            Local.Y = FMath::RoundToDouble(Local.Y / Cell) * Cell;
+        }
+
+        // 커서가 함정(소켓 없는 피스) 윗면이면 그 높이 대신 기준 피스의 바닥 높이에서 시작한다 —
+        // 안 그러면 고스트가 함정 위에 떠서 "Not enough support" 로 보인다. 최종 높이는 아래 표면 맞춤이 정한다
+        const bool bCursorOnAttachment = Board != nullptr && Board->GetDefinition() != nullptr && !bBoardIsStructure;
+        const double KeepZ = bCursorOnAttachment ? AnchorXf.GetLocation().Z : InOutLocation.Z;
+        InOutLocation = AnchorXf.TransformPosition(Local);
+        InOutLocation.Z = KeepZ;
+
+        // 회전 = 기준 회전 + Q/E 90° 단위. 기준이 15° 단계로 놓였으므로 YawStep 으로 그대로 표현된다
+        InOutYawStep = YawToStep(AnchorXf.Rotator().Yaw + (YawStepOffset % 4) * 90.f);
     }
 
     const FTransform& GetFlip180()
@@ -197,6 +325,7 @@ void UFEBuildingComponent::ToggleBuildMode()
         CancelBuild();
         return;
     }
+    if (MountedBallista != nullptr) return; // 발리스타 조작 중에는 빌드 모드에 들어가지 않는다 (좌클릭·E 는 발리스타 것)
     bIsInBuildMode = true;
     UpdateBuildModeState();
     UE_LOG(LogFEBuilding, Log, TEXT("Build mode on"));
@@ -325,6 +454,17 @@ void UFEBuildingComponent::UpgradePiece()
 
 void UFEBuildingComponent::ToggleBuildMenu()
 {
+    // Tab 이 탄약 UI 를 맡는 경우: 열려 있으면 닫고, 탑승 중이거나(빌드 모드 밖에서) 완성 발리스타를 조준하고 있으면 연다
+    if (bIsAmmoPanel)
+    {
+        CloseStoragePanel();
+        return;
+    }
+    if (AFEBuildBallista* AmmoTarget = FindAmmoPanelTarget())
+    {
+        OpenStoragePanel(AmmoTarget);
+        return;
+    }
     if (bIsMenuOpen)
     {
         CloseBuildMenu();
@@ -476,7 +616,16 @@ void UFEBuildingComponent::OpenStoragePanel(AFEBuildStorage* Storage)
 
     const UFEBuildPieceDefinition* Definition = Storage->GetDefinition();
     GetViewModel()->SetStorageTitle(Definition ? Definition->DisplayName : FText::GetEmpty());
-    GetViewModel()->SetStoragePanelOpen(true);
+    // 발리스타는 전용 탄약 위젯, 그 외는 보관함 패널. 칸 목록(StorageSlots·CarriedSlots)은 같은 것을 쓴다
+    bIsAmmoPanel = Storage->IsA<AFEBuildBallista>();
+    if (bIsAmmoPanel)
+    {
+        GetViewModel()->SetAmmoPanelOpen(true);
+    }
+    else
+    {
+        GetViewModel()->SetStoragePanelOpen(true);
+    }
     
     // 화로면 진행 바 줄을 보이고 점화·진행도 변화를 받는다
     AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(Storage);
@@ -506,6 +655,8 @@ void UFEBuildingComponent::CloseStoragePanel()
     }
     CarriedItems.Reset();
     GetViewModel()->SetStoragePanelOpen(false);
+    GetViewModel()->SetAmmoPanelOpen(false);
+    bIsAmmoPanel = false;
     GetViewModel()->SetStorageSlots(TArray<UObject*>());
     GetViewModel()->SetCarriedSlots(TArray<UObject*>());
     GetViewModel()->SetFurnaceVisible(false);
@@ -561,6 +712,9 @@ void UFEBuildingComponent::RefreshStorageSlots()
     TArray<UObject*> Carried;
     for (const FFEBuildItemCost& Entry : CarriedItems)
     {
+        FText Ignored;
+        if (bIsAmmoPanel && !StorageTarget->AcceptsItem(Entry.ItemTag, Ignored)) continue; // 탄약 위젯은 볼트만 보인다
+        
         for (int32 Left = Entry.Count; Left > 0; Left -= MaxStack)
         {
             UFEItemSlotViewModel* Slot = NewObject<UFEItemSlotViewModel>(GetViewModel());
@@ -592,15 +746,16 @@ void UFEBuildingComponent::ShowNotice(const FText& Text)
 void UFEBuildingComponent::UpdateBuildModeState()
 {
     // 1) State.Building 태그. 빌드 모드 중엔 회전(E)과 상호작용(E)이 같은 키라 상호작용 컴포넌트가 이 태그를 보고 스스로 꺼진다.
-    //    로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
-    UAbilitySystemComponent* ASC = bIsInBuildMode
+    //    발리스타 탑승 중에도 켠다(상호작용 프롬프트 숨김). 로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
+    const bool bWantsTag = bIsInBuildMode || MountedBallista != nullptr;
+    UAbilitySystemComponent* ASC = bWantsTag
         ? UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner())
         : BuildModeTagOwner.Get();
     if (ASC != nullptr)
     {
-        ASC->SetLooseGameplayTagCount(FEBuildingTags::State_Building, bIsInBuildMode ? 1 : 0);
+        ASC->SetLooseGameplayTagCount(FEBuildingTags::State_Building, bWantsTag ? 1 : 0);
     }
-    BuildModeTagOwner = bIsInBuildMode ? ASC : nullptr;
+    BuildModeTagOwner = bWantsTag ? ASC : nullptr;
 
     // 2) 빌드 모드 전용 IMC. 전투 IMC(우선순위 20)보다 높게 넣어 같은 키(좌·우클릭)를 가져온다 → 빌드 모드 중엔 공격이 나가지 않는다.
     //    뺄 때는 넣었던 서브시스템을 쓴다. 폰이 사라지는 EndPlay 에선 컨트롤러를 이미 못 찾을 수 있다.
@@ -816,6 +971,11 @@ void UFEBuildingComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
     {
         UpdatePreview();
     }
+    if (MountedBallista != nullptr)
+    {
+        UpdateBallistaAim();
+        UpdateBallistaHud();
+    }
 }
 
 void UFEBuildingComponent::BeginPlay()
@@ -839,6 +999,11 @@ void UFEBuildingComponent::BeginPlay()
 
 void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    // 탑승 중 폰이 사라지면 시야·입력·태그를 되돌린다 (서버의 발리스타는 조작자 확인 타이머로 내린다)
+    if (MountedBallista != nullptr)
+    {
+        HandleBallistaDismounted(MountedBallista);
+    }
     // 빌드 모드 중 폰이 사라지면 PlayerState 의 ASC 에 태그가 남아 다음 폰의 상호작용이 막힌다
     bIsInBuildMode = false;
     UpdateBuildModeState();
@@ -1014,6 +1179,12 @@ bool UFEBuildingComponent::ComputePlacement(FVector& OutLocation, uint8& OutYawS
     // 피스는 플레이어 방향을 RotationStep 단위로 따라가고, 거기에 Q/E 수동 오프셋을 더한다.
     const float PlayerYaw = Pawn->GetActorRotation().Yaw;
     OutYawStep = YawToStep(PlayerYaw + YawStepOffset * Settings->RotationStepDeg);
+    
+    // 칸 배치 피스(함정): 평평한 구조물 위면 그 판의 칸, 맨땅이면 근처 함정의 칸에 맞춘다. 높이는 아래 표면 맞춤이 정한다
+    if (SelectedPiece != nullptr && SelectedPiece->GridCellSize > 0.f)
+    {
+        SnapToGrid(GetWorld(), SelectedPiece, bHitSomething ? &Hit : nullptr, YawStepOffset, Pawn, OutLocation, OutYawStep);
+    }
 
     // 표면 배치 피스는 4코너 중 가장 높은 표면에 맞춰 올린다. 완만한 경사에서는 낮은 쪽이 떠서(다리) 파묻히지 않는다.
     const UStaticMesh* StaticMesh = SelectedPiece ? SelectedPiece->Mesh.Get() : nullptr;
@@ -1174,7 +1345,8 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
     // 스냅 판정과 지지 예측이 같은 연결 목록을 쓴다
     TArray<AFEBuildPiece*> Connected;
     UFEBuildingSubsystem::FindConnectedPieces(World, Piece, Transform, Instigator, Connected);
-    const bool bIsSnapped = Connected.Num() > 0;
+    // 소켓 없는 피스(가구·방어시설)의 Connected 는 받침이라 "스냅"이 아니다 — 표면 규칙·전체 오버랩 검사를 그대로 받는다
+    const bool bIsSnapped = !Piece->Sockets.IsEmpty() && Connected.Num() > 0;
 
     if (Piece->bRequiresSnap && !bIsSnapped)
     {
@@ -1233,23 +1405,37 @@ bool UFEBuildingComponent::ValidatePlacement(const UWorld* World, const UFEBuild
             }
         }
 
-        // 4코너 모두 MaxGroundHeightDelta 안에 표면이 있어야 한다.
-        FVector Corners[4];
-        GetBottomCorners(LocalBounds, Corners);
-        for (const FVector& Corner : Corners)
+        if (Piece->MinSupportCoverage > 0.f)
         {
-            FHitResult SurfaceHit;
-            if (!TraceSurface(World, Transform.TransformPosition(Corner), Slack, Instigator, Piece->bCanPlaceOnStructure, SurfaceHit))
+            // 바닥 4×4 지점 중 MinSupportCoverage(함정 80%) 이상이 표면에 닿아야 한다 — 토대 가장자리에 반쯤 걸치거나 구멍 위에 놓이지 않게
+            const float Coverage = GetSupportCoverage(World, LocalBounds, Transform, Slack, Instigator, Piece->bCanPlaceOnStructure);
+            if (Coverage < Piece->MinSupportCoverage)
             {
-                return Fail(LOCTEXT("Uneven", "Ground is too uneven"));
+                return Fail(FText::Format(LOCTEXT("NotEnoughSurface", "Not enough surface below ({0}%)"), FText::AsNumber(FMath::RoundToInt(Coverage * 100.f))));
+            }
+        }
+        else
+        {
+            // 4코너 모두 MaxGroundHeightDelta 안에 표면이 있어야 한다.
+            FVector Corners[4];
+            GetBottomCorners(LocalBounds, Corners);
+            for (const FVector& Corner : Corners)
+            {
+                FHitResult SurfaceHit;
+                if (!TraceSurface(World, Transform.TransformPosition(Corner), Slack, Instigator, Piece->bCanPlaceOnStructure, SurfaceHit))
+                {
+                    return Fail(LOCTEXT("Uneven", "Ground is too uneven"));
+                }
             }
         }
     }
 
+    // 소켓 없는 피스(가구·함정)는 맞닿기만 허용(1cm). 구조물은 코너 겹침·소켓 어긋남 허용(22cm)
+    const float SideInset = Piece->Sockets.IsEmpty() ? FreeSideClearance : SideClearance;
     const FVector HalfExtent = LocalBounds.GetExtent();
     const FVector Extent(
-        FMath::Max(1.f, HalfExtent.X - SideClearance),
-        FMath::Max(1.f, HalfExtent.Y - SideClearance),
+        FMath::Max(1.f, HalfExtent.X - SideInset),
+        FMath::Max(1.f, HalfExtent.Y - SideInset),
         FMath::Max(1.f, HalfExtent.Z - FaceClearance));
     const FVector Center = Transform.TransformPosition(LocalBounds.GetCenter());
 
@@ -1453,11 +1639,10 @@ void UFEBuildingComponent::ServerUpgradePiece_Implementation(AFEBuildPiece* Piec
 
 bool UFEBuildingComponent::IsHoldingRepairTool() const
 {
-    // ponytail: 아이템 식별이 FPrimaryAssetId 로 바뀌면 태그 대신 아이템 ID 로 비교
-    const AActor* Owner = GetOwner();
-    const UFE_EquipmentComponent* Equipment = Owner ? Owner->FindComponentByClass<UFE_EquipmentComponent>() : nullptr;
-    const UFE_WeaponItemData* Weapon = Equipment ? Equipment->GetCurrentWeaponData() : nullptr;
-    return Weapon != nullptr && Weapon->HasItemTag(FEBuildingTags::Item_Tool_Hammer);
+    // 망치를 실제로 장착한 동안 서버가 ASC 에 넣는 태그 (망치 DA Template > Equipped Tags). 클라에도 복제된다.
+    // 장비·무기 데이터 구조를 몰라도 되고, 서버 판정과 클라 HUD 가 같은 값을 본다
+    const UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner());
+    return ASC != nullptr && ASC->HasMatchingGameplayTag(FallenEraCombatGameplayTags::Equipment_Weapon_Hammer);
 }
 
 UAnimMontage* UFEBuildingComponent::GetToolMontage(FGameplayTag InputTag) const
@@ -1492,12 +1677,12 @@ bool UFEBuildingComponent::TrySwingTool(FGameplayTag InputTag)
 bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
 {
     // 속도 제한이 가장 먼저 — 도구 없이 보내는 요청도 거절 로그·안내 RPC 를 간격당 한 번만 만든다
-    if (!ConsumeRequestSlot(NextRepairAllowedTime, GetWorld()->GetTimeSeconds(), UFEBuildingSettings::Get()->RepairInterval))
+    if (!FEBuilding::ConsumeRequestSlot(NextRepairAllowedTime, GetWorld()->GetTimeSeconds(), UFEBuildingSettings::Get()->RepairInterval))
     {
         return false;
     }
 
-    // GA 는 LocalOnly 라 클라에서만 돈다. 지금 망치를 들고 있는지는 서버가 장비 상태로 다시 확인한다
+    // GA 는 LocalOnly 라 클라에서만 돈다. 지금 망치를 들고 있는지는 서버가 ASC 장착 태그로 다시 확인한다
     if (!IsHoldingRepairTool())
     {
         const FText Reason = LOCTEXT("RepairNoTool", "수리 도구를 들고 있어야 합니다");
@@ -1558,6 +1743,217 @@ void UFEBuildingComponent::UpdateAimedPiece()
     }
 
     GetViewModel()->SetAimedPiece(Piece->GetDefinition()->DisplayName, Percent, RepairText, UpgradeText);
+}
+
+void UFEBuildingComponent::ExitBallista()
+{
+    if (MountedBallista != nullptr)
+    {
+        ServerExitBallista(MountedBallista);
+    }
+}
+
+void UFEBuildingComponent::FireBallista()
+{
+    const APawn* Pawn = Cast<APawn>(GetOwner());
+    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    if (MountedBallista == nullptr || PlayerController == nullptr) return;
+
+    // 장전 중 — HUD 가 이미 "장전 중"을 보여 준다. 발리스타의 리플리케이트 값이라 누가 쐈든, 어느 발리스타로 옮겨 탔든 맞다
+    if (MountedBallista->IsReloading()) return;
+
+    if (MountedBallista->GetAmmoCount() <= 0)
+    {
+        ShowNotice(LOCTEXT("BallistaNoAmmo", "탄약이 없습니다 (Tab: 탄약)"));
+        return;
+    }
+
+    // 지금 화면의 조준(정밀값)으로 보낸다. 장전 시작은 서버가 정해 리플리케이트한다 —
+    // 클라 예측이 없어서 서버가 거절해도 클라 장전이 따로 돌지 않는다 (응답 전 연타는 서버 요청 간격 제한이 버린다)
+    const FVector2D Aim = MountedBallista->ApplyLocalAim(PlayerController->GetControlRotation());
+    ServerFireBallista(MountedBallista, Aim.X, Aim.Y);
+}
+
+void UFEBuildingComponent::HandleBallistaMounted(AFEBuildBallista* Ballista)
+{
+    APawn* Pawn = Cast<APawn>(GetOwner());
+    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    if (Ballista == nullptr || PlayerController == nullptr || !Pawn->IsLocallyControlled()) return;
+
+    CancelBuild(); // 탑승 전에 열려 있던 빌드 모드·메뉴 정리
+    MountedBallista = Ballista;
+
+    // 이동 잠금. 서버도 같은 처리를 한다 — 소유 클라의 예측이 서버와 어긋나 위치 보정이 생기지 않게
+    AFEBuildBallista::LockOperatorMovement(Cast<ACharacter>(Pawn));
+
+    // 시야를 발리스타 카메라로, 조준은 정면에서 시작
+    PlayerController->SetViewTargetWithBlend(Ballista, BallistaViewBlendTime);
+    PlayerController->SetControlRotation(FRotator(0.f, Ballista->GetActorRotation().Yaw, 0.f));
+
+    // 발리스타 입력(좌클릭 발사·E/우클릭 내림). IMC 가 아직 로드 전이면 발리스타의 로드 완료 콜백이 다시 부른다
+    AddBallistaInput();
+
+    UpdateBuildModeState();        // State.Building → 상호작용 프롬프트 끔
+    SetComponentTickEnabled(true); // 조준 추종
+    LastAimSendTime = -1.0;
+    LastHudAmmo = -1; // 다음 틱에 탄약 HUD 를 무조건 그린다
+    UE_LOG(LogFEBuilding, Log, TEXT("%s mounted %s"), *GetNameSafe(Pawn), *Ballista->GetName());
+}
+
+void UFEBuildingComponent::HandleBallistaDismounted(AFEBuildBallista* Ballista)
+{
+    if (MountedBallista == nullptr) return;
+    MountedBallista = nullptr;
+
+    APawn* Pawn = Cast<APawn>(GetOwner());
+    AFEBuildBallista::UnlockOperatorMovement(Cast<ACharacter>(Pawn)); // 탑승 잠금만 푼다 — 탑승 중 사망했으면 HT 사망 처리의 잠금이 그대로 남는다
+    if (APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr)
+    {
+        PlayerController->SetViewTargetWithBlend(Pawn, BallistaViewBlendTime);
+    }
+
+    // 넣었던 서브시스템에서 뺀다. 발리스타가 부서지는 중이어도 EndPlay 동안은 유효하다
+    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = BallistaInputOwner.Get();
+    UInputMappingContext* MappingContext = Ballista ? Ballista->GetMappingContext() : nullptr;
+    if (InputSubsystem != nullptr && MappingContext != nullptr)
+    {
+        InputSubsystem->RemoveMappingContext(MappingContext);
+    }
+    BallistaInputOwner = nullptr;
+
+    if (bIsAmmoPanel && StorageTarget == Ballista)
+    {
+        CloseStoragePanel();
+    }
+    GetViewModel()->SetBallistaHud(false, FText::GetEmpty());
+    UpdateBuildModeState();
+    SetComponentTickEnabled(bIsInBuildMode);
+    UE_LOG(LogFEBuilding, Log, TEXT("%s dismounted %s"), *GetNameSafe(Pawn), *GetNameSafe(Ballista));
+}
+
+void UFEBuildingComponent::AddBallistaInput()
+{
+    // 탑승 중이고 아직 안 넣었을 때만 — 탑승 때와 IMC 로드 완료 때 두 번 불려도 한 번만 들어간다
+    if (MountedBallista == nullptr || BallistaInputOwner.IsValid()) return;
+
+    const APawn* Pawn = Cast<APawn>(GetOwner());
+    const APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = PlayerController
+        ? ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer())
+        : nullptr;
+    UInputMappingContext* MappingContext = MountedBallista->GetMappingContext();
+    if (InputSubsystem != nullptr && MappingContext != nullptr)
+    {
+        // 전투(20)·빌드 모드(30)보다 높은 우선순위로 같은 키를 가져온다 → 개인 무기가 나가지 않는다
+        InputSubsystem->AddMappingContext(MappingContext, MountedBallista->GetMappingPriority());
+        BallistaInputOwner = InputSubsystem;
+    }
+}
+
+void UFEBuildingComponent::UpdateBallistaAim()
+{
+    const APawn* Pawn = Cast<APawn>(GetOwner());
+    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    if (PlayerController == nullptr || MountedBallista == nullptr) return;
+
+    // 범위로 자른 각도를 머리에 바로 적용하고, 컨트롤 회전도 그 범위로 되돌린다 — 마우스가 한계 밖으로 쌓이면 돌아올 때 멈춘 것처럼 느껴진다
+    const FVector2D Aim = MountedBallista->ApplyLocalAim(PlayerController->GetControlRotation());
+    PlayerController->SetControlRotation(FRotator(Aim.Y, MountedBallista->GetActorRotation().Yaw + Aim.X, 0.f));
+
+    // 다른 플레이어용: 바뀌었으면 BallistaAimSendInterval 이하 빈도로, 그대로여도 BallistaAimRefreshInterval 마다 다시 보낸다
+    const int8 Yaw = static_cast<int8>(FMath::RoundToInt(Aim.X)); // MaxYaw ≤ 127 이라 int8 안에 들어간다
+    const int8 Pitch = static_cast<int8>(FMath::RoundToInt(Aim.Y));
+    const double Now = GetWorld()->GetTimeSeconds();
+    const double SinceLastSend = Now - LastAimSendTime;
+    const bool bChanged = Yaw != LastSentAimYaw || Pitch != LastSentAimPitch;
+    const bool bSendDue = LastAimSendTime < 0.0 || (bChanged && SinceLastSend >= BallistaAimSendInterval) || SinceLastSend >= BallistaAimRefreshInterval;
+    if (bSendDue)
+    {
+        LastSentAimYaw = Yaw;
+        LastSentAimPitch = Pitch;
+        LastAimSendTime = Now;
+        ServerSetBallistaAim(MountedBallista, Yaw, Pitch);
+    }
+}
+
+void UFEBuildingComponent::UpdateBallistaHud()
+{
+    if (MountedBallista == nullptr) return;
+
+    const int32 AmmoCount = MountedBallista->GetAmmoCount();
+    const bool bReloading = MountedBallista->IsReloading();
+    if (AmmoCount == LastHudAmmo && bReloading == bLastHudReloading) return; // 바뀐 게 없으면 뷰모델 알림을 보내지 않는다
+
+    LastHudAmmo = AmmoCount;
+    bLastHudReloading = bReloading;
+    const FText AmmoText = FText::Format(LOCTEXT("BallistaHud", "{0} {1} / {2}"),
+        MountedBallista->GetSlotLabel(0), FText::AsNumber(AmmoCount), FText::AsNumber(MountedBallista->GetMaxStackSize()));
+    GetViewModel()->SetBallistaHud(true, bReloading
+        ? FText::Format(LOCTEXT("BallistaHudReloading", "{0} · 장전 중"), AmmoText)
+        : AmmoText);
+}
+
+AFEBuildBallista* UFEBuildingComponent::FindAmmoPanelTarget() const
+{
+    if (MountedBallista != nullptr) return MountedBallista;
+    if (bIsInBuildMode) return nullptr; // 빌드 모드의 Tab 은 빌드 메뉴
+
+    AFEBuildBallista* Aimed = Cast<AFEBuildBallista>(FindPieceUnderCrosshair());
+    return Aimed != nullptr && Aimed->GetState() == EFEBuildPieceState::Built ? Aimed : nullptr;
+}
+
+bool UFEBuildingComponent::ServerExitBallista_Validate(AFEBuildBallista* Ballista)
+{
+    return true; // nullptr·남의 발리스타는 Implementation 에서 무시 (킥할 일은 아니다)
+}
+
+void UFEBuildingComponent::ServerExitBallista_Implementation(AFEBuildBallista* Ballista)
+{
+    // 조작자 본인만 내릴 수 있다
+    if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
+    {
+        Ballista->SetOperator(nullptr);
+    }
+}
+
+bool UFEBuildingComponent::ServerSetBallistaAim_Validate(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch)
+{
+    return true;
+}
+
+void UFEBuildingComponent::ServerSetBallistaAim_Implementation(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch)
+{
+    // 간격 제한이 가장 먼저 — 조작된 클라가 쏟아 보내도 처리량이 정해진다. 정상 클라는 이 간격의 2배로 보낸다
+    // (몰려 와서 하나를 버려도 0.5초 재전송으로 다시 맞춰진다)
+    if (!FEBuilding::ConsumeRequestSlot(NextAimRequestTime, GetWorld()->GetTimeSeconds(), BallistaAimAcceptInterval)) return;
+
+    // 조작자만. 범위는 발리스타가 다시 자른다
+    if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
+    {
+        Ballista->SetReplicatedAim(Yaw, Pitch);
+    }
+}
+
+bool UFEBuildingComponent::ServerFireBallista_Validate(AFEBuildBallista* Ballista, float Yaw, float Pitch)
+{
+    return FMath::IsFinite(Yaw) && FMath::IsFinite(Pitch); // NaN·무한대는 조작된 패킷. 범위는 발리스타가 자른다
+}
+
+void UFEBuildingComponent::ServerFireBallista_Implementation(AFEBuildBallista* Ballista, float Yaw, float Pitch)
+{
+    // 간격 제한이 가장 먼저 (수리와 같은 이유) — 빈 발리스타 연타 같은 요청도 거절 로그·안내가 이 간격당 1번.
+    // 장전(발리스타별 ReloadTime)과는 별개라 정상 발사는 걸리지 않는다
+    if (!FEBuilding::ConsumeRequestSlot(NextFireRequestTime, GetWorld()->GetTimeSeconds(), BallistaFireRequestInterval)) return;
+
+    // 조작자 본인만
+    if (Ballista == nullptr || Ballista->GetOperator() != GetOwner()) return;
+
+    FText Reason;
+    if (!Ballista->TryFire(Cast<APawn>(GetOwner()), Yaw, Pitch, Reason) && !Reason.IsEmpty())
+    {
+        UE_LOG(LogFEBuilding, Log, TEXT("Fire rejected: %s"), *Reason.ToString());
+        ClientShowNotice(Reason);
+    }
 }
 
 void UFEBuildingComponent::ClientShowNotice_Implementation(const FText& Text)
@@ -1692,7 +2088,7 @@ bool FFEBuildRequestRateLimitTest::RunTest(const FString& Parameters)
     int32 Accepted = 0;
     for (int32 Step = 0; Step < 34; ++Step)
     {
-        Accepted += ConsumeRequestSlot(NextAllowed, Step * 0.3, Interval) ? 1 : 0;
+        Accepted += FEBuilding::ConsumeRequestSlot(NextAllowed, Step * 0.3, Interval) ? 1 : 0;
     }
     TestTrue(FString::Printf(TEXT("spam held to the average interval (accepted %d)"), Accepted), Accepted >= 16 && Accepted <= 18);
 
@@ -1701,7 +2097,7 @@ bool FFEBuildRequestRateLimitTest::RunTest(const FString& Parameters)
     const double Jitter[] = { 0.0, 0.1, -0.1, 0.05, -0.1, 0.1, -0.1 };
     for (int32 Index = 0; Index < UE_ARRAY_COUNT(Jitter); ++Index)
     {
-        TestTrue(FString::Printf(TEXT("click %d accepted"), Index), ConsumeRequestSlot(NextAllowed, Index * Interval + Jitter[Index], Interval));
+        TestTrue(FString::Printf(TEXT("click %d accepted"), Index), FEBuilding::ConsumeRequestSlot(NextAllowed, Index * Interval + Jitter[Index], Interval));
     }
     return true;
 }

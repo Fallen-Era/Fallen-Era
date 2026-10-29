@@ -36,17 +36,18 @@ public:
     /** Point 반경 Radius 안의 배치된 피스들 (프리뷰는 NoCollision 이라 제외됨) */
     static void GatherNearbyPieces(const UWorld* World, const FVector& Point, float Radius, const AActor* IgnoreActor, TArray<AFEBuildPiece*>& OutPieces);
 
-    /** Transform 에 놓인 Piece 의 "붙는 쪽" 소켓과 5cm 이내에서 마주 보는 소켓을 가진 피스들 */
+    /** Transform 에 놓인 Piece 의 "붙는 쪽" 소켓과 5cm 이내에서 마주 보는 소켓을 가진 피스들.
+     *  소켓 없는 피스(가구·방어시설)는 바닥면 바로 아래(±25cm)에서 받치고 있는 피스들 — 받침이 무너지면 같이 무너진다 */
     static void FindConnectedPieces(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* IgnoreActor, TArray<AFEBuildPiece*>& OutConnected);
     
     /** 이웃들로부터 예측한 지지 거리. bIsAnchor 면 0. bBuiltOnly: 완성 이웃의 SupportDistance 만 / 모든 이웃의 DesignSupportDistance */
     static uint8 PredictSupportDistance(const UFEBuildPieceDefinition* Piece, bool bIsAnchor, const TArray<AFEBuildPiece*>& Connected, bool bBuiltOnly);
 
-    /** Transform 에 놓인 Piece 가 지지의 출발점(anchor)인가. 땅 피스 중 토대(지지 비용 0)·소켓 없는 가구는 항상,
-     *  소켓으로도 붙는 땅 피스(계단)는 바닥면이 실제 지면(WorldStatic/WorldDynamic)에 닿아 있을 때만. 배치 예측과 지지 재계산이 같이 쓴다 */
+    /** Transform 에 놓인 Piece 가 지지의 출발점(anchor)인가. 토대(소켓 있고 지지 비용 0)는 항상,
+     *  그 외 땅 피스(계단·가구·방어시설)는 바닥면이 실제 지면(WorldStatic/WorldDynamic)에 닿아 있을 때만. 배치 예측과 지지 재계산이 같이 쓴다 */
     static bool IsAnchorAt(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* IgnoreActor);
 
-    /** Distance 가 이 피스 재료의 최대 지지 거리 이내인가 */
+    /** Distance 가 이 피스 재료의 최대 지지 거리 이내인가. 소켓 없는 피스(가구·방어시설)는 받침에 닿기만 하면 된다(재질 한계 없음) */
     static bool IsSupported(const UFEBuildPieceDefinition* Piece, uint8 Distance);
 
     /** [Server Only] 청사진이 지금 완성될 수 있는가 — 완성된 이웃만으로 지지되는가 */

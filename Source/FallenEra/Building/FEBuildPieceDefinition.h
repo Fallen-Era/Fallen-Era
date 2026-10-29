@@ -116,6 +116,17 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (EditCondition = "bCanPlaceOnGround", ClampMin = 0))
     float MaxGroundHeightDelta = 50.f;
 	
+	/** 함정처럼 칸으로 깔리는 피스의 칸 크기(cm). 0 이면 칸 배치 안 함 (함정 200).
+	 *  칸은 메시 크기와 무관하다 — 메시는 칸보다 작아도 되고, 피벗이 바닥 가운데면 칸 중앙에 놓인다 (나중에 들어올 아트 메시 대비).
+	 *  평평한 구조물(토대·천장) 위에서는 그 판의 칸에, 맨땅에서는 근처(SnapRadius) 칸 배치 피스에 이어 붙는다. 회전은 기준 + Q/E 90° */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (EditCondition = "bCanPlaceOnGround", ClampMin = 0))
+	float GridCellSize = 0.f;
+
+	/** 바닥 4×4 지점 중 이 비율 이상이 MaxGroundHeightDelta 안에서 표면에 닿아야 배치 가능 (함정 0.8).
+	 *  0 이면 기존 규칙(바닥 4코너 모두) — 가구는 0 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FallenEra|Building|Placement", meta = (EditCondition = "bCanPlaceOnGround", ClampMin = 0, ClampMax = 1))
+	float MinSupportCoverage = 0.f;
+	
 	/** 소켓 배치 때 "같은 자리 중복" 검사 상자 = 바운드 × 이 값.
 	 *  0 이면 상자 대신 피벗 비교 — 새 피벗 5cm 안에 다른 피스의 피벗이 있으면 중복 (같은 소켓 두 번, 반대 방향 포함).
 	 *  직각 삼각 벽처럼 바운드 중심이 모양 밖이라 어떤 크기로 줄여도 위에 얹힌 피스에 닿는 경우에 쓴다 */

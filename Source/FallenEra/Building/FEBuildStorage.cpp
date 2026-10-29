@@ -16,6 +16,9 @@ void AFEBuildStorage::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 int32 AFEBuildStorage::StoreItems(FGameplayTag ItemTag, int32 Count)
 {
 	if (!HasAuthority() || !ItemTag.IsValid() || Count <= 0) return 0;
+	
+	FText Reason;
+	if (!AcceptsItem(ItemTag, Reason)) return 0; // 서버 재검증 — 발리스타(볼트만)처럼 종류가 정해진 칸. 일반 보관함은 항상 통과
 
 	int32 Remaining = Count;
 

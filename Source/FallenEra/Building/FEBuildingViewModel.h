@@ -12,12 +12,13 @@
 
 class UFEBuildingComponent;
 
-/** 빌드 메뉴 탭. 건설 = 구조물(재질 사슬의 시작만), 가구 = 그 외(가구·방어시설) */
+/** 빌드 메뉴 탭. 건설 = 구조물(재질 사슬의 시작만), 가구 = 가구, 방어 = 방어시설(카테고리 Build.Piece.Defense — 함정·발리스타) */
 UENUM(BlueprintType)
 enum class EFEBuildMenuTab : uint8
 {
 	Construction,
-	Furniture
+	Furniture,
+	Defense
 };
 
 /** 빌드 메뉴의 피스 1줄. ListView 엔트리 위젯(WBP_PieceEntry)의 뷰모델 */
@@ -165,6 +166,7 @@ public:
 	void SetSupplyHint(const FText& InHint); /** 투입 패널 안내 문구 ("재료를 하나 골라 넣으세요" / "다른 재료로 바꾸려면 철거하세요 ...") */
     void SetSupplyRows(const TArray<UObject*>& InRows);
 	void SetStoragePanelOpen(bool bInOpen);
+	void SetAmmoPanelOpen(bool bInOpen); /** 발리스타 전용 탄약 위젯 열기/닫기. 보관함 패널과 같은 칸 목록을 쓰고 보이는 위젯만 다르다 */
 	void SetStorageTitle(const FText& InTitle);
 	void SetStorageSlots(const TArray<UObject*>& InSlots);
 	void SetCarriedSlots(const TArray<UObject*>& InSlots);
@@ -178,8 +180,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
 	void SelectFurnitureTab();
 	
+	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
+	void SelectDefenseTab();
+	
 	/** 망치로 조준한 완성 피스. InName 이 비면 숨김. InHealthPercent 0~1. InUpgrade 가 비면 업그레이드 줄 숨김 */
 	void SetAimedPiece(const FText& InName, float InHealthPercent, const FText& InRepairCost, const FText& InUpgrade);
+	
+	/** 발리스타 탑승 중 HUD (탄약 텍스트 + 조준점). bInVisible 이 false 면 숨김 */
+	void SetBallistaHud(bool bInVisible, const FText& InText);
 
 	/** [Client Only] 화로 "불 켜기/끄기" 버튼 */
 	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|UI")
@@ -235,6 +243,19 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
 	FText StorageTitle;
+	
+	/** 발리스타 전용 탄약 패널(WBP_BuildHud 의 AmmoPanel). StorageSlots(탄약 칸)·CarriedSlots(내 볼트)·StorageTitle 을 보관함 패널과 같이 쓴다.
+	 *  닫기 버튼은 CloseStoragePanel 을 그대로 쓴다 */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	ESlateVisibility AmmoPanelVisibility = ESlateVisibility::Collapsed;
+	
+	/** 발리스타 탑승 중에만 보이는 HUD (탄약 텍스트 + 화면 중앙 조준점) */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	ESlateVisibility BallistaHudVisibility = ESlateVisibility::Collapsed;
+
+	/** "볼트 18 / 20" · 장전 중이면 "볼트 18 / 20 · 장전 중" */
+	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
+	FText BallistaHudText;
 
 	/** 보관함 칸 (UFEItemSlotViewModel). 항상 Capacity 개. 빈 칸 포함 */
 	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")

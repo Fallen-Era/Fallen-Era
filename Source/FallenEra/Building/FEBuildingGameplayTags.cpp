@@ -12,6 +12,8 @@ namespace FEBuildingTags
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Build_Demolish,    "Ability.Input.Build.Demolish",  "X. 조준 피스 철거");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Build_Menu,        "Ability.Input.Build.Menu",      "Tab. 빌드 메뉴 열기/닫기 (빌드 모드 밖에서 누르면 진입)");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Interact,          "Ability.Input.Interact",        "E. 조준/근접 IFEInteractable 과 상호작용. 팀 공용 후보");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Ballista_Exit,     "Ability.Input.Ballista.Exit",   "E·우클릭 (발리스타 탑승 중). 내리기");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Ballista_Fire,     "Ability.Input.Ballista.Fire",   "좌클릭 (발리스타 탑승 중). 발사");
     
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Building,                  "State.Building",                "빌드 모드 중 (로컬). 상호작용 등이 이 태그로 스스로 꺼진다");
 
@@ -44,6 +46,10 @@ namespace FEBuildingTags
     
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Food_RawMeat,               "Item.Food.RawMeat",        "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Food_CookedMeat,            "Item.Food.CookedMeat",     "TEMP (KJH). 아이템 담당이 Item.* 를 정의하면 제거");
+    
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_MetalScrap,        "Item.Resource.MetalScrap", "TEMP (KJH). 철조망 재료. 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Resource_Rope,              "Item.Resource.Rope",       "TEMP (KJH). 발리스타 재료. 아이템 담당이 Item.* 를 정의하면 제거");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Ammo_Bolt,                  "Item.Ammo.Bolt",           "TEMP (KJH). 발리스타 탄약. 아이템 담당이 Item.* 를 정의하면 제거");
     
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Tool_Hammer,                "Item.Tool.Hammer", "수리 도구 (임시. 아이템 시스템이 오면 교체)");
 }
