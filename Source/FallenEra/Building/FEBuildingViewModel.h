@@ -10,7 +10,7 @@
 #include "Styling/SlateBrush.h"
 #include "FEBuildingViewModel.generated.h"
 
-class UFEBuildingComponent;
+class UFEBuildHudComponent;
 
 /** 빌드 메뉴 탭. 건설 = 구조물(재질 사슬의 시작만), 가구 = 가구, 방어 = 방어시설(카테고리 Build.Piece.Defense — 함정·발리스타) */
 UENUM(BlueprintType)
@@ -28,7 +28,7 @@ class FALLENERA_API UFEBuildPieceEntryViewModel : public UMVVMViewModelBase
 	GENERATED_BODY()
 
 public:
-	void Initialize(UFEBuildingComponent* InComponent, FPrimaryAssetId InPieceId, const FText& InDisplayName);
+	void Initialize(UFEBuildHudComponent* InComponent, FPrimaryAssetId InPieceId, const FText& InDisplayName);
 	void SetSelected(bool bInSelected);
 
 	/** [Client Only] 엔트리 버튼 클릭 → 컴포넌트에 선택 요청 */
@@ -45,7 +45,7 @@ public:
 	bool bSelected = false;
 
 private:
-	TWeakObjectPtr<UFEBuildingComponent> Component;
+	TWeakObjectPtr<UFEBuildHudComponent> Component;
 	
 };
 
@@ -57,7 +57,7 @@ class FALLENERA_API UFESupplyRowViewModel : public UMVVMViewModelBase
 
 public:
 	/** InVariantName: 재질 미정 패널에서 "돌 벽" 같은 변형 이름 (비우면 이름 없이 재료만). bInShowOr: 이 줄 위에 "또는" 표시 */
-	void Initialize(UFEBuildingComponent* InComponent, FGameplayTag InItemTag, const FText& InItemName, const FText& InVariantName, bool bInShowOr);
+	void Initialize(UFEBuildHudComponent* InComponent, FGameplayTag InItemTag, const FText& InItemName, const FText& InVariantName, bool bInShowOr);
 
 	/** InCarried: 클라 소지품 스냅샷 기준 보유량. 0 이면 버튼 비활성 */
 	void SetCounts(int32 InSupplied, int32 InRequired, int32 InCarried);
@@ -85,7 +85,7 @@ public:
 	ESlateVisibility OrVisibility = ESlateVisibility::Collapsed;
 
 private:
-    TWeakObjectPtr<UFEBuildingComponent> Component;
+    TWeakObjectPtr<UFEBuildHudComponent> Component;
 	
 	/** 라벨 앞에 붙는 변형 이름 ("돌 벽"). 비어 있으면 생략 */
 	FText VariantName;
@@ -102,7 +102,7 @@ class FALLENERA_API UFEItemSlotViewModel : public UMVVMViewModelBase
 
 public:
 	/** bInIsStorageSlot: 보관함 칸이면 true. InSlotIndex: 보관함 칸 번호 (소지품 칸은 INDEX_NONE) */
-	void Initialize(UFEBuildingComponent* InComponent, bool bInIsStorageSlot, int32 InSlotIndex);
+	void Initialize(UFEBuildHudComponent* InComponent, bool bInIsStorageSlot, int32 InSlotIndex);
 	void SetItem(FGameplayTag InItemTag, int32 InCount);
 	
 	/** EmptyLabel 이 있으면 빈 칸 가운데에 표시 (화로의 "연료/재료/결과") */
@@ -140,14 +140,14 @@ public:
 	bool bIsFilled = false;
 
 private:
-	TWeakObjectPtr<UFEBuildingComponent> Component;
+	TWeakObjectPtr<UFEBuildHudComponent> Component;
 	bool bIsStorageSlot = false;
 	int32 SlotIndex = INDEX_NONE;
 	int32 Count = 0;
 };
 
 /**
- * 건설 HUD 뷰모델. UFEBuildingComponent 가 소유하고 갱신한다. WBP_BuildHud 가 바인딩.
+ * 건설 HUD 뷰모델. UFEBuildHudComponent 가 소유하고 갱신한다. WBP_BuildHud 가 바인딩.
  * Visibility 를 직접 노출한다 — bool→Visibility 변환 함수를 위젯마다 다는 것보다 단순.
  */
 UCLASS(BlueprintType)
@@ -309,5 +309,5 @@ public:
 	UPROPERTY(BlueprintReadOnly, FieldNotify, Category = "FallenEra|Building|UI")
 	ESlateVisibility UpgradeVisibility = ESlateVisibility::Collapsed;
 
-    TWeakObjectPtr<UFEBuildingComponent> Component;
+    TWeakObjectPtr<UFEBuildHudComponent> Component;
 };
