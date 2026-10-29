@@ -11,21 +11,18 @@
 
 class UAbilitySystemComponent;
 class UAnimMontage;
-enum class EFEBuildMenuTab : uint8;
 class UEnhancedInputLocalPlayerSubsystem;
 class UInputMappingContext;
-class AFEBuildFurnace;
-class AFEBuildStorage;
-class AFEBuildBallista;
-class UFEBuildingViewModel;
 class AFEBuildPiece;
 class UFEBuildPieceDefinition;
 struct FStreamableHandle;
 
 /**
  * 플레이어 캐릭터에 부착. 빌드 모드: 로컬 고스트 프리뷰, 회전, 검증, 그 다음 Server RPC 로 배치 요청.
- * 청사진 재료 투입(F)과 철거(X)도 여기서 서버에 요청한다. 서버는 모든 요청을 재검증한다.
+ * 철거(X)와 망치 수리·업그레이드도 여기서 서버에 요청한다. 서버는 모든 요청을 재검증한다.
  * 입력은 GA_Build_* 어빌리티(Ability.Input.Build.*)가 아래 BlueprintCallable 함수를 호출하는 방식으로 들어오며, 이 컴포넌트는 입력을 직접 바인딩하지 않는다.
+ * HUD·메뉴·패널은 UFEBuildHudComponent 가 맡는다. 이 컴포넌트는 HUD 를 모르고, 상태가 바뀌면 OnBuildStateChangedNative 로 알리기만 한다
+ * (안내 문구는 UFEBuildingSubsystem::ShowLocalNotice).
  */
 UCLASS(ClassGroup = (FallenEra), meta = (BlueprintSpawnableComponent))
 class FALLENERA_API UFEBuildingComponent : public UActorComponent
@@ -70,69 +67,23 @@ public:
     /** 카메라 앞 MaxBuildDistance 안에서 조준 중인 피스. 지형·월드 물체가 먼저 맞으면(벽 너머) nullptr. 프리뷰 고스트는 콜리전이 없어 잡히지 않는다. 디버그 명령도 사용 */
     AFEBuildPiece* FindPieceUnderCrosshair() const;
 
-    /** [Client Only] 빌드 메뉴 열기/닫기 (Tab). 빌드 모드 밖이면 진입하며 연다. */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void ToggleBuildMenu();
-
-    /** [Client Only] 메뉴 닫기 (뷰모델 "닫기" 버튼, 피스 선택 후) */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void CloseBuildMenu();
-    
-    /** [Client Only] 빌드 메뉴 탭 변경 → 그 탭의 피스만 목록에 다시 채운다 */
-    void SelectMenuTab(EFEBuildMenuTab Tab);
-
-    /** [Client Only] 청사진 재료 투입 패널 열기. 같은 피스면 닫는다. AFEBuildPiece::InteractLocal 이 호출 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void OpenSupplyPanel(AFEBuildPiece* Piece);
-
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void CloseSupplyPanel();
-
-    /** [Client Only] 투입 패널의 한 항목 "넣기" → 서버 요청 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void SupplyItem(FGameplayTag ItemTag);
-    
-    /** [Client Only] 저장고 패널 열기. 같은 저장고면 닫는다. AFEBuildStorage::InteractBuiltLocal 이 호출 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void OpenStoragePanel(AFEBuildStorage* Storage);
-
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void CloseStoragePanel();
-
-    /** [Client Only] 소지품 칸 클릭 → 이 종류를 Count 개 보관함으로 (칸·용량까지) */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void StoreStack(FGameplayTag ItemTag, int32 Count);
-
-    /** [Client Only] 보관함 칸 클릭 → 그 칸을 통째로 내 인벤토리로 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void TakeSlot(int32 SlotIndex, FGameplayTag ItemTag);
-    
-    /** [Client Only] 화로 패널의 불 켜기/끄기 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void ToggleFurnaceLit();
-    
-    /** [Client Only] 탑승 중인 발리스타에서 내린다. GA_Build_BallistaExit(E·우클릭)가 호출한다 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void ExitBallista();
-    
-    /** [Client Only] 탑승 중인 발리스타 발사. GA_Build_BallistaFire(좌클릭)가 호출한다. 장전 중이면 무시, 탄약이 없으면 안내 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void FireBallista();
-
-    /** [Client Only] 이 기계의 플레이어가 발리스타에 탔다/내렸다. 발리스타의 OnRep_Operator 가 부른다 (시야·입력·이동 잠금·조준 틱) */
-    void HandleBallistaMounted(AFEBuildBallista* Ballista);
-    void HandleBallistaDismounted(AFEBuildBallista* Ballista);
-    
-    /** [Client Only] 탑승 중인 발리스타의 입력(IMC)을 넣는다. 이미 넣었거나 IMC 가 로드 전이면 아무것도 안 한다 —
-     *  탑승 때 한 번, IMC 로드가 탑승보다 늦으면 발리스타의 로드 완료 콜백이 한 번 더 부른다 */
-    void AddBallistaInput();
-
-    /** HUD 위젯이 바인딩할 뷰모델. 지연 생성 */
-    UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
-    UFEBuildingViewModel* GetViewModel();
-
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
     bool IsInBuildMode() const;
+    
+    /** 지금 고른 피스 (HUD 메뉴 선택 표시용). 빌드 모드 밖에서도 마지막 선택을 유지한다 */
+    FPrimaryAssetId GetSelectedPieceId() const { return SelectedPieceId; }
+
+    /** SelectedPieceId 의 정의. Runtime 번들 로드 전이면 nullptr */
+    const UFEBuildPieceDefinition* GetSelectedPiece() const { return SelectedPiece.Get(); }
+
+    /** 지금 망치를 장착하고 있다 (ASC 태그 Equipment.Weapon.Hammer). 서버 판정과 클라 HUD(조준 체력 줄)가 같이 쓴다 */
+    bool IsHoldingRepairTool() const;
+
+    /** [Server Only] Requester 의 요청을 Piece 에 처리해도 되는지 (서버 권한 + 유효성 + 거리). 건설·HUD 컴포넌트의 서버 RPC 가 같이 쓴다 */
+    static bool IsPieceInReach(const AActor* Requester, const AFEBuildPiece* Piece);
+
+    /** [Native] [Client Only] 빌드 모드 진입·해제, 고른 피스 로드 완료. HUD 가 구독해 표시를 맞춘다 */
+    FSimpleMulticastDelegate OnBuildStateChangedNative;
 
     /** 클라이언트(고스트 색상)와 서버(스폰 전)가 공유하는 배치 규칙. 정의의 Runtime 번들이 로드되어 있어야 한다. */
     static bool ValidatePlacement(const UWorld* World, const UFEBuildPieceDefinition* Piece, const FTransform& Transform, const AActor* Instigator, FText* OutReason = nullptr);
@@ -176,42 +127,6 @@ protected:
     /** [Client RPC] 서버만 아는 실패 사유(재료 부족·도구 없음)를 요청자 HUD 에 띄운다 */
     UFUNCTION(Client, Reliable)
     void ClientShowNotice(const FText& Text);
-    
-    /** [Server RPC] 요청자의 인벤토리에서 Piece 의 ItemTag 항목에 있는 만큼 투입 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerSupplyItem(AFEBuildPiece* Piece, FGameplayTag ItemTag);
-    
-    /** [Server RPC] 요청자의 인벤토리 → 보관함. Count 는 클라 표시 기준이며 서버가 실제 보유량으로 다시 자른다 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerStoreItem(AFEBuildStorage* Storage, FGameplayTag ItemTag, int32 Count);
-
-    /** [Server RPC] 보관함 SlotIndex 칸 → 요청자의 인벤토리 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerTakeItem(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag);
-    
-    /** [Server RPC] 화로 점화/소화 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerSetFurnaceLit(AFEBuildFurnace* Furnace, bool bLit);
-    
-    /** [Server RPC] 발리스타에서 내림. 조작자 본인만 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerExitBallista(AFEBuildBallista* Ballista);
-
-    /** [Server RPC] 조준(발리스타 기준 상대 각도, 도). 다른 플레이어에게 보이는 용도라 Unreliable, 바뀌었을 때만 10Hz 이하 */
-    UFUNCTION(Server, Unreliable, WithValidation)
-    void ServerSetBallistaAim(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch);
-    
-    /** [Server RPC] 발사. 조준은 정밀값(float, 발리스타 기준 상대 각도) — 리플리케이트용 int8 은 1° 단위라 멀리서 빗나간다. 조작자 본인만 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerFireBallista(AFEBuildBallista* Ballista, float Yaw, float Pitch);
-
-    /** [Server RPC] 패널을 열 때 소지품 목록 요청 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerRequestInventory();
-
-    /** [Client RPC] 소지품 스냅샷. 인벤토리는 리플리케이트되지 않으므로 패널 표시용으로만 받는다 */
-    UFUNCTION(Client, Reliable)
-    void ClientReceiveInventory(const TArray<FFEBuildItemCost>& InItems);
 
 private:
     void HandlePreviewAssetsLoaded(FPrimaryAssetId LoadedPieceId);
@@ -229,69 +144,6 @@ private:
 
     /** 커서 근처 구조물의 소켓에 맞춘 배치. 후보가 없으면 false. */
     bool FindSnapPlacement(const FVector& CursorPoint, FVector& OutLocation, uint8& OutYawStep) const;
-
-    /** [Server Only] 이 피스에 대한 요청을 처리해도 되는지 (유효성 + 거리) */
-    bool IsPieceInReach(const AFEBuildPiece* Piece) const;
-    
-    /** 메뉴/패널이 열린 동안 커서 표시 + UI 전용 입력. 둘 다 닫히면 게임 입력으로 복귀 */
-    void UpdateUIMode();
-
-    /** Asset Manager 의 BuildPiece 목록 → 엔트리 뷰모델. 정의 에셋 로드 완료 후 호출 */
-    void BuildPieceEntries();
-
-    /** SupplyTarget 의 현재 투입량·소지품으로 줄 갱신. 정의나 잠금 상태가 바뀌었으면 줄을 다시 만든다. 다 찼으면 패널을 닫는다 */
-    void RefreshSupplyRows();
-
-    /** 투입 패널 줄을 새로 만든다. 재질 미정 = 사슬 전체(선택지), 잠김 = 현재 정의의 재료만 */
-    void RebuildSupplyRows();
-
-    /** 클라 소지품 스냅샷(CarriedItems)에서 ItemTag 개수 */
-    int32 GetCarriedCount(FGameplayTag ItemTag) const;
-
-    UFUNCTION()
-    void HandleSupplyTargetDestroyed(AActor* DestroyedActor);
-    
-    /** 보관함 칸(내용만 갱신)과 소지품 칸(다시 생성)을 그린다 */
-    void RefreshStorageSlots();
-    
-    /** 열린 패널이 화로면 진행 바·버튼 문구 갱신 */
-    void RefreshFurnaceState();
-
-    /** [Server Only] 현재 소지품을 요청자에게 보낸다 */
-    void SendInventorySnapshot();
-    
-    /** [Client Only] HUD 에 안내 문구를 2초 띄운다 */
-    void ShowNotice(const FText& Text);
-
-    FTimerHandle NoticeTimer;
-
-    UFUNCTION()
-    void HandleStorageTargetDestroyed(AActor* DestroyedActor);
-
-    bool bIsMenuOpen = false;
-    
-    /** 마지막으로 연 메뉴 탭. 다음에 메뉴를 열어도 유지 */
-    EFEBuildMenuTab MenuTab{};
-
-    UPROPERTY(Transient)
-    TObjectPtr<UFEBuildingViewModel> ViewModel;
-
-    /** 투입 패널이 보고 있는 청사진 */
-    UPROPERTY(Transient)
-    TObjectPtr<AFEBuildPiece> SupplyTarget;
-    
-    /** 저장고 패널이 보고 있는 저장고 */
-    UPROPERTY(Transient)
-    TObjectPtr<AFEBuildStorage> StorageTarget;
-
-    /** [Client Only] 서버가 보내 준 소지품 스냅샷. 패널 표시에만 쓴다 (판정은 전부 서버) */
-    TArray<FFEBuildItemCost> CarriedItems;
-    
-    /** 지금 투입 패널 줄을 만든 기준. 정의(재질)나 잠금 상태가 바뀌면 줄을 다시 만든다 */
-    TWeakObjectPtr<const UFEBuildPieceDefinition> SupplyRowsDefinition;
-    bool bSupplyRowsLocked = false;
-
-    TSharedPtr<FStreamableHandle> MenuLoadHandle;
 
     bool bIsInBuildMode = false;
     bool bIsPreviewValid = false;
@@ -327,15 +179,6 @@ private:
 
     /** [Server Only] 마지막 배치 요청 시각. 배치 속도 제한용 */
     double LastPlaceRequestTime = -1.0;
-    
-    /** [Client Only] 망치 조준 HUD 갱신 타이머 (0.1초, 로컬 플레이어만 실제로 일함) */
-    FTimerHandle AimTimer;
-
-    /** [Client Only] 망치를 들고 있으면 조준한 완성 피스의 체력·수리 비용을 뷰모델에 넣고, 아니면 숨긴다 */
-    void UpdateAimedPiece();
-
-    /** 지금 망치를 장착하고 있다 (ASC 태그 Equipment.Weapon.Hammer). 서버 판정과 클라 HUD 가 같이 쓴다 */
-    bool IsHoldingRepairTool() const;
 
     /** 들고 있는 도구에서 InputTag(좌/우클릭)에 해당하는 공격 몽타주 (망치 DA 의 AttackActions). 없으면 nullptr */
     UAnimMontage* GetToolMontage(FGameplayTag InputTag) const;
@@ -364,35 +207,4 @@ private:
     
     /** BuildModeMappingContext 비동기 로드 핸들 */
     TSharedPtr<FStreamableHandle> BuildModeMappingLoadHandle;
-    
-    /** [Client Only] 이 플레이어가 탄 발리스타. 조준 갱신·Tab 탄약 UI·빌드 모드 차단에 쓴다 */
-    UPROPERTY(Transient)
-    TObjectPtr<AFEBuildBallista> MountedBallista;
-
-    /** 발리스타 IMC 를 넣은 입력 서브시스템. 폰이 사라져도 같은 곳에서 빼기 위해 기억한다 (빌드 모드 IMC 와 같은 이유) */
-    TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> BallistaInputOwner;
-    
-    /** [Client Only] 매 프레임: 컨트롤 회전 → 발리스타 머리. 바뀌었으면 10Hz 이하로, 그대로여도 0.5초마다 서버에 보낸다 */
-    void UpdateBallistaAim();
-
-    int8 LastSentAimYaw = 0;
-    int8 LastSentAimPitch = 0;
-    double LastAimSendTime = -1.0;
-    
-    /** [Server Only] 발리스타 요청 간격 제한 (FEBuilding::ConsumeRequestSlot). 장전(발리스타별 ReloadTime)과 별개로,
-     *  조작된 클라의 빈 발사·조준 요청이 서버 처리와 Reliable 안내를 무제한으로 만들지 않게 */
-    double NextFireRequestTime = 0.0;
-    double NextAimRequestTime = 0.0;
-
-    /** [Client Only] 탑승 중 HUD(탄약 수·장전 중). 값이 바뀔 때만 뷰모델을 갱신한다. LastHudAmmo = -1 이면 다음 호출에서 무조건 갱신 */
-    void UpdateBallistaHud();
-
-    int32 LastHudAmmo = -1;
-    bool bLastHudReloading = false;
-
-    /** Tab 이 탄약 UI 를 열 발리스타: 탑승 중이면 그 발리스타, 아니면(빌드 모드 밖) 조준한 완성 발리스타. 없으면 nullptr */
-    AFEBuildBallista* FindAmmoPanelTarget() const;
-
-    /** 지금 열린 보관함 패널이 발리스타 탄약 위젯이다 (닫을 때 같은 위젯을 닫고, 소지품은 볼트만 보인다) */
-    bool bIsAmmoPanel = false;
 };

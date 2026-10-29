@@ -72,6 +72,13 @@ public:
     
     /** 세션·재접속에 무관한 플레이어 식별자. 침구 주인 판정과 저장의 유일한 키. */
     static FString GetStablePlayerId(const APlayerState* PlayerState);
+    
+    /** [Client Only] 이 기계의 플레이어 화면에 안내 문구. 플레이어 컴포넌트를 모르는 쪽(발리스타)이 쓴다.
+     *  서버에서 특정 플레이어에게 보낼 때는 그 플레이어 소유 객체의 Client RPC 안에서 부른다 (서버에서 바로 부르면 호스트 화면에 뜬다) */
+    static void ShowLocalNotice(const UWorld* World, const FText& Text);
+    
+    /** ShowLocalNotice 가 울린다. UFEBuildHudComponent 가 구독해 띄운다 */
+    TMulticastDelegate<void(const FText&)> OnLocalNoticeNative;
 
     /** [Server Only] 배치된 모든 피스를 레코드로. OutRecords 는 비워진 뒤 채워진다. */
     void CollectRecords(TArray<FFEBuildPieceRecord>& OutRecords) const;

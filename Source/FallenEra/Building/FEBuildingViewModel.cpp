@@ -1,14 +1,14 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "FEBuildingViewModel.h"
-#include "FEBuildingComponent.h"
+#include "FEBuildHudComponent.h"
 #include "FEBuildingTypes.h"
 #include "FEBuildingSettings.h"
 #include "Engine/Texture2D.h"
 
 // ---- 피스 엔트리 ----
 
-void UFEBuildPieceEntryViewModel::Initialize(UFEBuildingComponent* InComponent, FPrimaryAssetId InPieceId, const FText& InDisplayName)
+void UFEBuildPieceEntryViewModel::Initialize(UFEBuildHudComponent* InComponent, FPrimaryAssetId InPieceId, const FText& InDisplayName)
 {
     Component = InComponent;
     UE_MVVM_SET_PROPERTY_VALUE(PieceId, InPieceId);
@@ -23,16 +23,15 @@ void UFEBuildPieceEntryViewModel::SetSelected(bool bInSelected)
 void UFEBuildPieceEntryViewModel::Select()
 {
     UE_LOG(LogFEBuilding, Log, TEXT("Menu select: %s"), *PieceId.ToString());
-    if (UFEBuildingComponent* Owner = Component.Get())
+    if (UFEBuildHudComponent* Owner = Component.Get())
     {
-        Owner->SelectPiece(PieceId);
-        Owner->CloseBuildMenu();
+        Owner->SelectPieceFromMenu(PieceId);
     }
 }
 
 // ---- 투입 행 ----
 
-void UFESupplyRowViewModel::Initialize(UFEBuildingComponent* InComponent, FGameplayTag InItemTag, const FText& InItemName, const FText& InVariantName, bool bInShowOr)
+void UFESupplyRowViewModel::Initialize(UFEBuildHudComponent* InComponent, FGameplayTag InItemTag, const FText& InItemName, const FText& InVariantName, bool bInShowOr)
 {
     Component = InComponent;
     VariantName = InVariantName;
@@ -56,7 +55,7 @@ void UFESupplyRowViewModel::SetCounts(int32 InSupplied, int32 InRequired, int32 
 
 void UFESupplyRowViewModel::Supply()
 {
-    if (UFEBuildingComponent* Owner = Component.Get())
+    if (UFEBuildHudComponent* Owner = Component.Get())
     {
         Owner->SupplyItem(ItemTag);
     }
@@ -64,7 +63,7 @@ void UFESupplyRowViewModel::Supply()
 
 // ---- 아이템 칸 ----
 
-void UFEItemSlotViewModel::Initialize(UFEBuildingComponent* InComponent, bool bInIsStorageSlot, int32 InSlotIndex)
+void UFEItemSlotViewModel::Initialize(UFEBuildHudComponent* InComponent, bool bInIsStorageSlot, int32 InSlotIndex)
 {
     Component = InComponent;
     bIsStorageSlot = bInIsStorageSlot;
@@ -106,7 +105,7 @@ void UFEItemSlotViewModel::SetEmpty(const FText& EmptyLabel)
 
 void UFEItemSlotViewModel::Click()
 {
-    UFEBuildingComponent* Owner = Component.Get();
+    UFEBuildHudComponent* Owner = Component.Get();
     if (Owner == nullptr || !bIsFilled) return;
 
     if (bIsStorageSlot)
@@ -164,7 +163,7 @@ void UFEBuildingViewModel::SetSupplyRows(const TArray<UObject*>& InRows)
 
 void UFEBuildingViewModel::CloseMenu()
 {
-    if (UFEBuildingComponent* Owner = Component.Get())
+    if (UFEBuildHudComponent* Owner = Component.Get())
     {
         Owner->CloseBuildMenu();
     }
@@ -172,7 +171,7 @@ void UFEBuildingViewModel::CloseMenu()
 
 void UFEBuildingViewModel::CloseSupplyPanel()
 {
-    if (UFEBuildingComponent* Owner = Component.Get())
+    if (UFEBuildHudComponent* Owner = Component.Get())
     {
         Owner->CloseSupplyPanel();
     }
@@ -229,17 +228,17 @@ void UFEBuildingViewModel::SetMenuTabTitle(const FText& InTitle)
 
 void UFEBuildingViewModel::SelectConstructionTab()
 {
-    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Construction);
+    if (UFEBuildHudComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Construction);
 }
 
 void UFEBuildingViewModel::SelectFurnitureTab()
 {
-    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Furniture);
+    if (UFEBuildHudComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Furniture);
 }
 
 void UFEBuildingViewModel::SelectDefenseTab()
 {
-    if (UFEBuildingComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Defense);
+    if (UFEBuildHudComponent* Owner = Component.Get()) Owner->SelectMenuTab(EFEBuildMenuTab::Defense);
 }
 
 void UFEBuildingViewModel::SetAimedPiece(const FText& InName, float InHealthPercent, const FText& InRepairCost, const FText& InUpgrade)
@@ -266,7 +265,7 @@ void UFEBuildingViewModel::SetBallistaHud(bool bInVisible, const FText& InText)
 
 void UFEBuildingViewModel::ToggleFurnaceLit()
 {
-    if (UFEBuildingComponent* Owner = Component.Get())
+    if (UFEBuildHudComponent* Owner = Component.Get())
     {
         Owner->ToggleFurnaceLit();
     }
@@ -274,7 +273,7 @@ void UFEBuildingViewModel::ToggleFurnaceLit()
 
 void UFEBuildingViewModel::CloseStoragePanel()
 {
-    if (UFEBuildingComponent* Owner = Component.Get())
+    if (UFEBuildHudComponent* Owner = Component.Get())
     {
         Owner->CloseStoragePanel();
     }

@@ -5,7 +5,7 @@
 #include "FEBuildPieceDefinition.h"
 #include "FEBuildingSettings.h"
 #include "FEBuildingSubsystem.h"
-#include "FEBuildingComponent.h"
+#include "FEBuildHudComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
@@ -562,10 +562,10 @@ void AFEBuildPiece::InteractLocal_Implementation(AActor* InstigatorActor)
     switch (State)
     {
     case EFEBuildPieceState::Blueprint:
-        // 요청한 클라이언트에서 투입 패널을 연다. 패널 상태는 그 플레이어의 건설 컴포넌트가 가진다.
-        if (UFEBuildingComponent* Building = InstigatorActor ? InstigatorActor->FindComponentByClass<UFEBuildingComponent>() : nullptr)
+        // 요청한 클라이언트에서 투입 패널을 연다. 패널 상태는 그 플레이어의 HUD 컴포넌트가 가진다.
+        if (UFEBuildHudComponent* Hud = InstigatorActor ? InstigatorActor->FindComponentByClass<UFEBuildHudComponent>() : nullptr)
         {
-            Building->OpenSupplyPanel(this);
+            Hud->OpenSupplyPanel(this);
         }
         break;
     case EFEBuildPieceState::Built:

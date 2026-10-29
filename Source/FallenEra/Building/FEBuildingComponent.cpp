@@ -7,9 +7,6 @@
 #include "FEBuildPieceDefinition.h"
 #include "FEBuildingSettings.h"
 #include "FEBuildingSubsystem.h"
-#include "FEBuildingViewModel.h"
-#include "FEBuildStorage.h"
-#include "FEBuildFurnace.h"
 #include "FEBuildingGameplayTags.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
@@ -29,63 +26,8 @@
 #include "Combat/FECombatGameplayTags.h"
 #include "Combat/Collision/FECollisionChannels.h"
 #include "InputMappingContext.h"
-#include "FEBuildBallista.h"
-#include "GameFramework/Character.h"
-#include "GameFramework/CharacterMovementComponent.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
-
-namespace
-{
-    /** "나무 3, 돌 2" — 수리·업그레이드 HUD 문구 공용 */
-    FText FormatItemCosts(const TArray<FFEBuildItemCost>& Costs)
-    {
-        TArray<FText> Parts;
-        for (const FFEBuildItemCost& Cost : Costs)
-        {
-            Parts.Add(FText::Format(LOCTEXT("ItemCostEntry", "{0} {1}"),
-                UFEBuildingSettings::Get()->GetItemDisplayName(Cost.ItemTag), FText::AsNumber(Cost.Count)));
-        }
-        return FText::Join(FText::FromString(TEXT(", ")), Parts);
-    }
-    
-    /** 구조물은 건설 탭, 방어시설(함정·발리스타)은 방어 탭, 그 외(가구·이동)는 가구 탭 */
-    bool MatchesMenuTab(const UFEBuildPieceDefinition& Definition, EFEBuildMenuTab Tab)
-    {
-        const EFEBuildMenuTab PieceTab = Definition.Category == FEBuildingTags::Build_Piece_Structure ? EFEBuildMenuTab::Construction
-            : Definition.Category == FEBuildingTags::Build_Piece_Defense ? EFEBuildMenuTab::Defense
-            : EFEBuildMenuTab::Furniture;
-        return Tab == PieceTab;
-    }
-
-    FText GetMenuTabTitle(EFEBuildMenuTab Tab)
-    {
-        switch (Tab)
-        {
-        case EFEBuildMenuTab::Construction: return LOCTEXT("TabConstruction", "건설");
-        case EFEBuildMenuTab::Defense:      return LOCTEXT("TabDefense", "방어");
-        default:                            return LOCTEXT("TabFurniture", "가구");
-        }
-    }
-
-    /** 투입 패널 선택지: 재질 미정이면 사슬 전체(나무·돌·철), 정해졌으면 현재 재질 하나.
-     *  RebuildSupplyRows 와 RefreshSupplyRows 가 같은 순서를 써야 줄과 숫자가 맞는다 */
-    void GetSupplyVariants(const AFEBuildPiece& Piece, TArray<const UFEBuildPieceDefinition*>& OutVariants)
-    {
-        OutVariants.Reset();
-        const UFEBuildPieceDefinition* Definition = Piece.GetDefinition();
-        if (Definition == nullptr) return;
-
-        if (Piece.IsMaterialLocked())
-        {
-            OutVariants.Add(Definition);
-        }
-        else
-        {
-            Definition->GetMaterialChain(OutVariants);
-        }
-    }
-}
 
 // 테스트용: 1 이면 배치 즉시 완성(재료 투입 생략). 기본은 청사진 경로.
 static TAutoConsoleVariable<bool> CVarFEInstantBuild(
@@ -132,21 +74,6 @@ namespace
 
     /** [Client] 고스트가 움직이는 동안의 최소 검증 간격. 클릭 순간에는 ConfirmPlacement 가 따로 검증한다 */
     constexpr double PreviewMovingValidateInterval = 0.05;
-    
-    /** [Client] 발리스타 조준을 서버로 보내는 최소 간격 (다른 플레이어에게 보이는 용도, 바뀌었을 때만) */
-    constexpr double BallistaAimSendInterval = 0.1;
-    
-    /** [Client] 조준이 그대로여도 이 간격마다 다시 보낸다 — Unreliable 이라 마지막 패킷을 잃으면 다른 화면의 총신이 이전 각도에 멈춘다 */
-    constexpr double BallistaAimRefreshInterval = 0.5;
-
-    /** [Server] 조준 요청을 받는 최소 간격. 보내는 간격의 절반이라 지터로 몰려 온 정상 패킷은 거의 버리지 않는다 */
-    constexpr double BallistaAimAcceptInterval = BallistaAimSendInterval * 0.5;
-
-    /** [Server] 한 조작자의 발사 요청 최소 간격. 장전 시간(2초)보다 훨씬 짧아 정상 발사는 걸리지 않는다 */
-    constexpr double BallistaFireRequestInterval = 0.25;
-
-    /** 발리스타 카메라 ↔ 캐릭터 시야 전환 시간 (초) */
-    constexpr float BallistaViewBlendTime = 0.3f;
     
     UClass* ResolvePieceClass(const UFEBuildPieceDefinition* Piece)
     {
@@ -325,13 +252,18 @@ void UFEBuildingComponent::ToggleBuildMode()
         CancelBuild();
         return;
     }
-    if (MountedBallista != nullptr) return; // 발리스타 조작 중에는 빌드 모드에 들어가지 않는다 (좌클릭·E 는 발리스타 것)
+    
+    // 발리스타 탑승 중에는 빌드 모드에 들어가지 않는다 (좌클릭·E 는 발리스타 것. 태그는 발리스타가 건다).
+    // 나가기(위)는 막지 않는다 — 탑승 신호와 B 가 엇갈려 빌드 모드인 채로 탔어도 빠져나올 수 있게
+    const UAbilitySystemComponent* MountASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner());
+    if (MountASC != nullptr && MountASC->HasMatchingGameplayTag(FEBuildingTags::State_Building_Mounted)) return;
+    
     bIsInBuildMode = true;
     UpdateBuildModeState();
     UE_LOG(LogFEBuilding, Log, TEXT("Build mode on"));
     YawStepOffset = 0;
     SetComponentTickEnabled(true);
-    GetViewModel()->SetBuildMode(true);
+    OnBuildStateChangedNative.Broadcast(); // HUD: 빌드 모드 표시
     SelectPiece(DefaultPieceId);
 }
 
@@ -364,14 +296,7 @@ void UFEBuildingComponent::HandlePreviewAssetsLoaded(FPrimaryAssetId LoadedPiece
     SelectedPiece = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(LoadedPieceId));
     UE_LOG(LogFEBuilding, Log, TEXT("Selected piece: %s"), *LoadedPieceId.ToString());
     
-    GetViewModel()->SetSelectedPieceName(SelectedPiece ? SelectedPiece->DisplayName : FText::GetEmpty());
-    for (UObject* Entry : GetViewModel()->PieceEntries)
-    {
-        if (UFEBuildPieceEntryViewModel* EntryViewModel = Cast<UFEBuildPieceEntryViewModel>(Entry))
-        {
-            EntryViewModel->SetSelected(EntryViewModel->PieceId == LoadedPieceId);
-        }
-    }
+    OnBuildStateChangedNative.Broadcast(); // HUD: 선택 피스 이름·메뉴 선택 표시
 }
 
 void UFEBuildingComponent::RotatePreview(int32 Direction)
@@ -403,8 +328,7 @@ void UFEBuildingComponent::CancelBuild()
     DestroyPreview();
     SelectedPiece = nullptr;
     PreviewLoadHandle.Reset();
-    GetViewModel()->SetBuildMode(false);
-    CloseBuildMenu();
+    OnBuildStateChangedNative.Broadcast(); // HUD: 빌드 모드 표시 끄기·메뉴 닫기
 }
 
 void UFEBuildingComponent::DemolishPiece()
@@ -417,7 +341,7 @@ void UFEBuildingComponent::DemolishPiece()
     if (!Piece->CanDemolish(Reason))
     {
         UE_LOG(LogFEBuilding, Log, TEXT("Demolish blocked: %s (%s)"), *Piece->GetName(), *Reason.ToString());
-        ShowNotice(Reason);
+        UFEBuildingSubsystem::ShowLocalNotice(GetWorld(), Reason); 
         return;
     }
     ServerDemolishPiece(Piece);
@@ -432,7 +356,7 @@ void UFEBuildingComponent::RepairPiece()
     const bool bIsBuilt = Piece != nullptr && Piece->GetState() == EFEBuildPieceState::Built;
     if (bIsBuilt && !Piece->IsDamaged())
     {
-        ShowNotice(LOCTEXT("RepairNotDamagedClient", "손상되지 않았습니다"));
+        UFEBuildingSubsystem::ShowLocalNotice(GetWorld(), LOCTEXT("RepairNotDamagedClient", "손상되지 않았습니다"));
     }
     ServerRepairPiece(bIsBuilt && Piece->IsDamaged() ? Piece : nullptr);
 }
@@ -447,307 +371,17 @@ void UFEBuildingComponent::UpgradePiece()
     const bool bHasTarget = bIsBuilt && Piece->GetUpgradeTarget() != nullptr;
     if (bIsBuilt && !bHasTarget)
     {
-        ShowNotice(LOCTEXT("UpgradeMaxClient", "더 이상 업그레이드할 수 없습니다"));
+        UFEBuildingSubsystem::ShowLocalNotice(GetWorld(), LOCTEXT("UpgradeMaxClient", "더 이상 업그레이드할 수 없습니다"));
     }
     ServerUpgradePiece(bHasTarget ? Piece : nullptr);
-}
-
-void UFEBuildingComponent::ToggleBuildMenu()
-{
-    // Tab 이 탄약 UI 를 맡는 경우: 열려 있으면 닫고, 탑승 중이거나(빌드 모드 밖에서) 완성 발리스타를 조준하고 있으면 연다
-    if (bIsAmmoPanel)
-    {
-        CloseStoragePanel();
-        return;
-    }
-    if (AFEBuildBallista* AmmoTarget = FindAmmoPanelTarget())
-    {
-        OpenStoragePanel(AmmoTarget);
-        return;
-    }
-    if (bIsMenuOpen)
-    {
-        CloseBuildMenu();
-        return;
-    }
-    if (!bIsInBuildMode)
-    {
-        ToggleBuildMode();
-    }
-
-    bIsMenuOpen = true;
-    GetViewModel()->SetMenuOpen(true);
-    UpdateUIMode();
-
-    // 목록에 이름을 띄우려면 정의 에셋 자체가 필요하다. 번들 없이 DA 만 로드 (메시는 안 따라온다).
-    TArray<FPrimaryAssetId> PieceIds;
-    UAssetManager::Get().GetPrimaryAssetIdList(UFEBuildPieceDefinition::AssetType, PieceIds);
-    MenuLoadHandle = UAssetManager::Get().LoadPrimaryAssets(
-        PieceIds, TArray<FName>(), FStreamableDelegate::CreateUObject(this, &UFEBuildingComponent::BuildPieceEntries));
-}
-
-void UFEBuildingComponent::CloseBuildMenu()
-{
-    if (!bIsMenuOpen) return;
-    bIsMenuOpen = false;
-    
-    GetViewModel()->SetMenuOpen(false);
-    UpdateUIMode();
-}
-
-void UFEBuildingComponent::SelectMenuTab(EFEBuildMenuTab Tab)
-{
-    MenuTab = Tab;
-    // 정의 에셋은 메뉴를 열 때 MenuLoadHandle 로 이미 로드돼 있다 → 다시 로드하지 않고 목록만 다시 채운다
-    BuildPieceEntries();
-}
-
-void UFEBuildingComponent::BuildPieceEntries()
-{
-    if (!bIsMenuOpen) return; // 로드 중에 닫힘
-
-    TArray<FPrimaryAssetId> PieceIds;
-    UAssetManager::Get().GetPrimaryAssetIdList(UFEBuildPieceDefinition::AssetType, PieceIds);
-    
-    // 메뉴 순서값 → 에셋 이름순. 메뉴를 열 때 정의는 이미 전부 로드돼 있다
-    UAssetManager& AssetManager = UAssetManager::Get();
-    PieceIds.Sort([&AssetManager](const FPrimaryAssetId& A, const FPrimaryAssetId& B)
-    {
-        const UFEBuildPieceDefinition* DefinitionA = Cast<UFEBuildPieceDefinition>(AssetManager.GetPrimaryAssetObject(A));
-        const UFEBuildPieceDefinition* DefinitionB = Cast<UFEBuildPieceDefinition>(AssetManager.GetPrimaryAssetObject(B));
-        const int32 OrderA = DefinitionA ? DefinitionA->MenuOrder : 0;
-        const int32 OrderB = DefinitionB ? DefinitionB->MenuOrder : 0;
-        return OrderA != OrderB ? OrderA < OrderB : A.PrimaryAssetName.LexicalLess(B.PrimaryAssetName);
-    });
-
-    // 다른 정의의 UpgradeTo 대상(돌·철 변형)은 메뉴에 내지 않는다 — 재질은 재료를 넣을 때 고른다.
-    // 소프트 경로 비교라 추가 로드가 없다 (메뉴를 열 때 정의는 이미 전부 로드됨)
-    TSet<FSoftObjectPath> VariantPaths;
-    for (const FPrimaryAssetId& PieceId : PieceIds)
-    {
-        const UFEBuildPieceDefinition* Definition = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(PieceId));
-        if (Definition && !Definition->UpgradeTo.IsNull())
-        {
-            VariantPaths.Add(Definition->UpgradeTo.ToSoftObjectPath());
-        }
-    }
-
-    TArray<UObject*> Entries;
-    for (const FPrimaryAssetId& PieceId : PieceIds)
-    {
-        const UFEBuildPieceDefinition* Definition = Cast<UFEBuildPieceDefinition>(UAssetManager::Get().GetPrimaryAssetObject(PieceId));
-        const bool bShow = Definition != nullptr && MatchesMenuTab(*Definition, MenuTab) && !VariantPaths.Contains(FSoftObjectPath(Definition));
-        if (!bShow) continue;
-
-        // 재질과 무관한 이름("벽")이 있으면 그것으로 — 재질은 투입할 때 고르므로
-        const FText Name = !Definition->BaseName.IsEmpty() ? Definition->BaseName
-            : !Definition->DisplayName.IsEmpty() ? Definition->DisplayName
-            : FText::FromName(PieceId.PrimaryAssetName);
-
-        UFEBuildPieceEntryViewModel* Entry = NewObject<UFEBuildPieceEntryViewModel>(GetViewModel());
-        Entry->Initialize(this, PieceId, Name);
-        Entry->SetSelected(PieceId == SelectedPieceId);
-        Entries.Add(Entry);
-    }
-    GetViewModel()->SetPieceEntries(Entries);
-    GetViewModel()->SetMenuTabTitle(GetMenuTabTitle(MenuTab));
-}
-
-void UFEBuildingComponent::OpenSupplyPanel(AFEBuildPiece* Piece)
-{
-    if (Piece == nullptr || Piece == SupplyTarget)
-    {
-        CloseSupplyPanel();
-        return;
-    }
-    CloseSupplyPanel();
-
-    SupplyTarget = Piece;
-    SupplyTarget->OnSupplyChangedNative.AddUObject(this, &UFEBuildingComponent::RefreshSupplyRows);
-    SupplyTarget->OnDestroyed.AddDynamic(this, &UFEBuildingComponent::HandleSupplyTargetDestroyed);
-
-    RebuildSupplyRows();
-    GetViewModel()->SetSupplyPanelOpen(true);
-    RefreshSupplyRows();
-    UpdateUIMode();
-
-    // [넣기] 활성은 소지품을 알아야 한다. 소지품은 리플리케이트되지 않으므로 스냅샷을 받는다 (보관함 패널과 같은 경로)
-    ServerRequestInventory();
-}
-
-void UFEBuildingComponent::CloseSupplyPanel()
-{
-    if (SupplyTarget)
-    {
-        SupplyTarget->OnSupplyChangedNative.RemoveAll(this);
-        SupplyTarget->OnDestroyed.RemoveDynamic(this, &UFEBuildingComponent::HandleSupplyTargetDestroyed);
-        SupplyTarget = nullptr;
-    }
-    SupplyRowsDefinition = nullptr;
-    bSupplyRowsLocked = false;
-    
-    GetViewModel()->SetSupplyPanelOpen(false);
-    GetViewModel()->SetSupplyRows(TArray<UObject*>());
-    UpdateUIMode();
-}
-
-void UFEBuildingComponent::OpenStoragePanel(AFEBuildStorage* Storage)
-{
-    if (Storage == nullptr || Storage == StorageTarget)
-    {
-        CloseStoragePanel();
-        return;
-    }
-    CloseStoragePanel();
-
-    StorageTarget = Storage;
-    StorageTarget->OnContentsChangedNative.AddUObject(this, &UFEBuildingComponent::RefreshStorageSlots);
-    StorageTarget->OnDestroyed.AddDynamic(this, &UFEBuildingComponent::HandleStorageTargetDestroyed);
-
-    // 보관함 칸은 열 때 Capacity 개를 한 번 만들고 이후엔 내용만 바꾼다. TileView 가 매번 새로 그려지며 깜빡이지 않게.
-    TArray<UObject*> Slots;
-    for (int32 Index = 0; Index < Storage->GetCapacity(); ++Index)
-    {
-        UFEItemSlotViewModel* Slot = NewObject<UFEItemSlotViewModel>(GetViewModel());
-        Slot->Initialize(this, true, Index);
-        Slots.Add(Slot);
-    }
-    GetViewModel()->SetStorageSlots(Slots);
-
-    const UFEBuildPieceDefinition* Definition = Storage->GetDefinition();
-    GetViewModel()->SetStorageTitle(Definition ? Definition->DisplayName : FText::GetEmpty());
-    // 발리스타는 전용 탄약 위젯, 그 외는 보관함 패널. 칸 목록(StorageSlots·CarriedSlots)은 같은 것을 쓴다
-    bIsAmmoPanel = Storage->IsA<AFEBuildBallista>();
-    if (bIsAmmoPanel)
-    {
-        GetViewModel()->SetAmmoPanelOpen(true);
-    }
-    else
-    {
-        GetViewModel()->SetStoragePanelOpen(true);
-    }
-    
-    // 화로면 진행 바 줄을 보이고 점화·진행도 변화를 받는다
-    AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(Storage);
-    if (Furnace)
-    {
-        Furnace->OnFurnaceStateChangedNative.AddUObject(this, &UFEBuildingComponent::RefreshFurnaceState);
-    }
-    GetViewModel()->SetFurnaceVisible(Furnace != nullptr);
-    
-    RefreshFurnaceState();
-    RefreshStorageSlots();      // 보관함 내용만으로 먼저 그린다
-    ServerRequestInventory();   // 소지품이 도착하면 ClientReceiveInventory 가 다시 그린다
-    UpdateUIMode();
-}
-
-void UFEBuildingComponent::CloseStoragePanel()
-{
-    if (StorageTarget)
-    {
-        StorageTarget->OnContentsChangedNative.RemoveAll(this);
-        StorageTarget->OnDestroyed.RemoveDynamic(this, &UFEBuildingComponent::HandleStorageTargetDestroyed);
-        if (AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(StorageTarget))
-        {
-            Furnace->OnFurnaceStateChangedNative.RemoveAll(this);
-        }
-        StorageTarget = nullptr;
-    }
-    CarriedItems.Reset();
-    GetViewModel()->SetStoragePanelOpen(false);
-    GetViewModel()->SetAmmoPanelOpen(false);
-    bIsAmmoPanel = false;
-    GetViewModel()->SetStorageSlots(TArray<UObject*>());
-    GetViewModel()->SetCarriedSlots(TArray<UObject*>());
-    GetViewModel()->SetFurnaceVisible(false);
-    UpdateUIMode();
-}
-
-void UFEBuildingComponent::StoreStack(FGameplayTag ItemTag, int32 Count)
-{
-    if (StorageTarget == nullptr || !ItemTag.IsValid() || Count <= 0) return;
-
-    // 화로는 연료·재료만 받는다. 클라가 먼저 판단해 바로 알려 주고, 서버 StoreItems 가 같은 검사를 다시 한다
-    FText Reason;
-    if (!StorageTarget->AcceptsItem(ItemTag, Reason))
-    {
-        ShowNotice(Reason);
-        return;
-    }
-    ServerStoreItem(StorageTarget, ItemTag, Count);
-}
-
-void UFEBuildingComponent::TakeSlot(int32 SlotIndex, FGameplayTag ItemTag)
-{
-    if (StorageTarget && ItemTag.IsValid() && SlotIndex >= 0)
-    {
-        ServerTakeItem(StorageTarget, SlotIndex, ItemTag);
-    }
-}
-
-void UFEBuildingComponent::RefreshStorageSlots()
-{
-    if (StorageTarget == nullptr) return;
-
-    // 보관함: 앞쪽부터 찬 칸, 나머지는 빈 칸
-    const TArray<FFEBuildItemCost>& Contents = StorageTarget->GetContents();
-    const TArray<TObjectPtr<UObject>>& Slots = GetViewModel()->StorageSlots;
-    for (int32 Index = 0; Index < Slots.Num(); ++Index)
-    {
-        UFEItemSlotViewModel* Slot = Cast<UFEItemSlotViewModel>(Slots[Index]);
-        const bool bIsFilled = Contents.IsValidIndex(Index) && Contents[Index].Count > 0; // 화로는 빈 칸도 항목으로 있다
-        if (bIsFilled)
-        {
-            Slot->SetItem(Contents[Index].ItemTag, Contents[Index].Count);
-        }
-        else
-        {
-            Slot->SetEmpty(StorageTarget->GetSlotLabel(Index));
-        }
-    }
-
-    // 소지품: 보관함과 같은 스택 상한으로 나눠 보여 준다. 칸을 누르면 그 칸의 개수만큼 넣는다.
-    // ponytail: 표시용 분할. 실제 인벤토리(병일)의 칸 구조가 오면 그쪽 칸을 그대로 쓴다.
-    const int32 MaxStack = StorageTarget->GetMaxStackSize();
-    TArray<UObject*> Carried;
-    for (const FFEBuildItemCost& Entry : CarriedItems)
-    {
-        FText Ignored;
-        if (bIsAmmoPanel && !StorageTarget->AcceptsItem(Entry.ItemTag, Ignored)) continue; // 탄약 위젯은 볼트만 보인다
-        
-        for (int32 Left = Entry.Count; Left > 0; Left -= MaxStack)
-        {
-            UFEItemSlotViewModel* Slot = NewObject<UFEItemSlotViewModel>(GetViewModel());
-            Slot->Initialize(this, false, INDEX_NONE);
-            Slot->SetItem(Entry.ItemTag, FMath::Min(Left, MaxStack));
-            Carried.Add(Slot);
-        }
-    }
-    
-    GetViewModel()->SetCarriedSlots(Carried);
-}
-
-void UFEBuildingComponent::HandleStorageTargetDestroyed(AActor* DestroyedActor)
-{
-    CloseStoragePanel();
-}
-
-void UFEBuildingComponent::ShowNotice(const FText& Text)
-{
-    GetViewModel()->SetNotice(Text);
-
-    // 2초 뒤 지운다. 연달아 오면 타이머가 처음부터 다시 돈다
-    GetWorld()->GetTimerManager().SetTimer(NoticeTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
-    {
-        GetViewModel()->SetNotice(FText::GetEmpty());
-    }), 2.f, false);
 }
 
 void UFEBuildingComponent::UpdateBuildModeState()
 {
     // 1) State.Building 태그. 빌드 모드 중엔 회전(E)과 상호작용(E)이 같은 키라 상호작용 컴포넌트가 이 태그를 보고 스스로 꺼진다.
-    //    발리스타 탑승 중에도 켠다(상호작용 프롬프트 숨김). 로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
-    const bool bWantsTag = bIsInBuildMode || MountedBallista != nullptr;
+    //    발리스타 탑승 중에는 발리스타가 하위 태그 State.Building.Mounted 를 따로 건다 — 이 0/1 설정은 정확히 이 태그의 개수만 바꿔 서로 지우지 않는다.
+    //    로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
+    const bool bWantsTag = bIsInBuildMode;
     UAbilitySystemComponent* ASC = bWantsTag
         ? UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner())
         : BuildModeTagOwner.Get();
@@ -793,175 +427,9 @@ void UFEBuildingComponent::UpdateBuildModeState()
     BuildModeInputOwner = bIsInBuildMode ? InputSubsystem : nullptr;
 }
 
-void UFEBuildingComponent::RefreshFurnaceState()
-{
-    if (const AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(StorageTarget))
-    {
-        GetViewModel()->SetFurnaceState(Furnace->IsLit(), Furnace->GetProcessPercent() / 100.f);
-    }
-}
-
-void UFEBuildingComponent::ToggleFurnaceLit()
-{
-    AFEBuildFurnace* Furnace = Cast<AFEBuildFurnace>(StorageTarget);
-    if (Furnace == nullptr) return;
-
-    const bool bWantLit = !Furnace->IsLit();
-    FText Reason;
-    if (bWantLit && !Furnace->CanIgnite(Reason))
-    {
-        ShowNotice(Reason);
-        return;
-    }
-    ServerSetFurnaceLit(Furnace, bWantLit);
-}
-
 bool UFEBuildingComponent::IsInBuildMode() const
 {
     return bIsInBuildMode;
-}
-
-void UFEBuildingComponent::SupplyItem(FGameplayTag ItemTag)
-{
-    if (SupplyTarget && ItemTag.IsValid())
-    {
-        ServerSupplyItem(SupplyTarget, ItemTag);
-    }
-}
-
-UFEBuildingViewModel* UFEBuildingComponent::GetViewModel()
-{
-    if (ViewModel == nullptr)
-    {
-        ViewModel = NewObject<UFEBuildingViewModel>(this);
-        ViewModel->Component = this;
-    }
-    return ViewModel;
-}
-
-void UFEBuildingComponent::RefreshSupplyRows()
-{
-    const UFEBuildPieceDefinition* Definition = SupplyTarget ? SupplyTarget->GetDefinition() : nullptr;
-    if (Definition == nullptr) return;
-
-    if (SupplyTarget->IsFullySupplied())
-    {
-        CloseSupplyPanel(); // 다 찼다. 완성 여부는 지지 구조가 결정하므로 패널은 여기서 끝
-        return;
-    }
-
-    // 재질이 정해졌으면(나 또는 다른 플레이어가 먼저) 선택지 → 한 재질로 줄 구성이 바뀐다. 그 외에는 숫자만 바꿔 깜빡이지 않게
-    if (Definition != SupplyRowsDefinition.Get() || SupplyTarget->IsMaterialLocked() != bSupplyRowsLocked)
-    {
-        RebuildSupplyRows();
-    }
-
-    TArray<const UFEBuildPieceDefinition*> Variants;
-    GetSupplyVariants(*SupplyTarget, Variants);
-
-    const TArray<TObjectPtr<UObject>>& Rows = GetViewModel()->SupplyRows;
-    int32 RowIndex = 0;
-    for (const UFEBuildPieceDefinition* Variant : Variants)
-    {
-        for (int32 ItemIndex = 0; ItemIndex < Variant->RequiredItems.Num(); ++ItemIndex, ++RowIndex)
-        {
-            UFESupplyRowViewModel* Row = Rows.IsValidIndex(RowIndex) ? Cast<UFESupplyRowViewModel>(Rows[RowIndex]) : nullptr;
-            if (Row == nullptr) continue;
-
-            // 투입량은 현재 재질의 것만 의미가 있다 (재질 미정 선택지는 전부 0)
-            const FFEBuildItemCost& Cost = Variant->RequiredItems[ItemIndex];
-            const int32 Supplied = Variant == Definition ? SupplyTarget->GetSuppliedCount(ItemIndex) : 0;
-            Row->SetCounts(Supplied, Cost.Count, GetCarriedCount(Cost.ItemTag));
-        }
-    }
-}
-
-void UFEBuildingComponent::RebuildSupplyRows()
-{
-    TArray<const UFEBuildPieceDefinition*> Variants;
-    if (SupplyTarget)
-    {
-        GetSupplyVariants(*SupplyTarget, Variants);
-    }
-
-    const UFEBuildPieceDefinition* Definition = SupplyTarget ? SupplyTarget->GetDefinition() : nullptr;
-    SupplyRowsDefinition = Definition;
-    bSupplyRowsLocked = SupplyTarget && SupplyTarget->IsMaterialLocked();
-
-    // 선택지가 둘 이상이면 줄마다 변형 이름("돌 벽 — 돌 0 / 6")을 붙이고, 두 번째 선택지부터 첫 줄 위에 "또는"
-    const bool bIsChoice = Variants.Num() > 1;
-    TArray<UObject*> Rows;
-    for (int32 VariantIndex = 0; VariantIndex < Variants.Num(); ++VariantIndex)
-    {
-        const UFEBuildPieceDefinition* Variant = Variants[VariantIndex];
-        for (int32 ItemIndex = 0; ItemIndex < Variant->RequiredItems.Num(); ++ItemIndex)
-        {
-            const FGameplayTag ItemTag = Variant->RequiredItems[ItemIndex].ItemTag;
-            UFESupplyRowViewModel* Row = NewObject<UFESupplyRowViewModel>(GetViewModel());
-            Row->Initialize(this, ItemTag, UFEBuildingSettings::Get()->GetItemDisplayName(ItemTag),
-                bIsChoice ? Variant->DisplayName : FText::GetEmpty(),
-                bIsChoice && VariantIndex > 0 && ItemIndex == 0);
-            Rows.Add(Row);
-        }
-    }
-    GetViewModel()->SetSupplyRows(Rows);
-
-    if (Definition == nullptr) return;
-
-    if (bIsChoice)
-    {
-        const FText BaseName = Definition->BaseName.IsEmpty() ? Definition->DisplayName : Definition->BaseName;
-        GetViewModel()->SetSupplyTitle(FText::Format(LOCTEXT("SupplyChooseTitle", "{0} — 재질 선택"), BaseName));
-        GetViewModel()->SetSupplyHint(LOCTEXT("SupplyChooseHint", "재료를 하나 골라 넣으세요. 처음 넣은 재료로 재질이 정해집니다"));
-    }
-    else
-    {
-        GetViewModel()->SetSupplyTitle(Definition->DisplayName);
-        // 구조물은 다른 재질이 있다 → 바꾸는 방법을 알려 준다. 가구는 재질이 하나라 안내 없음
-        const bool bHasAlternatives = Definition->Category == FEBuildingTags::Build_Piece_Structure;
-        GetViewModel()->SetSupplyHint(bHasAlternatives
-            ? LOCTEXT("SupplyLockedHint", "다른 재료로 바꾸려면 철거하세요 (청사진은 100% 환불)")
-            : FText::GetEmpty());
-    }
-}
-
-int32 UFEBuildingComponent::GetCarriedCount(FGameplayTag ItemTag) const
-{
-    int32 Total = 0;
-    for (const FFEBuildItemCost& Item : CarriedItems)
-    {
-        if (Item.ItemTag == ItemTag)
-        {
-            Total += Item.Count;
-        }
-    }
-    return Total;
-}
-
-void UFEBuildingComponent::HandleSupplyTargetDestroyed(AActor* DestroyedActor)
-{
-    CloseSupplyPanel();
-}
-
-void UFEBuildingComponent::UpdateUIMode()
-{
-    const APawn* Pawn = Cast<APawn>(GetOwner());
-    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    if (PlayerController == nullptr || !PlayerController->IsLocalController()) return;
-
-    const bool bUIOpen = bIsMenuOpen || SupplyTarget != nullptr || StorageTarget != nullptr;
-    PlayerController->SetShowMouseCursor(bUIOpen);
-    if (bUIOpen)
-    {
-        // UI 전용: 메뉴가 열린 동안 시점 회전·빌드 입력을 막는다. 닫기는 버튼으로.
-        FInputModeUIOnly Mode;
-        Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-        PlayerController->SetInputMode(Mode);
-    }
-    else
-    {
-        PlayerController->SetInputMode(FInputModeGameOnly());
-    }
 }
 
 void UFEBuildingComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -971,46 +439,26 @@ void UFEBuildingComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
     {
         UpdatePreview();
     }
-    if (MountedBallista != nullptr)
-    {
-        UpdateBallistaAim();
-        UpdateBallistaHud();
-    }
 }
 
 void UFEBuildingComponent::BeginPlay()
 {
     Super::BeginPlay();
 
-    if (GetNetMode() != NM_DedicatedServer)
+    // 빌드 모드 IMC. 데디케이티드 서버는 입력이 없다. 로드가 끝났을 때 이미 빌드 모드면 그때 추가된다 (UpdateBuildModeState 는 여러 번 불러도 안전)
+    if (GetNetMode() != NM_DedicatedServer && !BuildModeMappingContext.IsNull())
     {
-        // 망치 조준 HUD. 데디케이티드 서버는 화면이 없다. 원격 폰은 UpdateAimedPiece 가 걸러낸다
-        // (상호작용 프롬프트와 같은 10Hz 폴링: "무엇을 조준하는지"는 카메라가 돌 때마다 바뀌는데 이벤트가 없다)
-        GetWorld()->GetTimerManager().SetTimer(AimTimer, this, &UFEBuildingComponent::UpdateAimedPiece, 0.1f, true);
-
-        // 빌드 모드 IMC. 로드가 끝났을 때 이미 빌드 모드면 그때 추가된다 (UpdateBuildModeState 는 여러 번 불러도 안전)
-        if (!BuildModeMappingContext.IsNull())
-        {
-            BuildModeMappingLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
-                BuildModeMappingContext.ToSoftObjectPath(), FStreamableDelegate::CreateUObject(this, &UFEBuildingComponent::UpdateBuildModeState));
-        }
+        BuildModeMappingLoadHandle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+            BuildModeMappingContext.ToSoftObjectPath(), FStreamableDelegate::CreateUObject(this, &UFEBuildingComponent::UpdateBuildModeState));
     }
 }
 
 void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-    // 탑승 중 폰이 사라지면 시야·입력·태그를 되돌린다 (서버의 발리스타는 조작자 확인 타이머로 내린다)
-    if (MountedBallista != nullptr)
-    {
-        HandleBallistaDismounted(MountedBallista);
-    }
-    // 빌드 모드 중 폰이 사라지면 PlayerState 의 ASC 에 태그가 남아 다음 폰의 상호작용이 막힌다
+    // 빌드 모드 중 폰이 사라지면 PlayerState 의 ASC 에 태그가 남아 다음 폰의 상호작용이 막힌다 (패널은 HUD 컴포넌트가 닫는다)
     bIsInBuildMode = false;
     UpdateBuildModeState();
     DestroyPreview();
-    CloseSupplyPanel();
-    CloseStoragePanel();
-    GetWorld()->GetTimerManager().ClearTimer(AimTimer);
     Super::EndPlay(EndPlayReason);
 }
 
@@ -1298,14 +746,13 @@ AFEBuildPiece* UFEBuildingComponent::FindPieceUnderCrosshair() const
     return bHit ? Cast<AFEBuildPiece>(Hit.GetActor()) : nullptr;
 }
 
-bool UFEBuildingComponent::IsPieceInReach(const AFEBuildPiece* Piece) const
+bool UFEBuildingComponent::IsPieceInReach(const AActor* Requester, const AFEBuildPiece* Piece)
 {
-    const AActor* Owner = GetOwner();
-    const bool bIsValidRequest = Owner != nullptr && Owner->HasAuthority() && Piece != nullptr && !Piece->IsActorBeingDestroyed();
+    const bool bIsValidRequest = Requester != nullptr && Requester->HasAuthority() && Piece != nullptr && !Piece->IsActorBeingDestroyed();
     if (!bIsValidRequest) return false;
 
     const float MaxDistanceWithSlack = UFEBuildingSettings::Get()->MaxBuildDistance + ReachSlack;
-    return FVector::Dist(Owner->GetActorLocation(), Piece->GetActorLocation()) <= MaxDistanceWithSlack;
+    return FVector::Dist(Requester->GetActorLocation(), Piece->GetActorLocation()) <= MaxDistanceWithSlack;
 }
 
 FTransform UFEBuildingComponent::MakePlacementTransform(const FVector& Location, uint8 YawStep)
@@ -1572,7 +1019,7 @@ bool UFEBuildingComponent::ServerDemolishPiece_Validate(AFEBuildPiece* Piece)
 
 void UFEBuildingComponent::ServerDemolishPiece_Implementation(AFEBuildPiece* Piece)
 {
-    if (!IsPieceInReach(Piece)) return;
+    if (!IsPieceInReach(GetOwner(), Piece)) return;
 
     // 클라 검사와 서버 사이에 다른 플레이어가 아이템을 넣었을 수 있다. 판정은 서버 값으로.
     FText Reason;
@@ -1594,7 +1041,7 @@ bool UFEBuildingComponent::ServerRepairPiece_Validate(AFEBuildPiece* Piece)
 void UFEBuildingComponent::ServerRepairPiece_Implementation(AFEBuildPiece* Piece)
 {
     if (!ServerSwingTool(FallenEraCombatGameplayTags::Ability_Input_Combat_LeftClick)) return;
-    if (!IsPieceInReach(Piece)) return; // nullptr 포함 (빈 곳에 휘두르기)
+    if (!IsPieceInReach(GetOwner(), Piece)) return; // nullptr 포함 (빈 곳에 휘두르기)
 
     IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
     if (Inventory == nullptr)
@@ -1619,7 +1066,7 @@ bool UFEBuildingComponent::ServerUpgradePiece_Validate(AFEBuildPiece* Piece)
 void UFEBuildingComponent::ServerUpgradePiece_Implementation(AFEBuildPiece* Piece)
 {
     if (!ServerSwingTool(FallenEraCombatGameplayTags::Ability_Input_Combat_RightClick)) return;
-    if (!IsPieceInReach(Piece)) return;
+    if (!IsPieceInReach(GetOwner(), Piece)) return;
 
     IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
     if (Inventory == nullptr)
@@ -1700,375 +1147,9 @@ bool UFEBuildingComponent::ServerSwingTool(FGameplayTag InputTag)
     return true;
 }
 
-void UFEBuildingComponent::UpdateAimedPiece()
-{
-    const APawn* Pawn = Cast<APawn>(GetOwner());
-    if (Pawn == nullptr) return;
-
-    // 서버에서 원격 플레이어가 빙의한 폰은 이 기계의 화면과 무관하다 → 타이머를 끈다.
-    // 클라의 다른 플레이어 폰(SimulatedProxy)과 빙의 전 폰은 끄지 않는다 — 늦게 빙의되면 내 폰이 될 수 있다 (판정 한 번이라 비용은 무시 가능)
-    if (Pawn->HasAuthority() && Pawn->GetController() != nullptr && !Pawn->IsLocallyControlled())
-    {
-        GetWorld()->GetTimerManager().ClearTimer(AimTimer);
-        return;
-    }
-    if (!Pawn->IsLocallyControlled()) return;
-
-    // 망치를 들지 않았으면 트레이스도 하지 않는다
-    const AFEBuildPiece* Piece = IsHoldingRepairTool() ? FindPieceUnderCrosshair() : nullptr;
-    const bool bShow = Piece != nullptr && Piece->GetState() == EFEBuildPieceState::Built && Piece->GetDefinition() != nullptr;
-    if (!bShow)
-    {
-        GetViewModel()->SetAimedPiece(FText::GetEmpty(), 1.f, FText::GetEmpty(), FText::GetEmpty());
-        return;
-    }
-
-    const float Percent = Piece->GetHealthPercent();
-    FText RepairText = LOCTEXT("RepairNotNeeded", "손상 없음");
-    if (Piece->IsDamaged())
-    {
-        // 클라는 정확한 HP 를 모른다 → 리플리케이트된 % 로 추정 (내림이라 실제보다 최대 1개 많게 보일 수 있다)
-        TArray<FFEBuildItemCost> Costs;
-        Piece->GetRepairCost(1.f - Percent, Costs);
-        RepairText = Costs.IsEmpty()
-            ? LOCTEXT("RepairFree", "수리: 재료 없음")
-            : FText::Format(LOCTEXT("RepairCost", "수리: {0}"), FormatItemCosts(Costs));
-    }
-
-    FText UpgradeText;
-    if (const UFEBuildPieceDefinition* Target = Piece->GetUpgradeTarget())
-    {
-        UpgradeText = FText::Format(LOCTEXT("UpgradeHint", "우클릭 업그레이드: {0} ({1})"),
-            Target->DisplayName, FormatItemCosts(Target->RequiredItems));
-    }
-
-    GetViewModel()->SetAimedPiece(Piece->GetDefinition()->DisplayName, Percent, RepairText, UpgradeText);
-}
-
-void UFEBuildingComponent::ExitBallista()
-{
-    if (MountedBallista != nullptr)
-    {
-        ServerExitBallista(MountedBallista);
-    }
-}
-
-void UFEBuildingComponent::FireBallista()
-{
-    const APawn* Pawn = Cast<APawn>(GetOwner());
-    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    if (MountedBallista == nullptr || PlayerController == nullptr) return;
-
-    // 장전 중 — HUD 가 이미 "장전 중"을 보여 준다. 발리스타의 리플리케이트 값이라 누가 쐈든, 어느 발리스타로 옮겨 탔든 맞다
-    if (MountedBallista->IsReloading()) return;
-
-    if (MountedBallista->GetAmmoCount() <= 0)
-    {
-        ShowNotice(LOCTEXT("BallistaNoAmmo", "탄약이 없습니다 (Tab: 탄약)"));
-        return;
-    }
-
-    // 지금 화면의 조준(정밀값)으로 보낸다. 장전 시작은 서버가 정해 리플리케이트한다 —
-    // 클라 예측이 없어서 서버가 거절해도 클라 장전이 따로 돌지 않는다 (응답 전 연타는 서버 요청 간격 제한이 버린다)
-    const FVector2D Aim = MountedBallista->ApplyLocalAim(PlayerController->GetControlRotation());
-    ServerFireBallista(MountedBallista, Aim.X, Aim.Y);
-}
-
-void UFEBuildingComponent::HandleBallistaMounted(AFEBuildBallista* Ballista)
-{
-    APawn* Pawn = Cast<APawn>(GetOwner());
-    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    if (Ballista == nullptr || PlayerController == nullptr || !Pawn->IsLocallyControlled()) return;
-
-    CancelBuild(); // 탑승 전에 열려 있던 빌드 모드·메뉴 정리
-    MountedBallista = Ballista;
-
-    // 이동 잠금. 서버도 같은 처리를 한다 — 소유 클라의 예측이 서버와 어긋나 위치 보정이 생기지 않게
-    AFEBuildBallista::LockOperatorMovement(Cast<ACharacter>(Pawn));
-
-    // 시야를 발리스타 카메라로, 조준은 정면에서 시작
-    PlayerController->SetViewTargetWithBlend(Ballista, BallistaViewBlendTime);
-    PlayerController->SetControlRotation(FRotator(0.f, Ballista->GetActorRotation().Yaw, 0.f));
-
-    // 발리스타 입력(좌클릭 발사·E/우클릭 내림). IMC 가 아직 로드 전이면 발리스타의 로드 완료 콜백이 다시 부른다
-    AddBallistaInput();
-
-    UpdateBuildModeState();        // State.Building → 상호작용 프롬프트 끔
-    SetComponentTickEnabled(true); // 조준 추종
-    LastAimSendTime = -1.0;
-    LastHudAmmo = -1; // 다음 틱에 탄약 HUD 를 무조건 그린다
-    UE_LOG(LogFEBuilding, Log, TEXT("%s mounted %s"), *GetNameSafe(Pawn), *Ballista->GetName());
-}
-
-void UFEBuildingComponent::HandleBallistaDismounted(AFEBuildBallista* Ballista)
-{
-    if (MountedBallista == nullptr) return;
-    MountedBallista = nullptr;
-
-    APawn* Pawn = Cast<APawn>(GetOwner());
-    AFEBuildBallista::UnlockOperatorMovement(Cast<ACharacter>(Pawn)); // 탑승 잠금만 푼다 — 탑승 중 사망했으면 HT 사망 처리의 잠금이 그대로 남는다
-    if (APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr)
-    {
-        PlayerController->SetViewTargetWithBlend(Pawn, BallistaViewBlendTime);
-    }
-
-    // 넣었던 서브시스템에서 뺀다. 발리스타가 부서지는 중이어도 EndPlay 동안은 유효하다
-    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = BallistaInputOwner.Get();
-    UInputMappingContext* MappingContext = Ballista ? Ballista->GetMappingContext() : nullptr;
-    if (InputSubsystem != nullptr && MappingContext != nullptr)
-    {
-        InputSubsystem->RemoveMappingContext(MappingContext);
-    }
-    BallistaInputOwner = nullptr;
-
-    if (bIsAmmoPanel && StorageTarget == Ballista)
-    {
-        CloseStoragePanel();
-    }
-    GetViewModel()->SetBallistaHud(false, FText::GetEmpty());
-    UpdateBuildModeState();
-    SetComponentTickEnabled(bIsInBuildMode);
-    UE_LOG(LogFEBuilding, Log, TEXT("%s dismounted %s"), *GetNameSafe(Pawn), *GetNameSafe(Ballista));
-}
-
-void UFEBuildingComponent::AddBallistaInput()
-{
-    // 탑승 중이고 아직 안 넣었을 때만 — 탑승 때와 IMC 로드 완료 때 두 번 불려도 한 번만 들어간다
-    if (MountedBallista == nullptr || BallistaInputOwner.IsValid()) return;
-
-    const APawn* Pawn = Cast<APawn>(GetOwner());
-    const APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = PlayerController
-        ? ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer())
-        : nullptr;
-    UInputMappingContext* MappingContext = MountedBallista->GetMappingContext();
-    if (InputSubsystem != nullptr && MappingContext != nullptr)
-    {
-        // 전투(20)·빌드 모드(30)보다 높은 우선순위로 같은 키를 가져온다 → 개인 무기가 나가지 않는다
-        InputSubsystem->AddMappingContext(MappingContext, MountedBallista->GetMappingPriority());
-        BallistaInputOwner = InputSubsystem;
-    }
-}
-
-void UFEBuildingComponent::UpdateBallistaAim()
-{
-    const APawn* Pawn = Cast<APawn>(GetOwner());
-    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    if (PlayerController == nullptr || MountedBallista == nullptr) return;
-
-    // 범위로 자른 각도를 머리에 바로 적용하고, 컨트롤 회전도 그 범위로 되돌린다 — 마우스가 한계 밖으로 쌓이면 돌아올 때 멈춘 것처럼 느껴진다
-    const FVector2D Aim = MountedBallista->ApplyLocalAim(PlayerController->GetControlRotation());
-    PlayerController->SetControlRotation(FRotator(Aim.Y, MountedBallista->GetActorRotation().Yaw + Aim.X, 0.f));
-
-    // 다른 플레이어용: 바뀌었으면 BallistaAimSendInterval 이하 빈도로, 그대로여도 BallistaAimRefreshInterval 마다 다시 보낸다
-    const int8 Yaw = static_cast<int8>(FMath::RoundToInt(Aim.X)); // MaxYaw ≤ 127 이라 int8 안에 들어간다
-    const int8 Pitch = static_cast<int8>(FMath::RoundToInt(Aim.Y));
-    const double Now = GetWorld()->GetTimeSeconds();
-    const double SinceLastSend = Now - LastAimSendTime;
-    const bool bChanged = Yaw != LastSentAimYaw || Pitch != LastSentAimPitch;
-    const bool bSendDue = LastAimSendTime < 0.0 || (bChanged && SinceLastSend >= BallistaAimSendInterval) || SinceLastSend >= BallistaAimRefreshInterval;
-    if (bSendDue)
-    {
-        LastSentAimYaw = Yaw;
-        LastSentAimPitch = Pitch;
-        LastAimSendTime = Now;
-        ServerSetBallistaAim(MountedBallista, Yaw, Pitch);
-    }
-}
-
-void UFEBuildingComponent::UpdateBallistaHud()
-{
-    if (MountedBallista == nullptr) return;
-
-    const int32 AmmoCount = MountedBallista->GetAmmoCount();
-    const bool bReloading = MountedBallista->IsReloading();
-    if (AmmoCount == LastHudAmmo && bReloading == bLastHudReloading) return; // 바뀐 게 없으면 뷰모델 알림을 보내지 않는다
-
-    LastHudAmmo = AmmoCount;
-    bLastHudReloading = bReloading;
-    const FText AmmoText = FText::Format(LOCTEXT("BallistaHud", "{0} {1} / {2}"),
-        MountedBallista->GetSlotLabel(0), FText::AsNumber(AmmoCount), FText::AsNumber(MountedBallista->GetMaxStackSize()));
-    GetViewModel()->SetBallistaHud(true, bReloading
-        ? FText::Format(LOCTEXT("BallistaHudReloading", "{0} · 장전 중"), AmmoText)
-        : AmmoText);
-}
-
-AFEBuildBallista* UFEBuildingComponent::FindAmmoPanelTarget() const
-{
-    if (MountedBallista != nullptr) return MountedBallista;
-    if (bIsInBuildMode) return nullptr; // 빌드 모드의 Tab 은 빌드 메뉴
-
-    AFEBuildBallista* Aimed = Cast<AFEBuildBallista>(FindPieceUnderCrosshair());
-    return Aimed != nullptr && Aimed->GetState() == EFEBuildPieceState::Built ? Aimed : nullptr;
-}
-
-bool UFEBuildingComponent::ServerExitBallista_Validate(AFEBuildBallista* Ballista)
-{
-    return true; // nullptr·남의 발리스타는 Implementation 에서 무시 (킥할 일은 아니다)
-}
-
-void UFEBuildingComponent::ServerExitBallista_Implementation(AFEBuildBallista* Ballista)
-{
-    // 조작자 본인만 내릴 수 있다
-    if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
-    {
-        Ballista->SetOperator(nullptr);
-    }
-}
-
-bool UFEBuildingComponent::ServerSetBallistaAim_Validate(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch)
-{
-    return true;
-}
-
-void UFEBuildingComponent::ServerSetBallistaAim_Implementation(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch)
-{
-    // 간격 제한이 가장 먼저 — 조작된 클라가 쏟아 보내도 처리량이 정해진다. 정상 클라는 이 간격의 2배로 보낸다
-    // (몰려 와서 하나를 버려도 0.5초 재전송으로 다시 맞춰진다)
-    if (!FEBuilding::ConsumeRequestSlot(NextAimRequestTime, GetWorld()->GetTimeSeconds(), BallistaAimAcceptInterval)) return;
-
-    // 조작자만. 범위는 발리스타가 다시 자른다
-    if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
-    {
-        Ballista->SetReplicatedAim(Yaw, Pitch);
-    }
-}
-
-bool UFEBuildingComponent::ServerFireBallista_Validate(AFEBuildBallista* Ballista, float Yaw, float Pitch)
-{
-    return FMath::IsFinite(Yaw) && FMath::IsFinite(Pitch); // NaN·무한대는 조작된 패킷. 범위는 발리스타가 자른다
-}
-
-void UFEBuildingComponent::ServerFireBallista_Implementation(AFEBuildBallista* Ballista, float Yaw, float Pitch)
-{
-    // 간격 제한이 가장 먼저 (수리와 같은 이유) — 빈 발리스타 연타 같은 요청도 거절 로그·안내가 이 간격당 1번.
-    // 장전(발리스타별 ReloadTime)과는 별개라 정상 발사는 걸리지 않는다
-    if (!FEBuilding::ConsumeRequestSlot(NextFireRequestTime, GetWorld()->GetTimeSeconds(), BallistaFireRequestInterval)) return;
-
-    // 조작자 본인만
-    if (Ballista == nullptr || Ballista->GetOperator() != GetOwner()) return;
-
-    FText Reason;
-    if (!Ballista->TryFire(Cast<APawn>(GetOwner()), Yaw, Pitch, Reason) && !Reason.IsEmpty())
-    {
-        UE_LOG(LogFEBuilding, Log, TEXT("Fire rejected: %s"), *Reason.ToString());
-        ClientShowNotice(Reason);
-    }
-}
-
 void UFEBuildingComponent::ClientShowNotice_Implementation(const FText& Text)
 {
-    ShowNotice(Text);
-}
-
-bool UFEBuildingComponent::ServerSupplyItem_Validate(AFEBuildPiece* Piece, FGameplayTag ItemTag)
-{
-    return Piece != nullptr && ItemTag.IsValid();
-}
-
-void UFEBuildingComponent::ServerSupplyItem_Implementation(AFEBuildPiece* Piece, FGameplayTag ItemTag)
-{
-    if (!IsPieceInReach(Piece)) return;
-
-    IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
-    if (Inventory == nullptr)
-    {
-        UE_LOG(LogFEBuilding, Warning, TEXT("%s has no IFEBuildInventoryProvider; cannot supply"), *GetNameSafe(GetOwner()));
-        return;
-    }
-
-    // 실패 사유는 서버만 아는 것(다른 플레이어가 먼저 재질을 정함, 그새 재료가 없어짐)만 돌려준다
-    FText Reason;
-    if (!Piece->TrySupply(*Inventory, ItemTag, Reason) && !Reason.IsEmpty())
-    {
-        UE_LOG(LogFEBuilding, Log, TEXT("Supply rejected: %s (%s)"), *Piece->GetName(), *Reason.ToString());
-        ClientShowNotice(Reason);
-    }
-
-    // 넣은 뒤 남은 소지품으로 [넣기] 버튼 활성 상태를 갱신하도록 스냅샷을 다시 보낸다
-    SendInventorySnapshot();
-}
-
-bool UFEBuildingComponent::ServerStoreItem_Validate(AFEBuildStorage* Storage, FGameplayTag ItemTag, int32 Count)
-{
-    return Storage != nullptr && ItemTag.IsValid() && Count > 0;
-}
-
-void UFEBuildingComponent::ServerStoreItem_Implementation(AFEBuildStorage* Storage, FGameplayTag ItemTag, int32 Count)
-{
-    IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
-    if (!IsPieceInReach(Storage) || Inventory == nullptr) return;
-
-    // 클라가 보낸 개수는 화면 기준이다. 실제 보유량으로 다시 자른 뒤,
-    // 보관함에 먼저 넣어 보고(칸 제한) 실제로 들어간 만큼만 인벤토리에서 뺀다. 순서가 반대면 아이템이 증발한다.
-    const int32 Requested = FMath::Min(Count, Inventory->CountItems(ItemTag));
-    const int32 Stored = Storage->StoreItems(ItemTag, Requested);
-    if (Stored > 0)
-    {
-        Inventory->RemoveItems(ItemTag, Stored);
-    }
-    SendInventorySnapshot();
-}
-
-bool UFEBuildingComponent::ServerTakeItem_Validate(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag)
-{
-    return Storage != nullptr && SlotIndex >= 0 && ItemTag.IsValid();
-}
-
-void UFEBuildingComponent::ServerTakeItem_Implementation(AFEBuildStorage* Storage, int32 SlotIndex, FGameplayTag ItemTag)
-{
-    IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner());
-    if (!IsPieceInReach(Storage) || Inventory == nullptr) return;
-
-    // 넣기와 같은 원칙: 받는 쪽(인벤토리)에 먼저 넣고, 실제로 들어간 만큼만 칸에서 뺀다.
-    // 되돌리기가 필요 없어서 화로처럼 아무 아이템이나 받지 않는 컨테이너에서도 증발하지 않는다.
-    const int32 Available = Storage->GetSlotCount(SlotIndex, ItemTag);
-    if (Available > 0)
-    {
-        const int32 Added = Inventory->AddItems(ItemTag, Available);
-        Storage->TakeFromSlot(SlotIndex, ItemTag, Added);
-    }
-    SendInventorySnapshot();
-}
-
-bool UFEBuildingComponent::ServerSetFurnaceLit_Validate(AFEBuildFurnace* Furnace, bool bLit)
-{
-    return Furnace != nullptr;
-}
-
-void UFEBuildingComponent::ServerSetFurnaceLit_Implementation(AFEBuildFurnace* Furnace, bool bLit)
-{
-    if (IsPieceInReach(Furnace))
-    {
-        Furnace->SetLit(bLit); // 켤 때 CanIgnite 를 서버 값으로 다시 검사한다
-    }
-}
-
-bool UFEBuildingComponent::ServerRequestInventory_Validate()
-{
-    return true;
-}
-
-void UFEBuildingComponent::ServerRequestInventory_Implementation()
-{
-    SendInventorySnapshot();
-}
-
-void UFEBuildingComponent::SendInventorySnapshot()
-{
-    TArray<FFEBuildItemCost> Snapshot;
-    if (IFEBuildInventoryProvider* Inventory = UFEBuildingSubsystem::FindInventoryProvider(GetOwner()))
-    {
-        Inventory->GetItems(Snapshot);
-    }
-    ClientReceiveInventory(Snapshot);
-}
-
-void UFEBuildingComponent::ClientReceiveInventory_Implementation(const TArray<FFEBuildItemCost>& InItems)
-{
-    CarriedItems = InItems;
-    RefreshStorageSlots();
-    RefreshSupplyRows(); // 투입 패널이 열려 있으면 [넣기] 활성 갱신 (없으면 바로 빠져나감)
+    UFEBuildingSubsystem::ShowLocalNotice(GetWorld(), Text); // HUD 는 이 알림을 구독한다 (건설 컴포넌트는 HUD 를 모른다)
 }
 
 #undef LOCTEXT_NAMESPACE

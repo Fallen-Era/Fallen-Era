@@ -1,7 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "FEBuildStorage.h"
-#include "FEBuildingComponent.h"
+#include "FEBuildHudComponent.h"
 #include "GameFramework/Actor.h"
 #include "Net/UnrealNetwork.h"
 
@@ -139,10 +139,10 @@ FText AFEBuildStorage::GetInteractTextBuilt(AActor* InstigatorActor) const
 
 void AFEBuildStorage::InteractBuiltLocal(AActor* InstigatorActor)
 {
-	// 패널은 요청한 클라이언트에서만 열린다. 실제 이동은 그쪽 건설 컴포넌트의 서버 RPC 로 간다.
-	if (UFEBuildingComponent* Building = InstigatorActor ? InstigatorActor->FindComponentByClass<UFEBuildingComponent>() : nullptr)
+	// 패널은 요청한 클라이언트에서만 열린다. 실제 이동은 그쪽 HUD 컴포넌트의 서버 RPC 로 간다.
+	if (UFEBuildHudComponent* Hud = InstigatorActor ? InstigatorActor->FindComponentByClass<UFEBuildHudComponent>() : nullptr)
 	{
-		Building->OpenStoragePanel(this);
+		Hud->OpenStoragePanel(this);
 	}
 }
 
