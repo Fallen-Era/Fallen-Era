@@ -1,0 +1,237 @@
+﻿#pragma once
+
+#include "CoreMinimal.h"
+#include "WorldSystemData.generated.h"
+
+
+/*
+ * 보르노이 다이어그램에 사용할 바이옴 구성
+ */
+UENUM(Blueprintable)
+enum class EBiomeType : uint8
+{
+	TemperateForest = 0,
+	Plains			= 1,
+	Hills			= 2,				
+	Desert			= 3,				
+	Tundra			= 4,				
+};
+
+struct FBiomeAffinityTable
+{
+	static constexpr int32 BiomeCount = 5;
+	
+	double Values[BiomeCount][BiomeCount] = {};
+	
+	double Get(EBiomeType A, EBiomeType B) const
+	{
+		return Values[static_cast<int32>(A)][static_cast<int32>(B)];
+	}
+};
+
+
+/**
+ * 주변 환경 Tag
+ * Prefab이 같은 Tag로 각 Prefab은 이 Tag에 지정된 가중치 연산에 따라
+ * 그 Sector에 배치될 확률을 지정 받는다.
+ */
+UENUM(Blueprintable)
+enum class EEnvironmentTag : uint8
+{
+	None,
+	Urban,			// 도심 : 상업지구, 오피스, 주거단지, 지하도, 지하철
+	Suburban,		// 교외 : 소도시, 마을, 주택가, 휴게소, 주유소, 소형 마트
+	Rural,			// 농촌, 목장, 과수원, 곡물창고, 농기게 창고, 작은 마을
+	Industrial,		// 산업 / 물류 : 공장, 제철소, 정유시설, 물류센터, 창고, 폐차장, 건설현장
+	Research,		// 연구 : 대학교, 연구단지, 생명공학 연구소, 제약회사, 데이터센터, 실험시설
+	Military,		// 군사 : 경찰서, 군부대, 훈련장, 탄약고, 공군기지, 방공기지, 지하 벙커, 해군 기지, 전략 지휘시설
+	Medical,		// 의료 : 종합병원, 약국, 연구병원, 혈액원
+	Government,		// 정부 : 시청 경찰서, 법원, 교도소
+	Transportation,	// 교통 : 고속도로, 터널, 휴게소, 철도, 기차역, 지하철, 공항
+	Energy,			// 에너지 : 원자력 발전소, 화력 발전소, 수력 발전소, 변전소
+	Harbor,			// 항만 : 항구, 조선소, 부두, 선박, 창고, 해경시설
+	Wilderness,		// 자연 : 산악, 숲, 습지, 국립 공원, 동굴, 계곡, 야영지
+	Special			// 특수구역 : 교도소, 방공호, 지하시설, 비밀 연구소
+};
+
+
+USTRUCT(Blueprintable)
+struct FRegionLink
+{
+	GENERATED_BODY()
+	
+	int32 NeighborRegionIndex = INDEX_NONE;
+	int32 EdgeIndex = INDEX_NONE;
+};
+
+USTRUCT(Blueprintable)
+struct FRegionSite
+{
+	GENERATED_BODY()
+	
+	FVector2D Center = FVector2D::ZeroVector;
+	EBiomeType Biome = EBiomeType::TemperateForest;
+	TArray<FRegionLink> Links;
+	TArray<FVector2D> Polygon;
+};
+
+USTRUCT(Blueprintable)
+struct FRegionEdge
+{
+	GENERATED_BODY()
+	
+	FVector2D A = FVector2D::ZeroVector;
+	FVector2D B = FVector2D::ZeroVector;
+
+	int32 RegionA = INDEX_NONE;
+	int32 RegionB = INDEX_NONE;
+};
+
+struct FRegionGenerationSettings
+{
+	double GridSpacing;
+	int32 MaxSwapIterations;
+	
+	bool bEnableWarp;
+	double WarpStrength;
+	double WarpWaveLength;
+	
+	FBiomeAffinityTable Affinity;
+};
+
+struct FGeneratedRegionData
+{
+	TArray<FRegionSite> Sites;
+	TArray<FRegionEdge> Edges;
+};
+
+
+
+
+/*
+ * 각 섹터가 가질 수 있는 여러 길 형태의 정의.
+ */
+UENUM(Blueprintable)
+enum class EWayType : uint8
+{
+	Paved,		// 아스팔트, 콘크리트 등 포장 도로
+	Unpaved,	// 흙/자갈 등으로 도로 형태는 조성됨
+	Trail,		// 자연 지형을 따라 최소한으로 형성된 길
+	OffRoad,	// 실제 길 없음, 지형 그대로 통과
+};
+
+
+/*
+ * 초기 단계 구현에서 미사용.
+ */
+UENUM(Blueprintable)
+enum class EBiomeEnvironmentOverlay : uint8
+{
+	None,
+	Radioactive,		// 방사능
+	Biological,			// 생물학적 오염
+	Infected,			// 감염
+	Chemical,			// 화학적 오염
+};
+
+
+
+/*
+ * Sector 내부에 배치되는 Prefab의 정의.
+ */
+USTRUCT(Blueprintable)
+struct FPOI_Prefab
+{
+	
+	GENERATED_BODY()
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	EEnvironmentTag RegionType = EEnvironmentTag::None;
+	
+};
+
+USTRUCT(Blueprintable)
+struct FWayPoint
+{
+	GENERATED_BODY()
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	EWayType WayType = EWayType::OffRoad;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, 
+		meta = (EditCondition = "WayType == EWayType::Paved || WayType == EWayType::Unpaved"))
+	bool Tunnel = false;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, 
+		meta = (EditCondition = "WayType == EWayType::Paved || WayType == EWayType::Unpaved"))
+	bool Bridge = false;
+};
+
+
+USTRUCT(Blueprintable)
+struct FWorldSectorDefinition
+{
+	GENERATED_BODY()
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	TArray<FWayPoint> WayPoints;
+	
+};
+
+
+struct FBiomeQuerySite
+{
+	FVector2D Center;
+	EBiomeType Biome = EBiomeType::TemperateForest;
+};
+
+
+struct FBiomeQuerySnapshot
+{
+	TArray<FBiomeQuerySite> Sites;
+	
+	bool bEnableWarp = false;
+	double WarpStrength = 0.0;
+	double WarpWaveLength = 1.0;
+	
+	FVector2D WarpPhaseX = FVector2D::ZeroVector;
+	FVector2D WarpPhaseY = FVector2D::ZeroVector;
+	
+	EBiomeType GetBiomeAt(FVector2D Position) const
+	{
+		if (!FMath::IsFinite(Position.X) || !FMath::IsFinite(Position.Y))
+		{
+			return EBiomeType::TemperateForest;
+		}
+		
+		if (bEnableWarp && WarpWaveLength > 0.0)
+		{
+			const FVector2D Sample = Position / WarpWaveLength;
+			
+			Position += FVector2D(
+				FMath::PerlinNoise2D(Sample + WarpPhaseX),
+				FMath::PerlinNoise2D(Sample + WarpPhaseY)) * WarpStrength;
+		}
+	
+	
+		EBiomeType Result = EBiomeType::TemperateForest;
+		double BestDistance = TNumericLimits<double>::Max();
+	
+		for (const FBiomeQuerySite& Site : Sites)
+		{
+			const double Distance = FVector2D::DistSquared(
+				Position,
+				Site.Center);
+			
+			if (Distance < BestDistance)
+			{
+				BestDistance = Distance;
+				Result = Site.Biome;
+			}
+		}
+		
+		return Result;
+	}
+};
+
+using FBiomeQuerySnapshotPtr = TSharedPtr<const FBiomeQuerySnapshot, ESPMode::ThreadSafe>;

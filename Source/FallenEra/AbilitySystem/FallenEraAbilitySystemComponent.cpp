@@ -15,6 +15,26 @@ void UFallenEraAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag
 	{
 		if (AbilitySpec.Ability && AbilitySpec.GetDynamicSpecSourceTags().HasTagExact(InputTag))
 		{
+			const UFallenEraGameplayAbility* AbilityCDO = Cast<UFallenEraGameplayAbility>(AbilitySpec.Ability);
+			const bool bUsesHeldActivation = AbilityCDO &&
+				AbilityCDO->GetActivationPolicy() == EFallenEraAbilityActivationPolicy::WhileInputActive;
+
+			// Do not discard a pending release while an ability is active. Otherwise
+			// a quick re-press can keep an attack ability active indefinitely.
+			if (!AbilitySpec.IsActive())
+			{
+				InputReleasedSpecHandles.Remove(AbilitySpec.Handle);
+				PendingReactivationSpecHandles.Remove(AbilitySpec.Handle);
+			}
+			else
+			{
+				// Held-policy abilities retry through InputHeldSpecHandles. Only
+				// one-shot abilities need an explicit pending reactivation.
+				if (!bUsesHeldActivation)
+				{
+					PendingReactivationSpecHandles.AddUnique(AbilitySpec.Handle);
+				}
+			}
 			InputPressedSpecHandles.AddUnique(AbilitySpec.Handle);
 			InputHeldSpecHandles.AddUnique(AbilitySpec.Handle);
 		}
@@ -35,6 +55,7 @@ void UFallenEraAbilitySystemComponent::AbilityInputTagReleased(const FGameplayTa
 		{
 			InputReleasedSpecHandles.AddUnique(AbilitySpec.Handle);
 			InputHeldSpecHandles.Remove(AbilitySpec.Handle);
+			PendingReactivationSpecHandles.Remove(AbilitySpec.Handle);
 		}
 	}
 }
@@ -73,7 +94,11 @@ void UFallenEraAbilitySystemComponent::ProcessAbilityInput(float DeltaTime, bool
 				AbilitySpecInputPressed(*AbilitySpec);
 
 				const UFallenEraGameplayAbility* AbilityCDO = Cast<UFallenEraGameplayAbility>(AbilitySpec->Ability);
-				if (AbilityCDO && AbilityCDO->GetActivationPolicy() == EFallenEraAbilityActivationPolicy::OnInputTriggered && !AbilitySpec->IsActive())
+				// Weapon data accepts regular UGameplayAbility classes as well. They use
+				// the one-shot input policy unless they opt into a FallenEra policy.
+				const bool bOnInputTriggered = !AbilityCDO ||
+					AbilityCDO->GetActivationPolicy() == EFallenEraAbilityActivationPolicy::OnInputTriggered;
+				if (bOnInputTriggered && !AbilitySpec->IsActive())
 				{
 					AbilitiesToActivate.AddUnique(AbilitySpec->Handle);
 				}
@@ -97,6 +122,31 @@ void UFallenEraAbilitySystemComponent::ProcessAbilityInput(float DeltaTime, bool
 		}
 	}
 
+	// If the player pressed again while the previous attack was active, start
+	// exactly one new activation after that ability has ended.
+	for (int32 PendingIndex = PendingReactivationSpecHandles.Num() - 1; PendingIndex >= 0; --PendingIndex)
+	{
+		const FGameplayAbilitySpecHandle SpecHandle = PendingReactivationSpecHandles[PendingIndex];
+		FGameplayAbilitySpec* AbilitySpec = FindAbilitySpecFromHandle(SpecHandle);
+		if (!AbilitySpec || !AbilitySpec->Ability)
+		{
+			PendingReactivationSpecHandles.RemoveAtSwap(PendingIndex);
+			continue;
+		}
+
+		if (!InputHeldSpecHandles.Contains(SpecHandle))
+		{
+			PendingReactivationSpecHandles.RemoveAtSwap(PendingIndex);
+			continue;
+		}
+
+		if (!AbilitySpec->IsActive())
+		{
+			TryActivateAbility(SpecHandle);
+			PendingReactivationSpecHandles.RemoveAtSwap(PendingIndex);
+		}
+	}
+
 	InputPressedSpecHandles.Reset();
 	InputReleasedSpecHandles.Reset();
 }
@@ -114,6 +164,7 @@ void UFallenEraAbilitySystemComponent::ClearAbilityInput()
 	InputPressedSpecHandles.Reset();
 	InputReleasedSpecHandles.Reset();
 	InputHeldSpecHandles.Reset();
+	PendingReactivationSpecHandles.Reset();
 }
 
 void UFallenEraAbilitySystemComponent::TryActivateAbilitiesOnSpawn()

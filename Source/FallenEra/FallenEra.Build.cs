@@ -18,10 +18,23 @@ public class FallenEra : ModuleRules
 			"GameplayTags",
 			"GameplayTasks",
 			"AIModule",
+			"NavigationSystem",
+			"DeveloperSettings",
 			"StateTreeModule",
 			"GameplayStateTreeModule",
+			"Niagara",
 			"UMG",
-			"Slate"
+			"PCG",
+			"Voxel",
+			"VoxelGraph",
+			"VoxelCore",
+			"VoxelPCG",
+			"ModelViewViewModel",
+			"Slate",
+			"SlateCore",
+			"PhysicsCore",
+			"DeveloperSettings",
+			"Voronoi",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] 
@@ -34,6 +47,8 @@ public class FallenEra : ModuleRules
 			"FallenEra/AbilitySystem",
 			"FallenEra/AbilitySystem/Abilities",
 			"FallenEra/AbilitySystem/Attributes",
+			"FallenEra/Building",
+			"FallenEra/Interaction",
 		});
 
 		// Uncomment if you are using Slate UI
