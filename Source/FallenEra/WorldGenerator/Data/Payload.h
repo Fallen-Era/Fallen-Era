@@ -101,7 +101,7 @@ struct FALLENERA_API FWorldDefinitionData
 	int32 WorldSeed = 0;
 	
 	UPROPERTY()
-	FBox2D WorldSize = FBox2D();
+	FBox2D WorldBounds = FBox2D();
 	
 	UPROPERTY()
 	EWorldDifficulty Diffculty = EWorldDifficulty::Normal;

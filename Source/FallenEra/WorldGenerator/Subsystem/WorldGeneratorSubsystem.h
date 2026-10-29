@@ -7,6 +7,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "WorldGenerator/Data/WorldSystemData.h"
 #include "WorldGenerator/Data/Payload.h"
+#include "VoxelMinimal/VoxelObjectPtr.h"
 
 #include "WorldGeneratorSubsystem.generated.h"
 
@@ -23,15 +24,19 @@ class FALLENERA_API UWorldGeneratorSubsystem : public UWorldSubsystem
 	
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
-	
-	UPROPERTY()
-	TArray<int32> WorldWeightGrid;
-	
-protected:
-	
+	virtual void Deinitialize() override;
 	
 	bool CreateWorld(const FWorldCreateRequest& CreateParams);
+	bool BindBiomeOwner(UObject& Owner);
+	void UnbindBiomeOwner(UObject& Owner);
+	void ClearBiomeBindings();
 	
+	int32 GetWorldSeed_GameThread() const
+	{
+		check(IsInGameThread());
+		return GenerationSeed;
+	}
+protected:
 	/*
 	 * World에 흩 뿌릴 Region Seed들을 생성한다.
 	 */
@@ -62,13 +67,19 @@ protected:
 	FVector2D WarpPhaseY = FVector2D::ZeroVector;
 	
 	void ClearGenerator();
-	
 
-	
 private:
 	UPROPERTY()
 	TArray<FRegionSite> RegionSites;
 	
 	UPROPERTY()
 	TArray<FRegionEdge> RegionEdges;
+	
+	void BuildBiomeSnapshot();
+	void ClearBiomeSnapshot();
+	
+	FBiomeQuerySnapshotPtr BiomeSnapshot;
+	TArray<FVoxelObjectPtr> BoundBiomeOwners;
+	
+	int32 GenerationSeed = 0;
 };

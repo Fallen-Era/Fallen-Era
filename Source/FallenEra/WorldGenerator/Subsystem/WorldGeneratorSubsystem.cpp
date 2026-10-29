@@ -11,6 +11,7 @@
 #include "Voronoi/Voronoi.h"
 #include "VoxelPCG/Public/PCGApplyOnVoxelGraphSettings.h"
 #include "WorldPartition/NavigationData/NavigationDataChunkActor.h"
+#include "WorldGenerator/Adapters/BiomeQueryBridge.h"
 
 
 namespace
@@ -31,13 +32,13 @@ namespace
 		FRegionGenerationSettings Settings{};
 		
 		Settings.GridSpacing = 256.0;
-		Settings.MaxSwapIterations = 64;
+		Settings.MaxSwapIterations = 256;
 		
 		Settings.bEnableWarp = false;
 		Settings.WarpStrength = 32.0;
-		Settings.WarpWavelength = 512.0;
+		Settings.WarpWaveLength = 512.0;
 		
-		for (int32 Index = 0; Index << FBiomeAffinityTable::BiomeCount; ++Index)
+		for (int32 Index = 0; Index < FBiomeAffinityTable::BiomeCount; ++Index)
 		{
 			Settings.Affinity.Values[Index][Index] = 1.0;
 		}
@@ -67,9 +68,9 @@ namespace
 		
 		if (Settings.bEnableWarp && 
 			(!FMath::IsFinite(Settings.WarpStrength) ||
-			 !FMath::IsFinite(Settings.WarpWavelength) ||
+			 !FMath::IsFinite(Settings.WarpWaveLength) ||
 			 Settings.WarpStrength < 0.0 ||
-			 Settings.WarpWavelength < 0.0))
+			 Settings.WarpWaveLength < 0.0))
 		{
 			return false;
 		}
@@ -132,7 +133,7 @@ namespace
 		for (int32 Region = 0; Region < Cells.Num(); ++Region)
 		{
 			const FVoronoiCellInfo& Cell = Cells[Region];
-			FClippedRegionCell Output = Result[Region];
+			FClippedRegionCell& Output = Result[Region];
 			
 			// Faces [Vertex Num, Vertex Indices, Vertex Num, ...]
 			int32 Cursor = 0;
@@ -382,6 +383,12 @@ void UWorldGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	ClearGenerator();
 }
 
+void UWorldGeneratorSubsystem::Deinitialize()
+{
+	ClearGenerator();
+	Super::Deinitialize();
+}
+
 bool UWorldGeneratorSubsystem::CreateWorld(const FWorldCreateRequest& CreateParams)
 {
 	// Registry Subsystem에서 Create World 책임 부분
@@ -396,17 +403,25 @@ bool UWorldGeneratorSubsystem::CreateWorld(const FWorldCreateRequest& CreatePara
 	
 	const FVector2D Size = CreateParams.WorldBounds.GetSize();
 	
-	const double DesiredCount = 
-		(Size.X / Settings.GridSpacing) * (Size.Y / Settings.GridSpacing);
-	
-	constexpr int32 MaxRegionCount = 1024;
-	
-	if (!FMath::IsFinite(DesiredCount) || DesiredCount > MaxRegionCount)
+	if (!FMath::IsFinite(Size.X) || !FMath::IsFinite(Size.Y) ||
+		Size.X <= 0.0 || Size.Y <= 0.0)
 	{
 		return false;
 	}
 	
-	const int32 RegionCount = FMath::Max(1, FMath::CeilToInt(DesiredCount));
+	const double DesiredCount = 
+		(Size.X / Settings.GridSpacing) * (Size.Y / Settings.GridSpacing);
+	
+	if (!FMath::IsFinite(DesiredCount))
+	{
+		return false;
+	}
+	
+	constexpr int32 MaxRegionCount = 1024;
+	
+	const double ClampedCount = FMath::Clamp(DesiredCount, 1.0, MaxRegionCount);
+	
+	const int32 RegionCount = FMath::CeilToInt(ClampedCount);
 	
 	ClearGenerator();
 	
@@ -450,7 +465,49 @@ bool UWorldGeneratorSubsystem::CreateWorld(const FWorldCreateRequest& CreatePara
 	
 	ValidateBiomeConnectivity();
 	
+	GenerationSeed = CreateParams.WorldSeed;
+	BuildBiomeSnapshot();
+	
 	return true;
+}
+
+bool UWorldGeneratorSubsystem::BindBiomeOwner(UObject& Owner)
+{
+	check(IsInGameThread());
+
+	if (!BiomeSnapshot || BiomeSnapshot->Sites.IsEmpty())
+	{
+		return false;
+	}
+
+	const FVoxelObjectPtr Key(&Owner);
+
+	UBiomeQueryBridge::Bind(Key, BiomeSnapshot);
+	BoundBiomeOwners.AddUnique(Key);
+
+	return true;
+}
+
+void UWorldGeneratorSubsystem::UnbindBiomeOwner(UObject& Owner)
+{
+	check(IsInGameThread());
+
+	const FVoxelObjectPtr Key(&Owner);
+
+	UBiomeQueryBridge::Unbind(Key);
+	BoundBiomeOwners.Remove(Key);
+}
+
+void UWorldGeneratorSubsystem::ClearBiomeBindings()
+{
+	check(IsInGameThread());
+
+	for (const FVoxelObjectPtr& Owner : BoundBiomeOwners)
+	{
+		UBiomeQueryBridge::Unbind(Owner);
+	}
+
+	BoundBiomeOwners.Reset();
 }
 
 bool UWorldGeneratorSubsystem::GenerateRegionSites(
@@ -524,10 +581,12 @@ bool UWorldGeneratorSubsystem::GenerateRegionSites(
 				? WorldBounds.Max.X
 				: MinX + CellWidth;
 
+			
+			const double SiteX = Stream.FRandRange(MinX, MaxX);
+			const double SiteY = Stream.FRandRange(CurrentY, MaxY);
+			
 			FRegionSite Site;
-			Site.Center = FVector2D(
-				Stream.FRandRange(MinX, MaxX),
-				Stream.FRandRange(CurrentY, MaxY));
+			Site.Center = FVector2D(SiteX, SiteY);
 
 			RegionSites.Add(Site);
 		}
@@ -541,37 +600,42 @@ bool UWorldGeneratorSubsystem::GenerateRegionSites(
 bool UWorldGeneratorSubsystem::GenerateVoronoiRegions(FBox2D Bounds, FGeneratedRegionData& Data)
 {
 	auto Cells = BuildClippedVoronoi(Data.Sites, Bounds);
-	
+
+	// Polygon이 Cells 안에 있을 때 검증합니다.
+	if (!ValidateCells(Cells, Data.Sites.Num()))
+	{
+		return false;
+	}
+
+	Data.Edges = BuildUniqueEdges(Cells);
+	SortEdgeDeterministically(Data.Edges);
+
 	for (int32 Region = 0; Region < Cells.Num(); ++Region)
 	{
-		Data.Sites[Region].Polygon = MoveTemp(Cells[Region].Polygon);
+		Data.Sites[Region].Polygon =
+			MoveTemp(Cells[Region].Polygon);
+
 		Data.Sites[Region].Links.Reset();
 	}
-	
-	if (!ValidateCells(Cells, Data.Sites.Num()))
-		return false;
-	
-	for (int32 Region = 0; Region < Cells.Num(); ++Region)
-		Data.Sites[Region].Polygon = Cells[Region].Polygon;
-	
-	// 공유 경계는 한번만 등록.
-	// 점 하나만 접하는 Cell은 이웃으로 취급하지 않음.
-	Data.Edges = BuildUniqueEdges(Cells);
-	
-	SortEdgeDeterministically(Data.Edges);
-	
-	for (int32 EdgeIndex = 0; EdgeIndex < Data.Edges.Num(); ++EdgeIndex)
+
+	for (int32 EdgeIndex = 0;
+		 EdgeIndex < Data.Edges.Num();
+		 ++EdgeIndex)
 	{
-		const auto& Edge = Data.Edges[EdgeIndex];
-		
+		const FRegionEdge& Edge = Data.Edges[EdgeIndex];
+
 		if (Edge.RegionB == INDEX_NONE)
+		{
 			continue;
-		
-		Data.Sites[Edge.RegionA].Links.Add( {Edge.RegionB, EdgeIndex });
-		
-		Data.Sites[Edge.RegionB].Links.Add( {Edge.RegionA, EdgeIndex });
+		}
+
+		Data.Sites[Edge.RegionA].Links.Add(
+			{Edge.RegionB, EdgeIndex});
+
+		Data.Sites[Edge.RegionB].Links.Add(
+			{Edge.RegionA, EdgeIndex});
 	}
-	
+
 	SortNeighborLinks(Data.Sites);
 	return true;
 }
@@ -663,7 +727,7 @@ void UWorldGeneratorSubsystem::ValidateBiomeConnectivity()
 	
 	for (int32 Biome = 0; Biome < FBiomeAffinityTable::BiomeCount; ++Biome)
 	{
-		if (ComponentCounts[Biome] < 1)
+		if (ComponentCounts[Biome] > 1)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("%s::%s : Biome %d is split into %d connected components."),
 				*GetClass()->GetName(), TEXT(__FUNCTION__),
@@ -675,12 +739,12 @@ void UWorldGeneratorSubsystem::ValidateBiomeConnectivity()
 
 FVector2D UWorldGeneratorSubsystem::WarpOffset(const FVector2D& Position) const
 {
-	if (!ActiveGenerationSettings.bEnableWarp || ActiveGenerationSettings.WarpWavelength <= 0.0)
+	if (!ActiveGenerationSettings.bEnableWarp || ActiveGenerationSettings.WarpWaveLength <= 0.0)
 	{
 		return FVector2D::ZeroVector;
 	}
 	
-	const FVector2D Sample = Position / ActiveGenerationSettings.WarpWavelength;
+	const FVector2D Sample = Position / ActiveGenerationSettings.WarpWaveLength;
 	
 	return FVector2D(
 		FMath::PerlinNoise2D(Sample + WarpPhaseX),
@@ -717,23 +781,53 @@ void UWorldGeneratorSubsystem::ResetWarpState()
 
 EBiomeType UWorldGeneratorSubsystem::GetBiomeAt(FVector2D WorldPosition)
 {
-	if (!FMath::IsFinite(WorldPosition.X) || !FMath::IsFinite(WorldPosition.Y))
-	{
-		return EBiomeType::TemperateForest;
-	}
+	check(IsInGameThread());
 	
-	FVector2D OriginalPosition = 
-		WorldPosition + WarpOffset(WorldPosition);
-	
-	int32 Region = FindNearestOriginalSite(OriginalPosition);
-	
-	return RegionSites.IsValidIndex(Region) ? RegionSites[Region].Biome : EBiomeType::TemperateForest;
+	return BiomeSnapshot 
+		? BiomeSnapshot->GetBiomeAt(WorldPosition) 
+		: EBiomeType::TemperateForest;
 }
 
 void UWorldGeneratorSubsystem::ClearGenerator()
 {
+	check(IsInGameThread());
+	
+	ClearBiomeBindings();
+	
+	BiomeSnapshot.Reset();
+	GenerationSeed = 0;
+	
 	RegionSites.Reset();
 	RegionEdges.Reset();
-	WorldWeightGrid.Reset();
+	
 	ResetWarpState();
+}
+
+void UWorldGeneratorSubsystem::BuildBiomeSnapshot()
+{
+	check(IsInGameThread());
+	
+	auto Snapshot = MakeShared<FBiomeQuerySnapshot, ESPMode::ThreadSafe>();
+	
+	Snapshot->Sites.Reserve(RegionSites.Num());
+	
+	for (const FRegionSite& Site : RegionSites)
+	{
+		Snapshot->Sites.Add(FBiomeQuerySite{Site.Center, Site.Biome});
+	}
+	
+	Snapshot->bEnableWarp = ActiveGenerationSettings.bEnableWarp;
+	
+	Snapshot->WarpStrength = ActiveGenerationSettings.WarpStrength;
+	
+	Snapshot->WarpWaveLength = ActiveGenerationSettings.WarpWaveLength;
+	
+	Snapshot->WarpPhaseX = WarpPhaseX;
+	Snapshot->WarpPhaseY = WarpPhaseY;
+	
+	BiomeSnapshot = Snapshot;
+}
+
+void UWorldGeneratorSubsystem::ClearBiomeSnapshot()
+{
 }

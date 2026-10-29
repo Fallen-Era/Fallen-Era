@@ -11,30 +11,34 @@
 #include "Graphs/VoxelHeightGraph.h"
 #include "HAL/IConsoleManager.h"
 
+#include "Async/IAsyncTask.h"
+
 #include "Heightmap/VoxelHeightmap.h"
 #include "VoxelStampActor.h"
 #include "VoxelStampManager.h"
+#include "VoxelStampComponent.h"
 #include "VoxelWorld.h"
-#include "VoxelDependency.h"
 #include "VoxelLayerStack.h"
+#include "VoxelDependency.h"
 
 #include "Graphs/VoxelOutputNode_OutputHeight.h"
 #include "VoxelGraphContext.h"
 #include "VoxelGraphEnvironment.h"
 #include "VoxelGraphPositionParameter.h"
 #include "VoxelNodeEvaluator.h"
-#include "WorldGenerator/WorldPersistenceTracker.h"
-#include "Async/IAsyncTask.h"
+#include "Heightmap/VoxelHeightmapStamp.h"
 #include "EntitySystem/MovieSceneEntitySystemRunner.h"
 
 #include "Graphs/VoxelHeightGraph.h"
 #include "Graphs/VoxelHeightGraphStampRef.h"
 
 #include "WorldGenerator//Settings/WorldGeneratorSettings.h"
-#include "Heightmap/VoxelHeightmapStamp.h"
 #include "Kismet/GameplayStatics.h"
+
 #include "WorldGenerator/Save/WorldSaveGame.h"
 #include "WorldGenerator/Save/WorldRegistrySaveGame.h"
+#include "WorldGenerator/WorldPersistenceTracker.h"
+#include "WorldGeneratorSubsystem.h"
 
 
 const FString UWorldRegistrySubsystem::RegistrySlotName = TEXT("WorldRegistry");
@@ -120,6 +124,15 @@ void UWorldRegistrySubsystem::PostWorldCreate(UWorld* OpenWorld)
 		return;
 	}
 	
+	UWorldGeneratorSubsystem* Generator = OpenWorld->GetSubsystem<UWorldGeneratorSubsystem>();
+	
+	if (!Generator || !Generator->CreateWorld(Request))
+	{
+		Fail(TEXT("Failed to generate biome data."));
+		return;
+	}
+	
+	
 	FVoxelHeightGraphStampRef Stamp = FVoxelHeightGraphStampRef::New();
 	Stamp->Graph = HeightGraph;
 	Stamp->Layer = HeightLayers[0].Get();
@@ -153,6 +166,14 @@ void UWorldRegistrySubsystem::PostWorldCreate(UWorld* OpenWorld)
 		return;
 	}
 	
+	if (!Generator->BindBiomeOwner(StampActor->GetStampComponent()))
+	{
+		StampActor->Destroy();
+		
+		Fail(TEXT("Fialed to bind biome data."));
+		return;
+	}
+	
 	StampActor->SetStamp(Stamp);
 	
 	FWorldRegistryData Entry;
@@ -171,6 +192,9 @@ void UWorldRegistrySubsystem::PostWorldCreate(UWorld* OpenWorld)
 	
 	if (!SaveWorld())
 	{
+		Generator->UnbindBiomeOwner(
+		StampActor->GetStampComponent());
+		
 		StampActor->Destroy();
 		FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
 		ActiveTracker = nullptr;
@@ -181,6 +205,9 @@ void UWorldRegistrySubsystem::PostWorldCreate(UWorld* OpenWorld)
 	
 	if (!AddRegistry(Entry))
 	{
+		Generator->UnbindBiomeOwner(
+		StampActor->GetStampComponent());
+		
 		StampActor->Destroy();
 		FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
 		ActiveTracker = nullptr;
@@ -230,6 +257,19 @@ void UWorldRegistrySubsystem::PostWorldLoad(UWorld* OpenWorld)
 	VoxelWorld->DestroyRuntime();
 	
 	UWorldSaveGame* Save = PendingWorldSave.Get();
+	
+	FWorldCreateRequest BiomeRequest{};
+	BiomeRequest.WorldSeed = Save->Definition.WorldSeed;
+	BiomeRequest.WorldBounds = Save->Definition.WorldBounds;
+	
+	UWorldGeneratorSubsystem* Generator = OpenWorld->GetSubsystem<UWorldGeneratorSubsystem>();
+	
+	if (!Generator || !Generator->CreateWorld(BiomeRequest))
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to restore biome data."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return;
+	}
+	
 	VoxelWorld->LayerStack = Save->LayerStack;
 	
 	FActorSpawnParameters Params;
@@ -244,17 +284,19 @@ void UWorldRegistrySubsystem::PostWorldLoad(UWorld* OpenWorld)
 			Snapshot.WorldTransform,
 			Params);
 		
-		if (!IsValid(Actor))
+		if (!Generator->BindBiomeOwner(Actor->GetStampComponent()))
 		{
+			Actor->Destroy();
 			for (AVoxelStampActor* SpawnActor : SpawnActors)
 			{
+				Generator->UnbindBiomeOwner(SpawnActor->GetStampComponent());
+				
 				SpawnActor->Destroy();
 			}
 			
-			FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
-
 			UE_LOG(LogTemp, Error, TEXT("%s::%s : Failed to restore world stmaps."), *GetClass()->GetName(), TEXT(__FUNCTION__));
-			
+
+			FVoxelStampManager::Get(OpenWorld)->FlushUpdates();
 			return;
 		}
 		
@@ -269,7 +311,7 @@ void UWorldRegistrySubsystem::PostWorldLoad(UWorld* OpenWorld)
 	ActiveTracker->SetSlotName(PendingSlotName);
 	ActiveTracker->SetSessionId(FGuid::NewGuid());
 	
-	ActiveTracker->GetRegistryDataRef().WorldBounds = Save->Definition.WorldSize;
+	ActiveTracker->GetRegistryDataRef().WorldBounds = Save->Definition.WorldBounds;
 
 	UE_LOG(LogTemp, Log, TEXT("%s::%s : World restored : %s, %d stamps"), *GetClass()->GetName(), TEXT(__FUNCTION__),
 		*PendingSlotName,
@@ -392,10 +434,16 @@ void UWorldRegistrySubsystem::CreateWorld(FGameplayTag Channel, const FWorldCrea
 	
 	const FBox2D WorldSize = Request.WorldBounds;
 	
-	if (WorldSize.Min.X <= 0 || WorldSize.Min.Y <= 0 ||
-		WorldSize.Max.X <= 0 || WorldSize.Max.Y <= 0)
+	if (false && (WorldSize.Min.X <= 0 || WorldSize.Min.Y <= 0 ||
+		WorldSize.Max.X <= 0 || WorldSize.Max.Y <= 0))
 	{
 		UE_LOG(LogTemp, Error, TEXT("%s::%s : World size must be positive."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		UE_LOG(LogTemp, Log, TEXT("%s::%s : InputWorld Size Min.X : %f, Min.Y : %f, Max.X : %f, Max.y : %f"), 
+			*GetClass()->GetName(), TEXT(__FUNCTION__), 
+			WorldSize.Min.X,
+			WorldSize.Min.Y,
+			WorldSize.Max.X,
+			WorldSize.Max.Y);
 		return;
 	}
 	
@@ -483,10 +531,18 @@ bool UWorldRegistrySubsystem::SaveWorld()
 	
 	UWorldSaveGame* Save = NewObject<UWorldSaveGame>();
 	
+	UWorldGeneratorSubsystem* Generator = CurrentWorld->GetSubsystem<UWorldGeneratorSubsystem>();
 	
+	if (!Generator)
+	{
+		UE_LOG(LogTemp, Error, TEXT("%s::%s : World generator is missing."), *GetClass()->GetName(), TEXT(__FUNCTION__));
+		return false;
+	}
+	
+	Save->Definition.WorldSeed = Generator->GetWorldSeed_GameThread();
 	
 	Save->Definition.WorldId = MetaData.WorldId;
-	Save->Definition.WorldSize = MetaData.WorldBounds;
+	Save->Definition.WorldBounds = MetaData.WorldBounds;
 	
 	Save->LayerStack = Stack;
 	

@@ -4,6 +4,19 @@
 #include "WorldSystemData.generated.h"
 
 
+/*
+ * 보르노이 다이어그램에 사용할 바이옴 구성
+ */
+UENUM(Blueprintable)
+enum class EBiomeType : uint8
+{
+	TemperateForest = 0,
+	Plains			= 1,
+	Hills			= 2,				
+	Desert			= 3,				
+	Tundra			= 4,				
+};
+
 struct FBiomeAffinityTable
 {
 	static constexpr int32 BiomeCount = 5;
@@ -42,21 +55,14 @@ enum class EEnvironmentTag : uint8
 };
 
 
-
-
-/*
- * 보르노이 다이어그램에 사용할 바이옴 구성
- */
-UENUM(Blueprintable)
-enum class EBiomeType : uint8
+USTRUCT(Blueprintable)
+struct FRegionLink
 {
-	TemperateForest,	// 온대 산림
-	Plains,				// 평원
-	Hills,				// 산악
-	Desert,				// 사막
-	Tundra,				// 극지방
+	GENERATED_BODY()
+	
+	int32 NeighborRegionIndex = INDEX_NONE;
+	int32 EdgeIndex = INDEX_NONE;
 };
-
 
 USTRUCT(Blueprintable)
 struct FRegionSite
@@ -88,7 +94,7 @@ struct FRegionGenerationSettings
 	
 	bool bEnableWarp;
 	double WarpStrength;
-	double WarpWavelength;
+	double WarpWaveLength;
 	
 	FBiomeAffinityTable Affinity;
 };
@@ -99,14 +105,7 @@ struct FGeneratedRegionData
 	TArray<FRegionEdge> Edges;
 };
 
-USTRUCT(Blueprintable)
-struct FRegionLink
-{
-	GENERATED_BODY()
-	
-	int32 NeighborRegionIndex = INDEX_NONE;
-	int32 EdgeIndex = INDEX_NONE;
-};
+
 
 
 /*
@@ -180,7 +179,59 @@ struct FWorldSectorDefinition
 };
 
 
+struct FBiomeQuerySite
+{
+	FVector2D Center;
+	EBiomeType Biome = EBiomeType::TemperateForest;
+};
 
 
+struct FBiomeQuerySnapshot
+{
+	TArray<FBiomeQuerySite> Sites;
+	
+	bool bEnableWarp = false;
+	double WarpStrength = 0.0;
+	double WarpWaveLength = 1.0;
+	
+	FVector2D WarpPhaseX = FVector2D::ZeroVector;
+	FVector2D WarpPhaseY = FVector2D::ZeroVector;
+	
+	EBiomeType GetBiomeAt(FVector2D Position) const
+	{
+		if (!FMath::IsFinite(Position.X) || !FMath::IsFinite(Position.Y))
+		{
+			return EBiomeType::TemperateForest;
+		}
+		
+		if (bEnableWarp && WarpWaveLength > 0.0)
+		{
+			const FVector2D Sample = Position / WarpWaveLength;
+			
+			Position += FVector2D(
+				FMath::PerlinNoise2D(Sample + WarpPhaseX),
+				FMath::PerlinNoise2D(Sample + WarpPhaseY)) * WarpStrength;
+		}
+	
+	
+		EBiomeType Result = EBiomeType::TemperateForest;
+		double BestDistance = TNumericLimits<double>::Max();
+	
+		for (const FBiomeQuerySite& Site : Sites)
+		{
+			const double Distance = FVector2D::DistSquared(
+				Position,
+				Site.Center);
+			
+			if (Distance < BestDistance)
+			{
+				BestDistance = Distance;
+				Result = Site.Biome;
+			}
+		}
+		
+		return Result;
+	}
+};
 
-
+using FBiomeQuerySnapshotPtr = TSharedPtr<const FBiomeQuerySnapshot, ESPMode::ThreadSafe>;

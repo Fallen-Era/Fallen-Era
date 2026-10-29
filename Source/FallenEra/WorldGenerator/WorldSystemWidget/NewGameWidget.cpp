@@ -89,14 +89,18 @@ void UNewGameWidget::OnWorldGenerateClicked()
 	/*
 	 * World Seed Setting
 	 */
-	FText SeedText = EDIT_TXT_WorldSeed->GetText();
+	Request.WorldSeed = FMath::Rand();
 	
+	if (EDIT_TXT_WorldSeed)
+	{
+		const FString SeedString = EDIT_TXT_WorldSeed->GetText().ToString().ToUpper();
 	
-	// // 보류
-	// if ()
-	// {
-	// 	
-	// }
+		if (!SeedString.IsEmpty())
+		{
+			Request.WorldSeed = static_cast<int32>(
+				FCrc::StrCrc32(*SeedString) & 0x7FFFFFFFu);
+		}
+	}
 	
 	UGameplayMessageSubsystem& MessageSubsystem = 
 		UGameplayMessageSubsystem::Get(this);
