@@ -16,6 +16,7 @@ namespace FEBuildingTags
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_Input_Ballista_Fire,     "Ability.Input.Ballista.Fire",   "좌클릭 (발리스타 탑승 중). 발사");
     
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Building,                  "State.Building",                "빌드 모드 중 (로컬). 상호작용 등이 이 태그로 스스로 꺼진다");
+    UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Building_Mounted,          "State.Building.Mounted",        "발리스타 탑승 중 (로컬). State.Building 하위라 State.Building 을 막는 쪽(상호작용)도 같이 꺼진다. 빌드 모드 진입을 막는다");
 
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Build_Piece_Structure,           "Build.Piece.Structure",  "토대, 벽, 천장, 기둥, 문, 계단, 난간, 창문 벽, 지붕, 삼각 벽");
     UE_DEFINE_GAMEPLAY_TAG_COMMENT(Build_Piece_Functional,          "Build.Piece.Functional", "작업대, 저장고, 화로, 모닥불, 침구");

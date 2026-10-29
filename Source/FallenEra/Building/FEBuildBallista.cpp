@@ -1,7 +1,12 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "FEBuildBallista.h"
-#include "FEBuildingComponent.h"
+#include "FEBuildingSubsystem.h"
+#include "AbilitySystemGlobals.h"
+#include "EngineUtils.h"
+#include "EnhancedInputSubsystems.h"
+#include "Engine/LocalPlayer.h"
+#include "GameFramework/PlayerController.h"
 #include "FEBuildingGameplayTags.h"
 #include "FEBuildingSettings.h"
 #include "AbilitySystemComponent.h"
@@ -32,6 +37,21 @@ namespace
     /** 탑승 이동 잠금 표시 (MOVE_Custom 의 CustomMovementMode). 풀 때 이 번호인지 보고 탑승이 건 잠금만 푼다.
      *  다른 시스템이 MOVE_Custom 을 쓰게 되면 번호가 겹치지 않게 맞춘다 */
     constexpr uint8 OperatorMovementMode = 1;
+    
+    /** [Client] 조준을 서버로 보내는 최소 간격 (다른 플레이어에게 보이는 용도, 바뀌었을 때만) */
+    constexpr double BallistaAimSendInterval = 0.1;
+
+    /** [Client] 조준이 그대로여도 이 간격마다 다시 보낸다 — Unreliable 이라 마지막 패킷을 잃으면 다른 화면의 총신이 이전 각도에 멈춘다 */
+    constexpr double BallistaAimRefreshInterval = 0.5;
+
+    /** [Server] 조준 요청을 받는 최소 간격. 보내는 간격의 절반이라 지터로 몰려 온 정상 패킷은 거의 버리지 않는다 */
+    constexpr double BallistaAimAcceptInterval = BallistaAimSendInterval * 0.5;
+
+    /** [Server] 발사 요청 최소 간격. 장전 시간(2초)보다 훨씬 짧아 정상 발사는 걸리지 않는다 */
+    constexpr double BallistaFireRequestInterval = 0.25;
+
+    /** 발리스타 카메라 ↔ 캐릭터 시야 전환 시간 (초) */
+    constexpr float BallistaViewBlendTime = 0.3f;
 }
 
 AFEBuildBallista::AFEBuildBallista()
@@ -41,6 +61,10 @@ AFEBuildBallista::AFEBuildBallista()
     
     // 함정과 달리 ASC 를 복제한다 — 나중에 볼트에 AttackData(명중 효과)를 붙이면 공격자 ASC 로 GameplayCue 가 나간다
     AbilitySystem->SetIsReplicated(true);
+    
+    // 조준(머리 회전)은 매 프레임 따라가야 해서 틱을 쓴다. 이 기계의 플레이어가 탔을 때만 켠다 (AFEBuildPiece 는 틱 없음)
+    PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.bStartWithTickEnabled = false;
 
     Head = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Head"));
     Head->SetupAttachment(GetMesh());
@@ -87,18 +111,13 @@ void AFEBuildBallista::BeginPlay()
 
 void AFEBuildBallista::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-    // 부서지거나 철거되면 조작자를 내린다 (서버 = 이동 복구 + 호스트 화면, 원격 조작자 기계 = 시야·입력 복구)
+    // 부서지거나 철거되면 조작자를 내린다: 서버 = 이동 복구·Owner 해제 (리슨 호스트 화면은 SetOperator 의 OnRep 이 되돌린다),
+    // 원격 조작자 기계 = 시야·입력·태그 복구. 두 번 불려도 EndLocalOperation 이 한 번만 처리한다
     if (HasAuthority())
     {
         SetOperator(nullptr);
     }
-    else if (APawn* Known = LocalKnownOperator.Get(); Known != nullptr && Known->IsLocallyControlled())
-    {
-        if (UFEBuildingComponent* Building = Known->FindComponentByClass<UFEBuildingComponent>())
-        {
-            Building->HandleBallistaDismounted(this);
-        }
-    }
+    EndLocalOperation();
     GetWorldTimerManager().ClearTimer(OperatorCheckTimer);
     Super::EndPlay(EndPlayReason);
 }
@@ -114,6 +133,8 @@ void AFEBuildBallista::SetOperator(APawn* NewOperator)
     }
 
     Operator = NewOperator;
+    // 조작자를 Owner 로: 그 클라만 이 발리스타에 Server RPC 를 보낼 수 있다 (서버는 소유 연결에서 온 RPC 만 실행한다). nullptr 이면 해제
+    SetOwner(Operator);
 
     if (ACharacter* Character = Cast<ACharacter>(Operator))
     {
@@ -133,11 +154,6 @@ void AFEBuildBallista::SetOperator(APawn* NewOperator)
 
     UE_LOG(LogFEBuilding, Log, TEXT("%s operator: %s"), *GetName(), *GetNameSafe(Operator));
     OnRep_Operator(); // 리슨 호스트는 OnRep 이 자동으로 불리지 않는다
-}
-
-APawn* AFEBuildBallista::GetOperator() const
-{
-    return Operator;
 }
 
 void AFEBuildBallista::LockOperatorMovement(ACharacter* Character)
@@ -185,17 +201,6 @@ void AFEBuildBallista::SetReplicatedAim(int8 Yaw, int8 Pitch)
     AimYaw = static_cast<int8>(FMath::RoundToInt(FMath::Clamp(static_cast<float>(Yaw), -MaxYaw, MaxYaw)));
     AimPitch = static_cast<int8>(FMath::RoundToInt(FMath::Clamp(static_cast<float>(Pitch), MinPitch, MaxPitch)));
     OnRep_Aim(); // 리슨 호스트 화면
-}
-
-UInputMappingContext* AFEBuildBallista::GetMappingContext() const
-{
-    // 이미 로드됐을 때만 돌려준다. 로드 전에 탄 경우는 HandleMappingContextLoaded 가 나중에 넣는다 (게임 스레드를 막는 동기 로드 없음)
-    return MappingContext.Get();
-}
-
-int32 AFEBuildBallista::GetMappingPriority() const
-{
-    return MappingPriority;
 }
 
 bool AFEBuildBallista::TryFire(APawn* InstigatorPawn, float Yaw, float Pitch, FText& OutReason)
@@ -316,45 +321,30 @@ void AFEBuildBallista::InteractBuiltLocal(AActor* InstigatorActor)
 
 void AFEBuildBallista::OnRep_Operator()
 {
-    APawn* Previous = LocalKnownOperator.Get();
-    LocalKnownOperator = Operator;
-
-    // 이 기계의 플레이어가 내렸다
-    if (Previous != nullptr && Previous != Operator && Previous->IsLocallyControlled())
+    // 이 기계의 플레이어가 내렸다 — 조작자가 비었거나 다른 사람으로 바뀌었다 (폰이 이미 사라진 경우 포함: 기억해 둔 폰이 null 이어도 Operator 가 비면 내린다)
+    if (bLocalOperation && (Operator == nullptr || Operator != LocalOperatorPawn.Get()))
     {
-        if (UFEBuildingComponent* Building = Previous->FindComponentByClass<UFEBuildingComponent>())
-        {
-            Building->HandleBallistaDismounted(this);
-        }
+        EndLocalOperation();
     }
 
     // 이 기계의 플레이어가 탔다
-    if (Operator != nullptr && Operator != Previous && Operator->IsLocallyControlled())
+    if (!bLocalOperation && Operator != nullptr && Operator->IsLocallyControlled())
     {
-        if (UFEBuildingComponent* Building = Operator->FindComponentByClass<UFEBuildingComponent>())
-        {
-            Building->HandleBallistaMounted(this);
-        }
+        BeginLocalOperation(Operator);
     }
 }
 
 void AFEBuildBallista::OnRep_Aim()
 {
-    // 조작자 기계는 로컬 조준을 쓴다 — 서버 값은 늦게 도착하므로 덮어쓰면 화면이 뒤로 튄다
-    if (Operator != nullptr && Operator->IsLocallyControlled()) return;
+    // 조작자 기계는 로컬 조준을 쓴다 — 서버 값은 늦게 도착하므로 덮어쓰면 화면이 뒤로 튄다 (리슨 호스트는 SetReplicatedAim 이 직접 부른다)
+    if (bLocalOperation) return;
     SetHeadAim(AimYaw, AimPitch);
 }
 
 void AFEBuildBallista::HandleMappingContextLoaded()
 {
-    // 로드가 끝나기 전에 이 기계의 플레이어가 탔으면 이제 입력을 넣는다 (이미 넣었으면 AddBallistaInput 이 무시한다)
-    APawn* Known = LocalKnownOperator.Get();
-    if (Known == nullptr || !Known->IsLocallyControlled()) return;
-
-    if (UFEBuildingComponent* Building = Known->FindComponentByClass<UFEBuildingComponent>())
-    {
-        Building->AddBallistaInput();
-    }
+    // 로드가 끝나기 전에 이 기계의 플레이어가 탔으면 이제 넣는다 (탑승 중이 아니거나 이미 넣었으면 AddLocalInput 이 무시한다)
+    AddLocalInput();
 }
 
 void AFEBuildBallista::CheckOperator()
@@ -373,6 +363,220 @@ void AFEBuildBallista::CheckOperator()
 void AFEBuildBallista::SetHeadAim(float Yaw, float Pitch)
 {
     Head->SetRelativeRotation(FRotator(Pitch, Yaw, 0.f));
+}
+
+AFEBuildBallista* AFEBuildBallista::FindOperatedBy(const AActor* OperatorActor)
+{
+    // 상태를 저장하지 않고 찾는다: 발리스타는 몇 개 안 되고(클래스 해시로 발리스타만 돈다), 부르는 곳은 클릭(GA)과 0.1초 HUD 타이머뿐
+    if (OperatorActor == nullptr) return nullptr;
+
+    for (TActorIterator<AFEBuildBallista> It(OperatorActor->GetWorld()); It; ++It)
+    {
+        if (It->Operator.Get() == OperatorActor)
+        {
+            return *It;
+        }
+    }
+    return nullptr;
+}
+
+void AFEBuildBallista::RequestFire()
+{
+    APlayerController* PlayerController = LocalController.Get();
+    if (!bLocalOperation || PlayerController == nullptr) return; // 이 기계의 플레이어가 탄 발리스타만
+
+    // 장전 중 — HUD 가 이미 "장전 중"을 보여 준다. 리플리케이트 값이라 누가 쐈든, 어느 발리스타로 옮겨 탔든 맞다
+    if (IsReloading()) return;
+
+    if (GetAmmoCount() <= 0)
+    {
+        UFEBuildingSubsystem::ShowLocalNotice(GetWorld(), LOCTEXT("BallistaNoAmmo", "탄약이 없습니다 (Tab: 탄약)"));
+        return;
+    }
+
+    // 지금 화면의 조준(정밀값)으로 보낸다. 장전 시작은 서버가 정해 리플리케이트한다 —
+    // 클라 예측이 없어서 서버가 거절해도 클라 장전이 따로 돌지 않는다 (응답 전 연타는 서버 요청 간격 제한이 버린다)
+    const FVector2D Aim = ApplyLocalAim(PlayerController->GetControlRotation());
+    ServerFire(Aim.X, Aim.Y);
+}
+
+void AFEBuildBallista::RequestExit()
+{
+    if (bLocalOperation)
+    {
+        ServerExit();
+    }
+}
+
+void AFEBuildBallista::Tick(float DeltaSeconds)
+{
+    Super::Tick(DeltaSeconds);
+    UpdateLocalAim(); // 틱은 이 기계의 플레이어가 탔을 때만 켜진다
+}
+
+void AFEBuildBallista::BeginLocalOperation(APawn* Pawn)
+{
+    APlayerController* PlayerController = Pawn != nullptr ? Pawn->GetController<APlayerController>() : nullptr;
+    if (PlayerController == nullptr) return;
+
+    bLocalOperation = true;
+    LocalOperatorPawn = Pawn;
+    LocalController = PlayerController;
+
+    // 이동 잠금. 서버도 같은 처리를 한다 — 소유 클라의 예측이 서버와 어긋나 위치 보정이 생기지 않게
+    LockOperatorMovement(Cast<ACharacter>(Pawn));
+
+    // 시야를 발리스타 카메라로, 조준은 정면에서 시작
+    PlayerController->SetViewTargetWithBlend(this, BallistaViewBlendTime);
+    PlayerController->SetControlRotation(FRotator(0.f, GetActorRotation().Yaw, 0.f));
+
+    // 탑승 입력(좌클릭 발사·E/우클릭 내림). IMC 가 아직 로드 전이면 로드 완료 콜백이 넣는다
+    AddLocalInput();
+
+    // State.Building.Mounted: State.Building 하위라 상호작용 프롬프트가 꺼지고, 건설 컴포넌트가 이 태그로 빌드 모드 진입을 막는다.
+    // 로컬 loose 태그 — 다른 기계에는 보이지 않는다
+    if (UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Pawn))
+    {
+        ASC->SetLooseGameplayTagCount(FEBuildingTags::State_Building_Mounted, 1);
+        LocalTagOwner = ASC;
+    }
+
+    LastAimSendTime = -1.0;    // 첫 틱에 바로 보낸다
+    SetActorTickEnabled(true); // 조준 추종
+    UE_LOG(LogFEBuilding, Log, TEXT("%s mounted %s"), *GetNameSafe(Pawn), *GetName());
+}
+
+void AFEBuildBallista::EndLocalOperation()
+{
+    if (!bLocalOperation) return;
+    bLocalOperation = false;
+    SetActorTickEnabled(false);
+
+    // 탑승이 건 이동 잠금만 푼다 — 탑승 중 사망했으면 HT 사망 처리의 잠금이 그대로 남는다
+    APawn* Pawn = LocalOperatorPawn.Get();
+    UnlockOperatorMovement(Cast<ACharacter>(Pawn));
+
+    // 시야: 아직 이 발리스타를 보고 있을 때만 컨트롤러의 지금 폰으로 되돌린다 (그새 다른 폰에 빙의했으면 빙의가 이미 시야를 옮겼다)
+    APlayerController* PlayerController = LocalController.Get();
+    if (PlayerController != nullptr && PlayerController->GetViewTarget() == this)
+    {
+        PlayerController->SetViewTargetWithBlend(PlayerController->GetPawn(), BallistaViewBlendTime);
+    }
+
+    // 입력·태그는 넣었던 곳에서 뺀다 (로컬 플레이어 입력·PlayerState 의 ASC 는 폰이 사라져도 남아 있다)
+    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = LocalInputOwner.Get();
+    UInputMappingContext* LoadedMappingContext = MappingContext.Get();
+    if (InputSubsystem != nullptr && LoadedMappingContext != nullptr)
+    {
+        InputSubsystem->RemoveMappingContext(LoadedMappingContext);
+    }
+    if (UAbilitySystemComponent* ASC = LocalTagOwner.Get())
+    {
+        ASC->SetLooseGameplayTagCount(FEBuildingTags::State_Building_Mounted, 0);
+    }
+
+    // 다른 기계와 같은 각도로 맞춘다 (조작 중엔 로컬 조준이라 리플리케이트 값과 다를 수 있고, 값이 그대로면 OnRep 이 오지 않는다)
+    SetHeadAim(AimYaw, AimPitch);
+    UE_LOG(LogFEBuilding, Log, TEXT("%s dismounted %s"), *GetNameSafe(Pawn), *GetName());
+
+    LocalOperatorPawn = nullptr;
+    LocalController = nullptr;
+    LocalInputOwner = nullptr;
+    LocalTagOwner = nullptr;
+}
+
+void AFEBuildBallista::AddLocalInput()
+{
+    // 탑승 중이고 아직 안 넣었을 때만 — 탑승 때와 IMC 로드 완료 때 두 번 불려도 한 번만 들어간다
+    APlayerController* PlayerController = LocalController.Get();
+    UInputMappingContext* LoadedMappingContext = MappingContext.Get(); // 로드 전이면 null (동기 로드 없음)
+    if (!bLocalOperation || LocalInputOwner.IsValid() || PlayerController == nullptr || LoadedMappingContext == nullptr) return;
+
+    if (UEnhancedInputLocalPlayerSubsystem* InputSubsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
+    {
+        // 전투(20)·빌드 모드(30)보다 높은 우선순위로 같은 키를 가져온다 → 개인 무기가 나가지 않는다
+        InputSubsystem->AddMappingContext(LoadedMappingContext, MappingPriority);
+        LocalInputOwner = InputSubsystem;
+    }
+}
+
+void AFEBuildBallista::UpdateLocalAim()
+{
+    APlayerController* PlayerController = LocalController.Get();
+    if (PlayerController == nullptr) return;
+
+    // 범위로 자른 각도를 머리에 바로 적용하고, 컨트롤 회전도 그 범위로 되돌린다 — 마우스가 한계 밖으로 쌓이면 돌아올 때 멈춘 것처럼 느껴진다
+    const FVector2D Aim = ApplyLocalAim(PlayerController->GetControlRotation());
+    PlayerController->SetControlRotation(FRotator(Aim.Y, GetActorRotation().Yaw + Aim.X, 0.f));
+
+    // 다른 플레이어용: 바뀌었으면 BallistaAimSendInterval 이하 빈도로, 그대로여도 BallistaAimRefreshInterval 마다 다시 보낸다
+    const int8 Yaw = static_cast<int8>(FMath::RoundToInt(Aim.X)); // MaxYaw ≤ 127 이라 int8 안에 들어간다
+    const int8 Pitch = static_cast<int8>(FMath::RoundToInt(Aim.Y));
+    const double Now = GetWorld()->GetTimeSeconds();
+    const double SinceLastSend = Now - LastAimSendTime;
+    const bool bChanged = Yaw != LastSentAimYaw || Pitch != LastSentAimPitch;
+    const bool bSendDue = LastAimSendTime < 0.0 || (bChanged && SinceLastSend >= BallistaAimSendInterval) || SinceLastSend >= BallistaAimRefreshInterval;
+    if (bSendDue)
+    {
+        LastSentAimYaw = Yaw;
+        LastSentAimPitch = Pitch;
+        LastAimSendTime = Now;
+        ServerSetAim(Yaw, Pitch);
+    }
+}
+
+bool AFEBuildBallista::ServerFire_Validate(float Yaw, float Pitch)
+{
+    return FMath::IsFinite(Yaw) && FMath::IsFinite(Pitch); // NaN·무한대는 조작된 패킷. 범위는 TryFire 가 자른다
+}
+
+void AFEBuildBallista::ServerFire_Implementation(float Yaw, float Pitch)
+{
+    // 간격 제한이 가장 먼저 (수리와 같은 이유) — 빈 발리스타 연타 같은 요청도 거절 로그·안내가 이 간격당 1번.
+    // 장전(ReloadTime)과는 별개라 정상 발사는 걸리지 않는다
+    if (!FEBuilding::ConsumeRequestSlot(NextFireRequestTime, GetWorld()->GetTimeSeconds(), BallistaFireRequestInterval)) return;
+
+    // 보낸 쪽은 엔진이 소유 연결(= 조작자)로 이미 걸렀다. 내린 뒤에는 Owner 가 없어 엔진이 버리고, 여기는 마지막 안전장치
+    if (Operator == nullptr) return;
+
+    FText Reason;
+    if (!TryFire(Operator, Yaw, Pitch, Reason) && !Reason.IsEmpty())
+    {
+        UE_LOG(LogFEBuilding, Log, TEXT("Fire rejected: %s"), *Reason.ToString());
+        ClientShowNotice(Reason);
+    }
+}
+
+bool AFEBuildBallista::ServerSetAim_Validate(int8 Yaw, int8 Pitch)
+{
+    return true; // 범위는 SetReplicatedAim 이 자른다
+}
+
+void AFEBuildBallista::ServerSetAim_Implementation(int8 Yaw, int8 Pitch)
+{
+    // 간격 제한이 가장 먼저 — 조작된 클라가 쏟아 보내도 처리량이 정해진다. 정상 클라는 이 간격의 2배로 보낸다
+    // (몰려 와서 하나를 버려도 0.5초 재전송으로 다시 맞춰진다)
+    if (!FEBuilding::ConsumeRequestSlot(NextAimRequestTime, GetWorld()->GetTimeSeconds(), BallistaAimAcceptInterval)) return;
+
+    if (Operator != nullptr)
+    {
+        SetReplicatedAim(Yaw, Pitch);
+    }
+}
+
+bool AFEBuildBallista::ServerExit_Validate()
+{
+    return true;
+}
+
+void AFEBuildBallista::ServerExit_Implementation()
+{
+    SetOperator(nullptr); // 보낸 쪽은 엔진이 소유 연결(= 조작자)로 이미 걸렀다
+}
+
+void AFEBuildBallista::ClientShowNotice_Implementation(const FText& Text)
+{
+    UFEBuildingSubsystem::ShowLocalNotice(GetWorld(), Text);
 }
 
 #undef LOCTEXT_NAMESPACE

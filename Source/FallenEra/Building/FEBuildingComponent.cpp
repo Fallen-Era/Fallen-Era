@@ -30,8 +30,6 @@
 #include "Combat/Collision/FECollisionChannels.h"
 #include "InputMappingContext.h"
 #include "FEBuildBallista.h"
-#include "GameFramework/Character.h"
-#include "GameFramework/CharacterMovementComponent.h"
 
 #define LOCTEXT_NAMESPACE "FEBuilding"
 
@@ -132,21 +130,6 @@ namespace
 
     /** [Client] 고스트가 움직이는 동안의 최소 검증 간격. 클릭 순간에는 ConfirmPlacement 가 따로 검증한다 */
     constexpr double PreviewMovingValidateInterval = 0.05;
-    
-    /** [Client] 발리스타 조준을 서버로 보내는 최소 간격 (다른 플레이어에게 보이는 용도, 바뀌었을 때만) */
-    constexpr double BallistaAimSendInterval = 0.1;
-    
-    /** [Client] 조준이 그대로여도 이 간격마다 다시 보낸다 — Unreliable 이라 마지막 패킷을 잃으면 다른 화면의 총신이 이전 각도에 멈춘다 */
-    constexpr double BallistaAimRefreshInterval = 0.5;
-
-    /** [Server] 조준 요청을 받는 최소 간격. 보내는 간격의 절반이라 지터로 몰려 온 정상 패킷은 거의 버리지 않는다 */
-    constexpr double BallistaAimAcceptInterval = BallistaAimSendInterval * 0.5;
-
-    /** [Server] 한 조작자의 발사 요청 최소 간격. 장전 시간(2초)보다 훨씬 짧아 정상 발사는 걸리지 않는다 */
-    constexpr double BallistaFireRequestInterval = 0.25;
-
-    /** 발리스타 카메라 ↔ 캐릭터 시야 전환 시간 (초) */
-    constexpr float BallistaViewBlendTime = 0.3f;
     
     UClass* ResolvePieceClass(const UFEBuildPieceDefinition* Piece)
     {
@@ -325,7 +308,12 @@ void UFEBuildingComponent::ToggleBuildMode()
         CancelBuild();
         return;
     }
-    if (MountedBallista != nullptr) return; // 발리스타 조작 중에는 빌드 모드에 들어가지 않는다 (좌클릭·E 는 발리스타 것)
+    
+    // 발리스타 탑승 중에는 빌드 모드에 들어가지 않는다 (좌클릭·E 는 발리스타 것. 태그는 발리스타가 건다).
+    // 나가기(위)는 막지 않는다 — 탑승 신호와 B 가 엇갈려 빌드 모드인 채로 탔어도 빠져나올 수 있게
+    const UAbilitySystemComponent* MountASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner());
+    if (MountASC != nullptr && MountASC->HasMatchingGameplayTag(FEBuildingTags::State_Building_Mounted)) return;
+    
     bIsInBuildMode = true;
     UpdateBuildModeState();
     UE_LOG(LogFEBuilding, Log, TEXT("Build mode on"));
@@ -746,8 +734,9 @@ void UFEBuildingComponent::ShowNotice(const FText& Text)
 void UFEBuildingComponent::UpdateBuildModeState()
 {
     // 1) State.Building 태그. 빌드 모드 중엔 회전(E)과 상호작용(E)이 같은 키라 상호작용 컴포넌트가 이 태그를 보고 스스로 꺼진다.
-    //    발리스타 탑승 중에도 켠다(상호작용 프롬프트 숨김). 로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
-    const bool bWantsTag = bIsInBuildMode || MountedBallista != nullptr;
+    //    발리스타 탑승 중에는 발리스타가 하위 태그 State.Building.Mounted 를 따로 건다 — 이 0/1 설정은 정확히 이 태그의 개수만 바꿔 서로 지우지 않는다.
+    //    로컬 loose 태그라 다른 기계에는 보이지 않는다 — 서버 판정에 쓰면 안 된다.
+    const bool bWantsTag = bIsInBuildMode;
     UAbilitySystemComponent* ASC = bWantsTag
         ? UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner())
         : BuildModeTagOwner.Get();
@@ -971,11 +960,6 @@ void UFEBuildingComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
     {
         UpdatePreview();
     }
-    if (MountedBallista != nullptr)
-    {
-        UpdateBallistaAim();
-        UpdateBallistaHud();
-    }
 }
 
 void UFEBuildingComponent::BeginPlay()
@@ -987,6 +971,19 @@ void UFEBuildingComponent::BeginPlay()
         // 망치 조준 HUD. 데디케이티드 서버는 화면이 없다. 원격 폰은 UpdateAimedPiece 가 걸러낸다
         // (상호작용 프롬프트와 같은 10Hz 폴링: "무엇을 조준하는지"는 카메라가 돌 때마다 바뀌는데 이벤트가 없다)
         GetWorld()->GetTimerManager().SetTimer(AimTimer, this, &UFEBuildingComponent::UpdateAimedPiece, 0.1f, true);
+        
+        // 발리스타처럼 플레이어 컴포넌트를 모르는 쪽이 보내는 안내 문구. 이 기계의 플레이어 폰만 띄운다 (다른 플레이어 폰의 뷰모델은 화면에 없다)
+        if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(GetWorld()))
+        {
+            Subsystem->OnLocalNoticeNative.AddWeakLambda(this, [this](const FText& Text)
+            {
+                const APawn* Pawn = Cast<APawn>(GetOwner());
+                if (Pawn != nullptr && Pawn->IsLocallyControlled())
+                {
+                    ShowNotice(Text);
+                }
+            });
+        }
 
         // 빌드 모드 IMC. 로드가 끝났을 때 이미 빌드 모드면 그때 추가된다 (UpdateBuildModeState 는 여러 번 불러도 안전)
         if (!BuildModeMappingContext.IsNull())
@@ -999,10 +996,9 @@ void UFEBuildingComponent::BeginPlay()
 
 void UFEBuildingComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-    // 탑승 중 폰이 사라지면 시야·입력·태그를 되돌린다 (서버의 발리스타는 조작자 확인 타이머로 내린다)
-    if (MountedBallista != nullptr)
+    if (UFEBuildingSubsystem* Subsystem = UFEBuildingSubsystem::Get(GetWorld()))
     {
-        HandleBallistaDismounted(MountedBallista);
+        Subsystem->OnLocalNoticeNative.RemoveAll(this);
     }
     // 빌드 모드 중 폰이 사라지면 PlayerState 의 ASC 에 태그가 남아 다음 폰의 상호작용이 막힌다
     bIsInBuildMode = false;
@@ -1713,6 +1709,8 @@ void UFEBuildingComponent::UpdateAimedPiece()
         return;
     }
     if (!Pawn->IsLocallyControlled()) return;
+    
+    UpdateBallistaHud(); // 탑승 HUD 도 같은 0.1초 타이머로 갱신한다
 
     // 망치를 들지 않았으면 트레이스도 하지 않는다
     const AFEBuildPiece* Piece = IsHoldingRepairTool() ? FindPieceUnderCrosshair() : nullptr;
@@ -1745,215 +1743,49 @@ void UFEBuildingComponent::UpdateAimedPiece()
     GetViewModel()->SetAimedPiece(Piece->GetDefinition()->DisplayName, Percent, RepairText, UpgradeText);
 }
 
-void UFEBuildingComponent::ExitBallista()
-{
-    if (MountedBallista != nullptr)
-    {
-        ServerExitBallista(MountedBallista);
-    }
-}
-
-void UFEBuildingComponent::FireBallista()
-{
-    const APawn* Pawn = Cast<APawn>(GetOwner());
-    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    if (MountedBallista == nullptr || PlayerController == nullptr) return;
-
-    // 장전 중 — HUD 가 이미 "장전 중"을 보여 준다. 발리스타의 리플리케이트 값이라 누가 쐈든, 어느 발리스타로 옮겨 탔든 맞다
-    if (MountedBallista->IsReloading()) return;
-
-    if (MountedBallista->GetAmmoCount() <= 0)
-    {
-        ShowNotice(LOCTEXT("BallistaNoAmmo", "탄약이 없습니다 (Tab: 탄약)"));
-        return;
-    }
-
-    // 지금 화면의 조준(정밀값)으로 보낸다. 장전 시작은 서버가 정해 리플리케이트한다 —
-    // 클라 예측이 없어서 서버가 거절해도 클라 장전이 따로 돌지 않는다 (응답 전 연타는 서버 요청 간격 제한이 버린다)
-    const FVector2D Aim = MountedBallista->ApplyLocalAim(PlayerController->GetControlRotation());
-    ServerFireBallista(MountedBallista, Aim.X, Aim.Y);
-}
-
-void UFEBuildingComponent::HandleBallistaMounted(AFEBuildBallista* Ballista)
-{
-    APawn* Pawn = Cast<APawn>(GetOwner());
-    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    if (Ballista == nullptr || PlayerController == nullptr || !Pawn->IsLocallyControlled()) return;
-
-    CancelBuild(); // 탑승 전에 열려 있던 빌드 모드·메뉴 정리
-    MountedBallista = Ballista;
-
-    // 이동 잠금. 서버도 같은 처리를 한다 — 소유 클라의 예측이 서버와 어긋나 위치 보정이 생기지 않게
-    AFEBuildBallista::LockOperatorMovement(Cast<ACharacter>(Pawn));
-
-    // 시야를 발리스타 카메라로, 조준은 정면에서 시작
-    PlayerController->SetViewTargetWithBlend(Ballista, BallistaViewBlendTime);
-    PlayerController->SetControlRotation(FRotator(0.f, Ballista->GetActorRotation().Yaw, 0.f));
-
-    // 발리스타 입력(좌클릭 발사·E/우클릭 내림). IMC 가 아직 로드 전이면 발리스타의 로드 완료 콜백이 다시 부른다
-    AddBallistaInput();
-
-    UpdateBuildModeState();        // State.Building → 상호작용 프롬프트 끔
-    SetComponentTickEnabled(true); // 조준 추종
-    LastAimSendTime = -1.0;
-    LastHudAmmo = -1; // 다음 틱에 탄약 HUD 를 무조건 그린다
-    UE_LOG(LogFEBuilding, Log, TEXT("%s mounted %s"), *GetNameSafe(Pawn), *Ballista->GetName());
-}
-
-void UFEBuildingComponent::HandleBallistaDismounted(AFEBuildBallista* Ballista)
-{
-    if (MountedBallista == nullptr) return;
-    MountedBallista = nullptr;
-
-    APawn* Pawn = Cast<APawn>(GetOwner());
-    AFEBuildBallista::UnlockOperatorMovement(Cast<ACharacter>(Pawn)); // 탑승 잠금만 푼다 — 탑승 중 사망했으면 HT 사망 처리의 잠금이 그대로 남는다
-    if (APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr)
-    {
-        PlayerController->SetViewTargetWithBlend(Pawn, BallistaViewBlendTime);
-    }
-
-    // 넣었던 서브시스템에서 뺀다. 발리스타가 부서지는 중이어도 EndPlay 동안은 유효하다
-    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = BallistaInputOwner.Get();
-    UInputMappingContext* MappingContext = Ballista ? Ballista->GetMappingContext() : nullptr;
-    if (InputSubsystem != nullptr && MappingContext != nullptr)
-    {
-        InputSubsystem->RemoveMappingContext(MappingContext);
-    }
-    BallistaInputOwner = nullptr;
-
-    if (bIsAmmoPanel && StorageTarget == Ballista)
-    {
-        CloseStoragePanel();
-    }
-    GetViewModel()->SetBallistaHud(false, FText::GetEmpty());
-    UpdateBuildModeState();
-    SetComponentTickEnabled(bIsInBuildMode);
-    UE_LOG(LogFEBuilding, Log, TEXT("%s dismounted %s"), *GetNameSafe(Pawn), *GetNameSafe(Ballista));
-}
-
-void UFEBuildingComponent::AddBallistaInput()
-{
-    // 탑승 중이고 아직 안 넣었을 때만 — 탑승 때와 IMC 로드 완료 때 두 번 불려도 한 번만 들어간다
-    if (MountedBallista == nullptr || BallistaInputOwner.IsValid()) return;
-
-    const APawn* Pawn = Cast<APawn>(GetOwner());
-    const APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    UEnhancedInputLocalPlayerSubsystem* InputSubsystem = PlayerController
-        ? ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer())
-        : nullptr;
-    UInputMappingContext* MappingContext = MountedBallista->GetMappingContext();
-    if (InputSubsystem != nullptr && MappingContext != nullptr)
-    {
-        // 전투(20)·빌드 모드(30)보다 높은 우선순위로 같은 키를 가져온다 → 개인 무기가 나가지 않는다
-        InputSubsystem->AddMappingContext(MappingContext, MountedBallista->GetMappingPriority());
-        BallistaInputOwner = InputSubsystem;
-    }
-}
-
-void UFEBuildingComponent::UpdateBallistaAim()
-{
-    const APawn* Pawn = Cast<APawn>(GetOwner());
-    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
-    if (PlayerController == nullptr || MountedBallista == nullptr) return;
-
-    // 범위로 자른 각도를 머리에 바로 적용하고, 컨트롤 회전도 그 범위로 되돌린다 — 마우스가 한계 밖으로 쌓이면 돌아올 때 멈춘 것처럼 느껴진다
-    const FVector2D Aim = MountedBallista->ApplyLocalAim(PlayerController->GetControlRotation());
-    PlayerController->SetControlRotation(FRotator(Aim.Y, MountedBallista->GetActorRotation().Yaw + Aim.X, 0.f));
-
-    // 다른 플레이어용: 바뀌었으면 BallistaAimSendInterval 이하 빈도로, 그대로여도 BallistaAimRefreshInterval 마다 다시 보낸다
-    const int8 Yaw = static_cast<int8>(FMath::RoundToInt(Aim.X)); // MaxYaw ≤ 127 이라 int8 안에 들어간다
-    const int8 Pitch = static_cast<int8>(FMath::RoundToInt(Aim.Y));
-    const double Now = GetWorld()->GetTimeSeconds();
-    const double SinceLastSend = Now - LastAimSendTime;
-    const bool bChanged = Yaw != LastSentAimYaw || Pitch != LastSentAimPitch;
-    const bool bSendDue = LastAimSendTime < 0.0 || (bChanged && SinceLastSend >= BallistaAimSendInterval) || SinceLastSend >= BallistaAimRefreshInterval;
-    if (bSendDue)
-    {
-        LastSentAimYaw = Yaw;
-        LastSentAimPitch = Pitch;
-        LastAimSendTime = Now;
-        ServerSetBallistaAim(MountedBallista, Yaw, Pitch);
-    }
-}
-
 void UFEBuildingComponent::UpdateBallistaHud()
 {
-    if (MountedBallista == nullptr) return;
+    // 탑승은 발리스타가 처리한다. 여기서는 내가 탄 발리스타를 찾아 탄약·장전만 보여 준다
+    AFEBuildBallista* Ballista = AFEBuildBallista::FindOperatedBy(GetOwner());
+    if (Ballista == nullptr)
+    {
+        // 방금 내렸으면(발리스타가 부서진 경우 포함) 한 번만 숨기고, 그 발리스타의 탄약 패널이 열려 있으면 닫는다
+        if (LastHudAmmo >= 0)
+        {
+            if (bIsAmmoPanel && StorageTarget != nullptr && StorageTarget == HudBallista.Get())
+            {
+                CloseStoragePanel();
+            }
+            LastHudAmmo = -1;
+            GetViewModel()->SetBallistaHud(false, FText::GetEmpty());
+        }
+        return;
+    }
+    if (Ballista != HudBallista.Get())
+    {
+        HudBallista = Ballista;
+        LastHudAmmo = -1; // 새로 탔다 → 이번에 무조건 그린다
+    }
 
-    const int32 AmmoCount = MountedBallista->GetAmmoCount();
-    const bool bReloading = MountedBallista->IsReloading();
+    const int32 AmmoCount = Ballista->GetAmmoCount();
+    const bool bReloading = Ballista->IsReloading();
     if (AmmoCount == LastHudAmmo && bReloading == bLastHudReloading) return; // 바뀐 게 없으면 뷰모델 알림을 보내지 않는다
 
     LastHudAmmo = AmmoCount;
     bLastHudReloading = bReloading;
     const FText AmmoText = FText::Format(LOCTEXT("BallistaHud", "{0} {1} / {2}"),
-        MountedBallista->GetSlotLabel(0), FText::AsNumber(AmmoCount), FText::AsNumber(MountedBallista->GetMaxStackSize()));
+        Ballista->GetSlotLabel(0), FText::AsNumber(AmmoCount), FText::AsNumber(Ballista->GetMaxStackSize()));
     GetViewModel()->SetBallistaHud(true, bReloading
-        ? FText::Format(LOCTEXT("BallistaHudReloading", "{0} · 장전 중"), AmmoText)
-        : AmmoText);
+        ? FText::Format(LOCTEXT("BallistaHudReloading", "{0} · 장전 중"), AmmoText) : AmmoText);
 }
 
 AFEBuildBallista* UFEBuildingComponent::FindAmmoPanelTarget() const
 {
-    if (MountedBallista != nullptr) return MountedBallista;
+    if (AFEBuildBallista* Mounted = AFEBuildBallista::FindOperatedBy(GetOwner())) return Mounted;
     if (bIsInBuildMode) return nullptr; // 빌드 모드의 Tab 은 빌드 메뉴
 
     AFEBuildBallista* Aimed = Cast<AFEBuildBallista>(FindPieceUnderCrosshair());
     return Aimed != nullptr && Aimed->GetState() == EFEBuildPieceState::Built ? Aimed : nullptr;
-}
-
-bool UFEBuildingComponent::ServerExitBallista_Validate(AFEBuildBallista* Ballista)
-{
-    return true; // nullptr·남의 발리스타는 Implementation 에서 무시 (킥할 일은 아니다)
-}
-
-void UFEBuildingComponent::ServerExitBallista_Implementation(AFEBuildBallista* Ballista)
-{
-    // 조작자 본인만 내릴 수 있다
-    if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
-    {
-        Ballista->SetOperator(nullptr);
-    }
-}
-
-bool UFEBuildingComponent::ServerSetBallistaAim_Validate(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch)
-{
-    return true;
-}
-
-void UFEBuildingComponent::ServerSetBallistaAim_Implementation(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch)
-{
-    // 간격 제한이 가장 먼저 — 조작된 클라가 쏟아 보내도 처리량이 정해진다. 정상 클라는 이 간격의 2배로 보낸다
-    // (몰려 와서 하나를 버려도 0.5초 재전송으로 다시 맞춰진다)
-    if (!FEBuilding::ConsumeRequestSlot(NextAimRequestTime, GetWorld()->GetTimeSeconds(), BallistaAimAcceptInterval)) return;
-
-    // 조작자만. 범위는 발리스타가 다시 자른다
-    if (Ballista != nullptr && Ballista->GetOperator() == GetOwner())
-    {
-        Ballista->SetReplicatedAim(Yaw, Pitch);
-    }
-}
-
-bool UFEBuildingComponent::ServerFireBallista_Validate(AFEBuildBallista* Ballista, float Yaw, float Pitch)
-{
-    return FMath::IsFinite(Yaw) && FMath::IsFinite(Pitch); // NaN·무한대는 조작된 패킷. 범위는 발리스타가 자른다
-}
-
-void UFEBuildingComponent::ServerFireBallista_Implementation(AFEBuildBallista* Ballista, float Yaw, float Pitch)
-{
-    // 간격 제한이 가장 먼저 (수리와 같은 이유) — 빈 발리스타 연타 같은 요청도 거절 로그·안내가 이 간격당 1번.
-    // 장전(발리스타별 ReloadTime)과는 별개라 정상 발사는 걸리지 않는다
-    if (!FEBuilding::ConsumeRequestSlot(NextFireRequestTime, GetWorld()->GetTimeSeconds(), BallistaFireRequestInterval)) return;
-
-    // 조작자 본인만
-    if (Ballista == nullptr || Ballista->GetOperator() != GetOwner()) return;
-
-    FText Reason;
-    if (!Ballista->TryFire(Cast<APawn>(GetOwner()), Yaw, Pitch, Reason) && !Reason.IsEmpty())
-    {
-        UE_LOG(LogFEBuilding, Log, TEXT("Fire rejected: %s"), *Reason.ToString());
-        ClientShowNotice(Reason);
-    }
 }
 
 void UFEBuildingComponent::ClientShowNotice_Implementation(const FText& Text)

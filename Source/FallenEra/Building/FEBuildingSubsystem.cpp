@@ -105,6 +105,14 @@ UFEBuildingSubsystem* UFEBuildingSubsystem::Get(const UWorld* World)
     return World ? World->GetSubsystem<UFEBuildingSubsystem>() : nullptr;
 }
 
+void UFEBuildingSubsystem::ShowLocalNotice(const UWorld* World, const FText& Text)
+{
+    if (UFEBuildingSubsystem* Subsystem = Get(World))
+    {
+        Subsystem->OnLocalNoticeNative.Broadcast(Text);
+    }
+}
+
 bool UFEBuildingSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
 {
     return WorldType == EWorldType::Game || WorldType == EWorldType::PIE;

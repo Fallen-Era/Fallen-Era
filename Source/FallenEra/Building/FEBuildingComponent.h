@@ -110,22 +110,6 @@ public:
     /** [Client Only] 화로 패널의 불 켜기/끄기 */
     UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
     void ToggleFurnaceLit();
-    
-    /** [Client Only] 탑승 중인 발리스타에서 내린다. GA_Build_BallistaExit(E·우클릭)가 호출한다 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void ExitBallista();
-    
-    /** [Client Only] 탑승 중인 발리스타 발사. GA_Build_BallistaFire(좌클릭)가 호출한다. 장전 중이면 무시, 탄약이 없으면 안내 */
-    UFUNCTION(BlueprintCallable, Category = "FallenEra|Building")
-    void FireBallista();
-
-    /** [Client Only] 이 기계의 플레이어가 발리스타에 탔다/내렸다. 발리스타의 OnRep_Operator 가 부른다 (시야·입력·이동 잠금·조준 틱) */
-    void HandleBallistaMounted(AFEBuildBallista* Ballista);
-    void HandleBallistaDismounted(AFEBuildBallista* Ballista);
-    
-    /** [Client Only] 탑승 중인 발리스타의 입력(IMC)을 넣는다. 이미 넣었거나 IMC 가 로드 전이면 아무것도 안 한다 —
-     *  탑승 때 한 번, IMC 로드가 탑승보다 늦으면 발리스타의 로드 완료 콜백이 한 번 더 부른다 */
-    void AddBallistaInput();
 
     /** HUD 위젯이 바인딩할 뷰모델. 지연 생성 */
     UFUNCTION(BlueprintPure, Category = "FallenEra|Building")
@@ -192,18 +176,6 @@ protected:
     /** [Server RPC] 화로 점화/소화 */
     UFUNCTION(Server, Reliable, WithValidation)
     void ServerSetFurnaceLit(AFEBuildFurnace* Furnace, bool bLit);
-    
-    /** [Server RPC] 발리스타에서 내림. 조작자 본인만 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerExitBallista(AFEBuildBallista* Ballista);
-
-    /** [Server RPC] 조준(발리스타 기준 상대 각도, 도). 다른 플레이어에게 보이는 용도라 Unreliable, 바뀌었을 때만 10Hz 이하 */
-    UFUNCTION(Server, Unreliable, WithValidation)
-    void ServerSetBallistaAim(AFEBuildBallista* Ballista, int8 Yaw, int8 Pitch);
-    
-    /** [Server RPC] 발사. 조준은 정밀값(float, 발리스타 기준 상대 각도) — 리플리케이트용 int8 은 1° 단위라 멀리서 빗나간다. 조작자 본인만 */
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerFireBallista(AFEBuildBallista* Ballista, float Yaw, float Pitch);
 
     /** [Server RPC] 패널을 열 때 소지품 목록 요청 */
     UFUNCTION(Server, Reliable, WithValidation)
@@ -365,30 +337,15 @@ private:
     /** BuildModeMappingContext 비동기 로드 핸들 */
     TSharedPtr<FStreamableHandle> BuildModeMappingLoadHandle;
     
-    /** [Client Only] 이 플레이어가 탄 발리스타. 조준 갱신·Tab 탄약 UI·빌드 모드 차단에 쓴다 */
-    UPROPERTY(Transient)
-    TObjectPtr<AFEBuildBallista> MountedBallista;
-
-    /** 발리스타 IMC 를 넣은 입력 서브시스템. 폰이 사라져도 같은 곳에서 빼기 위해 기억한다 (빌드 모드 IMC 와 같은 이유) */
-    TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> BallistaInputOwner;
-    
-    /** [Client Only] 매 프레임: 컨트롤 회전 → 발리스타 머리. 바뀌었으면 10Hz 이하로, 그대로여도 0.5초마다 서버에 보낸다 */
-    void UpdateBallistaAim();
-
-    int8 LastSentAimYaw = 0;
-    int8 LastSentAimPitch = 0;
-    double LastAimSendTime = -1.0;
-    
-    /** [Server Only] 발리스타 요청 간격 제한 (FEBuilding::ConsumeRequestSlot). 장전(발리스타별 ReloadTime)과 별개로,
-     *  조작된 클라의 빈 발사·조준 요청이 서버 처리와 Reliable 안내를 무제한으로 만들지 않게 */
-    double NextFireRequestTime = 0.0;
-    double NextAimRequestTime = 0.0;
-
-    /** [Client Only] 탑승 중 HUD(탄약 수·장전 중). 값이 바뀔 때만 뷰모델을 갱신한다. LastHudAmmo = -1 이면 다음 호출에서 무조건 갱신 */
+    /** [Client Only] 탑승 HUD(탄약 수·장전 중). 탑승은 발리스타가 처리하고, 여기서는 0.1초 타이머로 내가 탄 발리스타를 찾아 보여 주기만 한다.
+     *  값이 바뀔 때만 뷰모델을 갱신한다. LastHudAmmo = -1 이면 HUD 가 꺼져 있고 다음에 무조건 그린다 */
     void UpdateBallistaHud();
 
     int32 LastHudAmmo = -1;
     bool bLastHudReloading = false;
+
+    /** 마지막으로 HUD 를 그린 발리스타. 내렸을 때 그 발리스타의 탄약 패널만 닫는다 */
+    TWeakObjectPtr<AFEBuildBallista> HudBallista;
 
     /** Tab 이 탄약 UI 를 열 발리스타: 탑승 중이면 그 발리스타, 아니면(빌드 모드 밖) 조준한 완성 발리스타. 없으면 nullptr */
     AFEBuildBallista* FindAmmoPanelTarget() const;

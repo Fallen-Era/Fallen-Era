@@ -24,6 +24,7 @@ namespace FEBuildingTags
     
     // 상태 (로컬 loose 태그. 다른 시스템이 "빌드 중"을 알아야 할 때 이 태그만 본다)
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Building);
+    FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Building_Mounted);
 
     // 피스 분류 (UFEBuildPieceDefinition::Category)
     FALLENERA_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Build_Piece_Structure);

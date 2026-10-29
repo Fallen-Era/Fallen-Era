@@ -8,14 +8,17 @@
 
 class UCameraComponent;
 class UInputMappingContext;
+class UEnhancedInputLocalPlayerSubsystem;
+class UAbilitySystemComponent;
+class APlayerController;
 class AFE_CombatProjectile;
 class ACharacter;
 
 /**
  * 수동 발리스타. 완성 상태에서 E 로 탑승(한 번에 1명) → 이동 잠금·발리스타 카메라·조준(좌우 ±MaxYaw, 상하 MinPitch~MaxPitch).
  * 탄약 칸 1개(볼트만 — 보관함 서버 로직 재사용). 전용 탄약 UI 는 탑승 중 Tab, 또는 내린 상태에서 발리스타를 조준하고 Tab.
- * 상태(Operator·조준)는 서버가 소유하고 리플리케이트한다. 클라 요청은 조작자의 UFEBuildingComponent RPC 로 들어온다
- * (발리스타는 플레이어 소유가 아니라 직접 Server RPC 를 받을 수 없다).
+ * 탑승은 발리스타가 전부 처리한다. 서버가 조작자를 Owner 로 지정하므로 그 클라가 발리스타에 직접 Server RPC(발사·조준·내리기)를 보내고,
+ * 조작자 기계에서는 발리스타가 시야·입력·이동 잠금·조준을 맡는다. 플레이어 쪽 컴포넌트는 발리스타를 모른다 (탑승 GA 는 FindOperatedBy 로 찾는다).
  * 머리(Head)는 보이기만 하는 부품이라 콜리전이 없다 — 총신이 벽·난간 자리 위로 나가도 그 설치를 막지 않는다.
  */
 UCLASS()
@@ -24,44 +27,33 @@ class FALLENERA_API AFEBuildBallista : public AFEBuildDefense
     GENERATED_BODY()
 
 public:
-    AFEBuildBallista();
+	AFEBuildBallista();
 
-    /** [Server Only] 조작자 지정, nullptr = 내림. 이동 잠금·복구와 좌석 이동을 함께 한다 */
-    void SetOperator(APawn* NewOperator);
+	/** OperatorActor 가 지금 타고 있는 발리스타. 없으면 nullptr. 리플리케이트된 Operator 로 찾으므로 어느 기계에서나 같다.
+	 *  탑승 GA(발사·내리기)와 탑승 HUD 가 "내 발리스타"를 찾을 때 쓴다 */
+	UFUNCTION(BlueprintPure, Category = "FallenEra|Building|Ballista")
+	static AFEBuildBallista* FindOperatedBy(const AActor* OperatorActor);
 
-    APawn* GetOperator() const;
-    
-    /** 조작자 이동 잠금·해제 (서버 SetOperator 와 조작자 기계의 HandleBallistaMounted/Dismounted 가 같이 쓴다).
-     *  잠금 = MOVE_Custom + 건설 전용 번호. 해제는 지금 모드가 그 잠금일 때만 걷기로 되돌린다 —
-     *  탑승 중 사망하면 HT 사망 처리가 MOVE_None 으로 바꾸므로 그 잠금은 건드리지 않는다 */
-    static void LockOperatorMovement(ACharacter* Character);
-    static void UnlockOperatorMovement(ACharacter* Character);
+	/** [Client Only] 발사 요청. GA_Build_BallistaFire(좌클릭)가 부른다. 장전 중이면 무시, 탄약이 없으면 안내. 이 기계의 플레이어가 탄 발리스타에서만 동작 */
+	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|Ballista")
+	void RequestFire();
 
-    /** [Client Only] 조작자의 컨트롤 회전을 조준 범위로 잘라 머리에 바로 적용. 잘린 상대 각도(X = Yaw, Y = Pitch, 도)를 돌려준다 */
-    FVector2D ApplyLocalAim(const FRotator& ControlRotation);
+	/** [Client Only] 내리기 요청. GA_Build_BallistaExit(E·우클릭)가 부른다 */
+	UFUNCTION(BlueprintCallable, Category = "FallenEra|Building|Ballista")
+	void RequestExit();
 
-    /** [Server Only] 조작자가 보낸 조준(상대 각도, 도)을 범위로 잘라 리플리케이트 */
-    void SetReplicatedAim(int8 Yaw, int8 Pitch);
+	/** 탄약 칸의 볼트 수. Contents 가 리플리케이트되므로 클라 HUD 에서도 맞다 */
+	int32 GetAmmoCount() const;
 
-    /** 탑승 중 추가하는 입력(좌클릭 발사·E/우클릭 내림). 시작 때 비동기로 미리 받아 둔다 —
-     *  로드 전이면 nullptr (끝나면 HandleMappingContextLoaded 가 입력을 넣는다) */
-    UInputMappingContext* GetMappingContext() const;
+	/** 장전 중인가. 서버 시각과 리플리케이트된 NextFireTime 으로 판단하므로 누가 쐈든 모든 기계에서 같다 (탑승 HUD·발사 입력) */
+	bool IsReloading() const;
 
-    int32 GetMappingPriority() const;
-    
-    /** [Server Only] 조작자의 발사 요청. Yaw/Pitch = 발리스타 기준 상대 각도(도, 정밀값).
-     *  탄약·볼트 준비·장전을 확인하고 투사체 풀로 볼트를 쏜다. 실패하면 false — OutReason 이 비어 있지 않으면 플레이어에게 보여 줄 사유 */
-    bool TryFire(APawn* InstigatorPawn, float Yaw, float Pitch, FText& OutReason);
+	virtual bool AcceptsItem(FGameplayTag ItemTag, FText& OutReason) const override;
+	virtual FText GetSlotLabel(int32 SlotIndex) const override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-    /** 탄약 칸의 볼트 수. Contents 가 리플리케이트되므로 클라 HUD 에서도 맞다 */
-    int32 GetAmmoCount() const;
-
-    /** 장전 중인가. 서버 시각과 리플리케이트된 NextFireTime 으로 판단하므로 누가 쐈든 모든 기계에서 같다 (탑승 HUD·발사 입력) */
-    bool IsReloading() const;
-
-    virtual bool AcceptsItem(FGameplayTag ItemTag, FText& OutReason) const override;
-    virtual FText GetSlotLabel(int32 SlotIndex) const override;
-    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	/** 이 기계의 플레이어가 탔을 때만 켜진다 (조준 추종) */
+	virtual void Tick(float DeltaSeconds) override;
 
 protected:
     virtual void BeginPlay() override;
@@ -150,26 +142,88 @@ protected:
     TObjectPtr<USceneComponent> Muzzle;
 
 private:
+    /** [Server RPC] 발사. 조준은 정밀값(float, 발리스타 기준 상대 각도) — 리플리케이트용 int8 은 1° 단위라 멀리서 빗나간다 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerFire(float Yaw, float Pitch);
+
+    /** [Server RPC] 조준(상대 각도, 도). 다른 플레이어에게 보이는 용도라 Unreliable, 바뀌면 10Hz 이하 + 그대로여도 0.5초마다 재전송 */
+    UFUNCTION(Server, Unreliable, WithValidation)
+    void ServerSetAim(int8 Yaw, int8 Pitch);
+
+    /** [Server RPC] 내림 */
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerExit();
+
+    /** [Client RPC] 서버만 아는 발사 실패 사유를 조작자 화면에. Owner = 조작자라 그 플레이어에게만 간다 */
+    UFUNCTION(Client, Reliable)
+    void ClientShowNotice(const FText& Text);
+
     UFUNCTION()
     void OnRep_Operator();
 
     UFUNCTION()
     void OnRep_Aim();
 
+    /** [Server Only] 조작자 지정, nullptr = 내림. Owner·이동 잠금·좌석 이동을 함께 한다 */
+    void SetOperator(APawn* NewOperator);
+
+    /** [Server Only] 탄약·볼트 준비·장전을 확인하고 투사체 풀로 볼트를 쏜다. Yaw/Pitch = 발리스타 기준 상대 각도(도, 정밀값).
+     *  실패하면 false — OutReason 이 비어 있지 않으면 플레이어에게 보여 줄 사유 */
+    bool TryFire(APawn* InstigatorPawn, float Yaw, float Pitch, FText& OutReason);
+
+    /** [Server Only] 조작자가 보낸 조준(상대 각도, 도)을 범위로 잘라 리플리케이트 */
+    void SetReplicatedAim(int8 Yaw, int8 Pitch);
+
     /** [Server Only] 탑승 중 0.5초마다: 조작자가 사라졌거나 죽었거나 멀어졌으면 내린다 */
     void CheckOperator();
 
     /** 머리에 상대 각도 적용 */
     void SetHeadAim(float Yaw, float Pitch);
-	
-	/** [Client Only] 탑승 IMC 비동기 로드 완료. 로드가 끝나기 전에 이 기계의 플레이어가 탔으면 이제 입력을 넣는다 */
-	void HandleMappingContextLoaded();
 
-    /** 이 기계가 마지막으로 알던 조작자. 바뀌면 이전 조작자 기계에 "내림"을 알린다 */
-    TWeakObjectPtr<APawn> LocalKnownOperator;
+    /** 조작자 이동 잠금·해제 (서버 SetOperator 와 조작자 기계의 Begin/EndLocalOperation 이 같이 쓴다).
+     *  잠금 = MOVE_Custom + 건설 전용 번호. 해제는 지금 모드가 그 잠금일 때만 걷기로 되돌린다 —
+     *  탑승 중 사망하면 HT 사망 처리가 MOVE_None 으로 바꾸므로 그 잠금은 건드리지 않는다 */
+    static void LockOperatorMovement(ACharacter* Character);
+    static void UnlockOperatorMovement(ACharacter* Character);
+
+    /** [Client Only] 이 기계의 플레이어가 탔다: 이동 잠금·시야·입력·State.Building.Mounted·조준 틱 */
+    void BeginLocalOperation(APawn* Pawn);
+
+    /** [Client Only] 내렸다 (그 폰이 이미 사라졌어도). Begin 에서 기억해 둔 컨트롤러·입력·ASC 에서 되돌린다. 탑승 중이 아니면 아무것도 안 한다 */
+    void EndLocalOperation();
+
+    /** [Client Only] 탑승 IMC 를 넣는다. 이미 넣었거나 IMC 가 로드 전이면 아무것도 안 한다 — 탑승 때 한 번, 로드가 늦으면 로드 완료 때 한 번 더 */
+    void AddLocalInput();
+
+    /** [Client Only] 매 프레임: 컨트롤 회전 → 머리. 바뀌었으면 10Hz 이하로, 그대로여도 0.5초마다 서버에 보낸다 */
+    void UpdateLocalAim();
+
+    /** [Client Only] 컨트롤 회전을 조준 범위로 잘라 머리에 바로 적용. 잘린 상대 각도(X = Yaw, Y = Pitch, 도)를 돌려준다 */
+    FVector2D ApplyLocalAim(const FRotator& ControlRotation);
+
+    /** [Client Only] 탑승 IMC 비동기 로드 완료. 로드가 끝나기 전에 이 기계의 플레이어가 탔으면 이제 입력을 넣는다 */
+    void HandleMappingContextLoaded();
+
+    /** [Client Only] 이 기계의 플레이어가 타고 있다 (BeginLocalOperation ~ EndLocalOperation) */
+    bool bLocalOperation = false;
+
+    /** [Client Only] Begin 에서 기억해 둔 것들. 내릴 때 폰이 이미 사라졌을 수 있어 여기서 되돌린다
+     *  (컨트롤러·로컬 플레이어 입력·PlayerState 의 ASC 는 폰보다 오래 산다) */
+    TWeakObjectPtr<APawn> LocalOperatorPawn;
+    TWeakObjectPtr<APlayerController> LocalController;
+    TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> LocalInputOwner;
+    TWeakObjectPtr<UAbilitySystemComponent> LocalTagOwner;
+
+    int8 LastSentAimYaw = 0;
+    int8 LastSentAimPitch = 0;
+    double LastAimSendTime = -1.0;
+
+    /** [Server Only] 요청 간격 제한 (FEBuilding::ConsumeRequestSlot). 장전(ReloadTime)과 별개로,
+     *  조작된 클라의 빈 발사·조준 요청이 서버 처리와 Reliable 안내를 무제한으로 만들지 않게 */
+    double NextFireRequestTime = 0.0;
+    double NextAimRequestTime = 0.0;
 
     FTimerHandle OperatorCheckTimer;
     TSharedPtr<FStreamableHandle> MappingLoadHandle;
-    
     TSharedPtr<FStreamableHandle> BoltLoadHandle;
 };
